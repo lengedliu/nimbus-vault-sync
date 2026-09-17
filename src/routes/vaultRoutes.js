@@ -4,6 +4,7 @@ const vaults = require('../vaults');
 const vaultMembers = require('../vaultMembers');
 const users = require('../users');
 const storage = require('../storage');
+const deltaSync = require('../deltaSync');
 const { asyncHandler } = require('../utils/asyncHandler');
 const { requireReadAccess, requireOwnerAccess } = require('../permissions');
 
@@ -30,11 +31,37 @@ router.delete('/:vaultId', asyncHandler(async (req, res) => {
 }));
 
 // Full manifest: path -> {size, mtime, hash}. Used by the client to diff against local state.
-router.get('/:vaultId/manifest', (req, res) => {
+router.get('/:vaultId/manifest', asyncHandler(async (req, res) => {
   const { vaultId } = req.params;
   if (!requireReadAccess(req, res)) return;
-  res.json({ manifest: storage.getManifest(vaultId) });
-});
+  const manifest = await storage.getManifestAsync(vaultId);
+  const cursor = deltaSync.getLatestCursor(vaultId);
+  res.json({ manifest, cursor, latestCursor: cursor });
+}));
+
+// Incremental Delta Sync: return only changes since the given cursor
+router.get('/:vaultId/changes', asyncHandler(async (req, res) => {
+  const { vaultId } = req.params;
+  if (!requireReadAccess(req, res)) return;
+  const since = parseInt(req.query.since || '0', 10);
+  const limit = parseInt(req.query.limit || '500', 10);
+  
+  const result = await deltaSync.getChanges(vaultId, since, limit);
+  if (result.fullSyncRequired) {
+    const manifest = await storage.getManifestAsync(vaultId);
+    return res.json({
+      full: true,
+      cursor: result.cursor,
+      latestCursor: result.cursor,
+      manifest,
+      reason: result.reason,
+    });
+  }
+  res.json({
+    full: false,
+    ...result,
+  });
+}));
 
 // GET /api/vaults/search?q=keyword - Global search across all accessible vaults (filename and note contents)
 router.get('/search', asyncHandler(async (req, res) => {

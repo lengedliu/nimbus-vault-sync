@@ -8,6 +8,7 @@ const syncRules = require('./syncRules');
 const syncLogger = require('./syncLogger');
 const devicesStore = require('./devices');
 const webhooks = require('./webhooks');
+const deltaSync = require('./deltaSync');
 
 const MAX_WS_INLINE_BYTES = 2 * 1024 * 1024; // 2MB threshold for WebSocket inline content
 
@@ -37,6 +38,10 @@ class FnsHub {
     // vaultId -> Array of { type: 'change'|'delete'|'conflict', path, timestamp, userId }
     this.activityLogs = new Map();
     this.heartbeatInterval = null;
+
+    // Batching / Debouncing state: vaultId -> { timer, changes: Map(path -> changeObj), fromUserId, excludeWs }
+    this.pendingBatches = new Map();
+    this.BATCH_DEBOUNCE_MS = 300;
   }
 
   init(httpServer) {
@@ -148,7 +153,12 @@ class FnsHub {
       client.isAlive = true;
     });
 
-    this._send(ws, { type: 'init', manifest: storage.getManifest(vaultId), permission });
+    this._send(ws, {
+      type: 'init',
+      manifest: storage.getManifest(vaultId),
+      cursor: deltaSync.getLatestCursor(vaultId),
+      permission,
+    });
 
     ws.on('message', (raw) => {
       client.isAlive = true;
@@ -381,6 +391,62 @@ class FnsHub {
     }
   }
 
+  /** Broadcast a batch of changes directly (e.g. from batch delete, batch move, or bulk sync) */
+  broadcastBatchChanges(vaultId, changes, fromUserId, excludeWs = null) {
+    if (!Array.isArray(changes) || changes.length === 0) return;
+    const room = this.rooms.get(vaultId);
+    if (!room || room.size === 0) return;
+
+    for (const c of changes) {
+      this._logActivity(vaultId, { type: c.action || 'change', path: c.path, userId: fromUserId });
+    }
+
+    const payload = {
+      type: 'batch_file_change',
+      vaultId,
+      cursor: deltaSync.getLatestCursor(vaultId),
+      count: changes.length,
+      timestamp: Date.now(),
+      changes: changes.map((c) => ({
+        action: c.action || 'update', // 'update' | 'delete' | 'create'
+        path: c.path,
+        size: c.size,
+        mtime: c.mtime,
+        hash: c.hash || c.currentHash,
+      })),
+    };
+
+    const json = JSON.stringify(payload);
+    for (const client of room) {
+      if (excludeWs && client.ws === excludeWs) continue;
+      this._sendRaw(client.ws, json);
+    }
+  }
+
+  /** Push a changed file metadata update to clients */
+  broadcastFileUpdate(vaultId, relPath, meta, fromUserId, excludeWs = null) {
+    this._logActivity(vaultId, { type: 'change', path: relPath, userId: fromUserId });
+    const room = this.rooms.get(vaultId);
+    if (!room || room.size === 0) return;
+
+    const payload = {
+      type: 'change',
+      path: relPath,
+      cursor: deltaSync.getLatestCursor(vaultId),
+      size: meta?.size,
+      mtime: meta?.mtime,
+      hash: meta?.hash,
+      pullRequired: (meta?.size || 0) > MAX_WS_INLINE_BYTES,
+    };
+    const json = JSON.stringify(payload);
+    for (const client of room) {
+      if (excludeWs && client.ws === excludeWs) continue;
+      this._sendRaw(client.ws, json);
+    }
+
+    this._scheduleDebouncedBatchNotification(vaultId, { action: 'update', path: relPath, ...meta }, fromUserId, excludeWs);
+  }
+
   /** Push a changed file to every connected client for this vault (except the sender WebSocket if provided). */
   broadcastFileChange(vaultId, relPath, result, fromUserId, excludeWs = null) {
     this._logActivity(vaultId, { type: 'change', path: relPath, userId: fromUserId });
@@ -397,9 +463,10 @@ class FnsHub {
       const payload = {
         type: 'change',
         path: relPath,
+        cursor: deltaSync.getLatestCursor(vaultId),
         size: fileSize,
         mtime: meta?.mtime,
-        hash: result?.currentHash,
+        hash: result?.currentHash || meta?.hash,
         pullRequired: true,
       };
       const json = JSON.stringify(payload);
@@ -407,6 +474,7 @@ class FnsHub {
         if (excludeWs && client.ws === excludeWs) continue;
         this._sendRaw(client.ws, json);
       }
+      this._scheduleDebouncedBatchNotification(vaultId, { action: 'update', path: relPath, size: fileSize, mtime: meta?.mtime, hash: result?.currentHash }, fromUserId, excludeWs);
       return;
     }
 
@@ -417,6 +485,7 @@ class FnsHub {
       const payload = {
         type: 'change',
         path: relPath,
+        cursor: deltaSync.getLatestCursor(vaultId),
         size: buf.length,
         hash: result?.currentHash,
         pullRequired: true,
@@ -426,12 +495,14 @@ class FnsHub {
         if (excludeWs && client.ws === excludeWs) continue;
         this._sendRaw(client.ws, json);
       }
+      this._scheduleDebouncedBatchNotification(vaultId, { action: 'update', path: relPath, size: buf.length, hash: result?.currentHash }, fromUserId, excludeWs);
       return;
     }
 
     const payload = {
       type: 'change',
       path: relPath,
+      cursor: deltaSync.getLatestCursor(vaultId),
       content: buf.toString('base64'),
       size: buf.length,
       hash: result?.currentHash,
@@ -442,6 +513,7 @@ class FnsHub {
       if (excludeWs && client.ws === excludeWs) continue; // don't echo back to the pushing socket
       this._sendRaw(client.ws, json);
     }
+    this._scheduleDebouncedBatchNotification(vaultId, { action: 'update', path: relPath, size: buf.length, hash: result?.currentHash }, fromUserId, excludeWs);
   }
 
   /** Push file deletion to all connected clients for this vault (except the sender WebSocket if provided). */
@@ -449,10 +521,70 @@ class FnsHub {
     this._logActivity(vaultId, { type: 'delete', path: relPath, userId: fromUserId });
     const room = this.rooms.get(vaultId);
     if (!room || room.size === 0) return;
-    const json = JSON.stringify({ type: 'deleted', path: relPath });
+    const json = JSON.stringify({
+      type: 'deleted',
+      path: relPath,
+      cursor: deltaSync.getLatestCursor(vaultId),
+    });
     for (const client of room) {
       if (excludeWs && client.ws === excludeWs) continue; // don't echo back to the deleting socket
       this._sendRaw(client.ws, json);
+    }
+    this._scheduleDebouncedBatchNotification(vaultId, { action: 'delete', path: relPath }, fromUserId, excludeWs);
+  }
+
+  /** Internal helper: Debounce and coalesce rapid single events into a batch notification */
+  _scheduleDebouncedBatchNotification(vaultId, changeItem, fromUserId, excludeWs) {
+    let batch = this.pendingBatches.get(vaultId);
+    if (!batch) {
+      batch = {
+        changes: new Map(),
+        fromUserId,
+        excludeWs,
+        timer: null,
+      };
+      this.pendingBatches.set(vaultId, batch);
+    }
+
+    batch.changes.set(changeItem.path, changeItem);
+
+    if (batch.timer) clearTimeout(batch.timer);
+
+    // If accumulated more than 50 items, flush immediately to prevent memory buildup
+    if (batch.changes.size >= 50) {
+      this._flushPendingBatch(vaultId);
+      return;
+    }
+
+    batch.timer = setTimeout(() => {
+      this._flushPendingBatch(vaultId);
+    }, this.BATCH_DEBOUNCE_MS);
+  }
+
+  _flushPendingBatch(vaultId) {
+    const batch = this.pendingBatches.get(vaultId);
+    if (!batch) return;
+    if (batch.timer) clearTimeout(batch.timer);
+    this.pendingBatches.delete(vaultId);
+
+    const changesList = Array.from(batch.changes.values());
+    if (changesList.length > 1) {
+      // Only broadcast a coalesced batch event if there were 2 or more changes in the time window
+      const room = this.rooms.get(vaultId);
+      if (room && room.size > 0) {
+        const payload = {
+          type: 'batch_file_change',
+          vaultId,
+          count: changesList.length,
+          timestamp: Date.now(),
+          changes: changesList,
+        };
+        const json = JSON.stringify(payload);
+        for (const client of room) {
+          if (batch.excludeWs && client.ws === batch.excludeWs) continue;
+          this._sendRaw(client.ws, json);
+        }
+      }
     }
   }
 }

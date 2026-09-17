@@ -4864,6 +4864,109 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
   }
 }
 
+/* ----------------- Batch Actions Bar ----------------- */
+.batch-actions-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.batch-bar-left,
+.batch-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.batch-badge {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-bg);
+  padding: 4px 10px;
+  border-radius: 9999px;
+  border: 1px solid rgba(88, 166, 255, 0.3);
+}
+
+.batch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 12px;
+  border-radius: 6px;
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.batch-btn:hover {
+  background: var(--panel);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.batch-btn-secondary {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+
+.batch-btn-secondary:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+.batch-btn-ghost {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  padding: 5px 8px;
+}
+
+.batch-btn-ghost:hover {
+  color: var(--text);
+}
+
+.batch-btn-danger {
+  background: rgba(248, 81, 73, 0.1);
+  border-color: rgba(248, 81, 73, 0.3);
+  color: var(--danger);
+}
+
+.batch-btn-danger:hover {
+  background: var(--danger);
+  color: #ffffff;
+  border-color: var(--danger);
+}
+
+.flat-row-chk,
+#flat-select-all-chk {
+  cursor: pointer;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  vertical-align: middle;
+}
+
+.file-table tr.selected-row {
+  background: var(--accent-bg) !important;
+}
+
+
 
 
 

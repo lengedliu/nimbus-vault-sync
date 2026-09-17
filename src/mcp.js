@@ -2,6 +2,7 @@ const { z } = require('zod');
 const dns = require('node:dns').promises;
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const storage = require('./storage');
+const ftsEngine = require('./ftsEngine');
 const vaultsStore = require('./vaults');
 const permissions = require('./permissions');
 const sharesStore = require('./shares');
@@ -849,6 +850,23 @@ function buildMcpServer(user, defaultVaultId) {
     async ({ vaultId, query, folder, limit = 20, useRegex = false, caseSensitive = false }) => {
       const id = resolveVaultId(vaultId);
       const manifest = storage.getManifest(id) || {};
+
+      if (!useRegex && !caseSensitive) {
+        const cleanFolder = folder ? folder.replace(/^\/+|\/+$/g, '') + '/' : null;
+        const readContentFn = (relPath) => {
+          const meta = manifest[relPath];
+          return storage.getTextContent(id, relPath, meta);
+        };
+        const ftsResults = ftsEngine.searchVault(id, query, { limit, folder: cleanFolder, readContentFn });
+        if (ftsResults && ftsResults.length > 0) {
+          const formatted = ftsResults
+            .filter((r) => r.snippet || r.isPathMatch)
+            .map((r) => `📄 ${r.path}:${r.lineNumber || 1}\n   ${r.snippet || '(Path match)'}`)
+            .join('\n\n');
+          return textResult(`Found ${ftsResults.length} match(es) via FTS index:\n\n${formatted}`);
+        }
+      }
+
       let notePaths = Object.keys(manifest).filter((p) => p.endsWith('.md') || /\.(html|htm|txt)$/i.test(p));
 
       if (folder) {

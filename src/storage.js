@@ -4,6 +4,8 @@ const crypto = require('crypto');
 const archiverPkg = require('archiver');
 const { vaultFilesRoot, vaultRoot } = require('./vaults');
 const gitSync = require('./gitSync');
+const deltaSync = require('./deltaSync');
+const ftsEngine = require('./ftsEngine');
 
 function createArchiver(format, options = {}) {
   if (typeof archiverPkg === 'function') {
@@ -51,6 +53,17 @@ function sha256(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
+/** Calculate SHA-256 asynchronously, streaming large files (>512KB) to avoid memory spikes and event-loop stalls. */
+async function sha256FileAsync(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', (err) => reject(err));
+  });
+}
+
 function randomId() {
   return crypto.randomBytes(8).toString('hex');
 }
@@ -85,6 +98,10 @@ function loadCache(vaultId) {
   }
 }
 
+function yieldToEventLoop() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 // In-memory manifest cache: vaultId -> { manifest, lastScanned }
 const inMemoryManifestCache = new Map();
 
@@ -104,6 +121,16 @@ function updateManifestEntry(vaultId, relPath, meta) {
   }
 }
 
+/** O(1) single-entry manifest lookup avoiding full manifest object cloning. */
+function getManifestEntry(vaultId, relPath) {
+  const cachedMem = inMemoryManifestCache.get(vaultId);
+  if (cachedMem && cachedMem.manifest) {
+    return cachedMem.manifest[relPath] || null;
+  }
+  const manifest = getManifest(vaultId);
+  return manifest ? (manifest[relPath] || null) : null;
+}
+
 function saveCache(vaultId, cache) {
   const p = manifestCachePath(vaultId);
   const tmp = p + '.tmp.' + Date.now();
@@ -113,6 +140,38 @@ function saveCache(vaultId, cache) {
   } catch {
     try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
   }
+}
+
+async function saveCacheAsync(vaultId, cache) {
+  const p = manifestCachePath(vaultId);
+  const tmp = p + '.tmp.' + Date.now();
+  try {
+    await fs.promises.writeFile(tmp, JSON.stringify(cache));
+    await fs.promises.rename(tmp, p);
+  } catch {
+    try { if (fs.existsSync(tmp)) await fs.promises.unlink(tmp); } catch {}
+  }
+}
+
+/** Recursively list all files under a vault's files/ dir asynchronously without blocking the event loop. */
+async function walkAsync(dir, base, out = []) {
+  if (!fs.existsSync(dir)) return out;
+  try {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && entry.name === '.git') continue;
+      const full = path.join(dir, entry.name);
+      const rel = path.relative(base, full).split(path.sep).join('/');
+      if (entry.isDirectory()) {
+        await walkAsync(full, base, out);
+      } else if (entry.isFile()) {
+        out.push(rel);
+      }
+    }
+  } catch {
+    // Directory could be deleted or unreadable
+  }
+  return out;
 }
 
 /** Recursively list all files under a vault's files/ dir. */
@@ -131,6 +190,69 @@ function walk(dir, base, out = []) {
     }
   }
   return out;
+}
+
+/**
+ * Build a manifest asynchronously: { path: { size, mtimeMs, hash } }.
+ * Uses chunked concurrency and streaming hash for large files.
+ * Yields to the Node.js event loop after each batch to prevent blocking during large directory scans.
+ */
+async function getManifestAsync(vaultId, forceRefresh = false) {
+  const cachedMem = inMemoryManifestCache.get(vaultId);
+  if (!forceRefresh && cachedMem && cachedMem.manifest) {
+    return cachedMem.manifest;
+  }
+
+  const root = vaultFilesRoot(vaultId);
+  let cache = {};
+  const cacheP = manifestCachePath(vaultId);
+  if (fs.existsSync(cacheP)) {
+    try {
+      const data = await fs.promises.readFile(cacheP, 'utf8');
+      cache = JSON.parse(data);
+    } catch {
+      cache = {};
+    }
+  }
+
+  const relPaths = await walkAsync(root, root);
+  const nextCache = {};
+  const manifest = {};
+  const BATCH_SIZE = 32;
+
+  for (let i = 0; i < relPaths.length; i += BATCH_SIZE) {
+    const chunk = relPaths.slice(i, i + BATCH_SIZE);
+    await Promise.all(
+      chunk.map(async (rel) => {
+        const full = path.join(root, rel);
+        try {
+          const stat = await fs.promises.stat(full);
+          const cached = cache[rel];
+          let hash;
+          if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs && cached.hash) {
+            hash = cached.hash;
+          } else if (stat.size > 512 * 1024) {
+            hash = await sha256FileAsync(full);
+          } else {
+            const buf = await fs.promises.readFile(full);
+            hash = sha256(buf);
+          }
+          const ctime = (stat.birthtimeMs && stat.birthtimeMs > 0) ? stat.birthtimeMs : (stat.ctimeMs || stat.mtimeMs);
+          nextCache[rel] = { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: ctime, hash };
+          manifest[rel] = { size: stat.size, mtime: stat.mtimeMs, ctime, hash };
+        } catch {
+          // File could be deleted or locked concurrently
+        }
+      })
+    );
+
+    // Yield control back to the event loop so incoming HTTP/WebSocket connections are not blocked
+    await yieldToEventLoop();
+  }
+
+  saveCacheAsync(vaultId, nextCache).catch(() => {});
+  inMemoryManifestCache.set(vaultId, { manifest, lastScanned: Date.now() });
+  return manifest;
 }
 
 /** Build a manifest: { path: { size, mtimeMs, hash } }, cached in memory and on disk. */
@@ -384,6 +506,10 @@ function restoreFromTrash(vaultId, trashId) {
   const now = Date.now();
   updateManifestEntry(vaultId, entry.path, { size: buffer.length, mtime: now, ctime: now, hash });
   invalidateContentCacheEntry(vaultId, entry.path);
+  deltaSync.recordChange(vaultId, { path: entry.path, action: 'UPSERT', size: buffer.length, mtime: now, hash }).catch(() => {});
+  try {
+    ftsEngine.onFileWrite(vaultId, entry.path, buffer.toString('utf8'), { size: buffer.length, mtime: now, hash });
+  } catch {}
   try {
     gitSync.notifyChange(vaultId);
   } catch {}
@@ -472,6 +598,10 @@ function writeFile(vaultId, relPath, buffer, { mtime, baseHash } = {}) {
   const mtimeVal = mtime || Date.now();
   updateManifestEntry(vaultId, relPath, { size: buffer.length, mtime: mtimeVal, ctime: mtimeVal, hash });
   invalidateContentCacheEntry(vaultId, relPath);
+  deltaSync.recordChange(vaultId, { path: relPath, action: 'UPSERT', size: buffer.length, mtime: mtimeVal, hash }).catch(() => {});
+  try {
+    ftsEngine.onFileWrite(vaultId, relPath, buffer.toString('utf8'), { size: buffer.length, mtime: mtimeVal, hash });
+  } catch {}
   try {
     gitSync.notifyChange(vaultId);
   } catch {}
@@ -524,6 +654,13 @@ function writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, { mtime
   const mtimeVal = mtime || Date.now();
   updateManifestEntry(vaultId, relPath, { size: stat.size, mtime: mtimeVal, ctime: mtimeVal, hash: incomingHash });
   invalidateContentCacheEntry(vaultId, relPath);
+  deltaSync.recordChange(vaultId, { path: relPath, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash: incomingHash }).catch(() => {});
+  try {
+    if (stat.size <= 2 * 1024 * 1024) {
+      const buf = fs.readFileSync(full);
+      ftsEngine.onFileWrite(vaultId, relPath, buf.toString('utf8'), { size: stat.size, mtime: mtimeVal, hash: incomingHash });
+    }
+  } catch {}
   try {
     gitSync.notifyChange(vaultId);
   } catch {}
@@ -547,6 +684,10 @@ function deleteFile(vaultId, relPath) {
   });
   updateManifestEntry(vaultId, relPath, null);
   invalidateContentCacheEntry(vaultId, relPath);
+  deltaSync.recordChange(vaultId, { path: relPath, action: 'DELETE', size: 0, mtime: Date.now() }).catch(() => {});
+  try {
+    ftsEngine.onFileDelete(vaultId, relPath);
+  } catch {}
   try {
     gitSync.notifyChange(vaultId);
   } catch {}
@@ -586,10 +727,6 @@ const SEARCHABLE_EXT_RE = /\.(md|txt|json|js|ts|css|html|yaml|yml|csv|canvas)$/i
 // 每处理这么多个文件就让出一次事件循环，避免大 vault 全文搜索长时间卡住整个进程
 const SEARCH_YIELD_BATCH_SIZE = 40;
 
-function yieldToEventLoop() {
-  return new Promise((resolve) => setImmediate(resolve));
-}
-
 /**
  * 读取一个文件的文本内容，命中缓存（size/mtime 都没变）就不用重新读盘。
  * 导出给 mcp.js 的 get_vault_stats / search_notes / list_tags 复用，
@@ -613,15 +750,33 @@ function getTextContent(vaultId, relPath, meta) {
 }
 
 /**
- * 搜索文件名与文本内容。
- * 现在是 async 的：一是可以复用内容缓存少读盘，二是每处理一批文件就
- * 主动让出一次事件循环，这样一次大范围搜索不会把其他用户的请求、
- * WebSocket 同步消息完全卡住，只是自己跑得稍微久一点。
+ * 毫秒级倒排索引 + BM25 排序检索
  */
 async function searchVault(vaultId, query, limit = 50) {
   if (!query || !query.trim()) return [];
-  const q = query.trim().toLowerCase();
+  const q = query.trim();
+
+  // 1. Trigger background index warm-up if not already loaded/indexed
   const manifest = getManifest(vaultId);
+  const idx = ftsEngine.getIndex(vaultId);
+  if (!idx.isLoaded || idx.docCount === 0) {
+    // Warm up index asynchronously
+    ftsEngine.buildVaultIndexAsync(vaultId, manifest, (p) => readFile(vaultId, p));
+  }
+
+  // 2. Perform fast FTS search using inverted index + BM25
+  const readContentFn = (relPath) => {
+    const meta = manifest[relPath];
+    return getTextContent(vaultId, relPath, meta);
+  };
+
+  const ftsResults = ftsEngine.searchVault(vaultId, q, { limit, readContentFn });
+  if (ftsResults && ftsResults.length > 0) {
+    return ftsResults;
+  }
+
+  // 3. Fallback: linear scan for files (e.g. while background index is building)
+  const qLower = q.toLowerCase();
   const paths = Object.keys(manifest).sort();
   const results = [];
 
@@ -629,7 +784,7 @@ async function searchVault(vaultId, query, limit = 50) {
   for (const relPath of paths) {
     const meta = manifest[relPath];
     const pathLower = relPath.toLowerCase();
-    const isPathMatch = pathLower.includes(q);
+    const isPathMatch = pathLower.includes(qLower);
 
     let snippet = '';
     let matchesCount = 0;
@@ -639,15 +794,15 @@ async function searchVault(vaultId, query, limit = 50) {
 
       if (text) {
         const lowerText = text.toLowerCase();
-        let idx = lowerText.indexOf(q);
-        while (idx !== -1 && matchesCount < 5) {
+        let idxPos = lowerText.indexOf(qLower);
+        while (idxPos !== -1 && matchesCount < 5) {
           matchesCount++;
           if (!snippet) {
-            const start = Math.max(0, idx - 40);
-            const end = Math.min(text.length, idx + q.length + 60);
+            const start = Math.max(0, idxPos - 40);
+            const end = Math.min(text.length, idxPos + qLower.length + 60);
             snippet = (start > 0 ? '…' : '') + text.slice(start, end).replace(/[\r\n]+/g, ' ') + (end < text.length ? '…' : '');
           }
-          idx = lowerText.indexOf(q, idx + q.length);
+          idxPos = lowerText.indexOf(qLower, idxPos + qLower.length);
         }
       }
     }
@@ -669,7 +824,6 @@ async function searchVault(vaultId, query, limit = 50) {
     }
   }
 
-  // 结果按相关度排序：路径匹配优先，其次按内容命中次数倒序
   results.sort((a, b) => {
     if (a.isPathMatch && !b.isPathMatch) return -1;
     if (!a.isPathMatch && b.isPathMatch) return 1;
@@ -723,6 +877,58 @@ function exportVaultZip(vaultId, outputStream) {
     archive.directory(root, false);
   }
   return archive.finalize();
+}
+
+/** Stream a ZIP archive of selected files in vault's files/ folder. */
+function exportFilesZip(vaultId, relPaths, outputStream) {
+  const archive = createArchiver('zip', { zlib: { level: 6 } });
+  archive.pipe(outputStream);
+  const root = vaultFilesRoot(vaultId);
+  const pathSet = new Set(Array.isArray(relPaths) ? relPaths : [relPaths]);
+  for (const rel of pathSet) {
+    if (!rel || typeof rel !== 'string') continue;
+    const full = safeJoin(root, rel);
+    if (fs.existsSync(full) && fs.statSync(full).isFile()) {
+      archive.file(full, { name: rel });
+    }
+  }
+  return archive.finalize();
+}
+
+/** Move or rename a file within a vault */
+function moveVaultFile(vaultId, oldRelPath, newRelPath) {
+  const root = vaultFilesRoot(vaultId);
+  const oldFull = safeJoin(root, oldRelPath);
+  const newFull = safeJoin(root, newRelPath);
+  if (!fs.existsSync(oldFull)) return { ok: false, error: '原文件不存在' };
+  if (fs.existsSync(newFull) && oldFull !== newFull) return { ok: false, error: '目标路径已存在同名文件' };
+  
+  fs.mkdirSync(path.dirname(newFull), { recursive: true });
+  fs.renameSync(oldFull, newFull);
+  
+  updateManifestEntry(vaultId, oldRelPath, null);
+  invalidateContentCacheEntry(vaultId, oldRelPath);
+  deltaSync.recordChange(vaultId, { path: oldRelPath, action: 'DELETE', size: 0, mtime: Date.now() }).catch(() => {});
+  try {
+    ftsEngine.onFileDelete(vaultId, oldRelPath);
+  } catch {}
+  
+  const stat = fs.statSync(newFull);
+  const hash = sha256(fs.readFileSync(newFull));
+  const mtimeVal = stat.mtimeMs || Date.now();
+  const ctimeVal = stat.birthtimeMs || stat.ctimeMs || mtimeVal;
+  updateManifestEntry(vaultId, newRelPath, { size: stat.size, mtime: mtimeVal, ctime: ctimeVal, hash });
+  invalidateContentCacheEntry(vaultId, newRelPath);
+  deltaSync.recordChange(vaultId, { path: newRelPath, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash }).catch(() => {});
+  try {
+    if (stat.size <= 2 * 1024 * 1024) {
+      const buf = fs.readFileSync(newFull);
+      ftsEngine.onFileWrite(vaultId, newRelPath, buf.toString('utf8'), { size: stat.size, mtime: mtimeVal, hash });
+    }
+  } catch {}
+  
+  try { gitSync.notifyChange(vaultId); } catch {}
+  return { ok: true };
 }
 
 /**
@@ -784,6 +990,9 @@ function cleanupOldHistoryVersions(vaultId, maxDays = 30, maxVersionsPerPath = 2
 
 module.exports = {
   getManifest,
+  getManifestAsync,
+  getManifestEntry,
+  walkAsync,
   invalidateManifestCache,
   readFile,
   readFileStream,
@@ -804,6 +1013,8 @@ module.exports = {
   searchVault,
   getVaultStats,
   exportVaultZip,
+  exportFilesZip,
+  moveVaultFile,
   cleanupAllStaleUploadTemps,
   getTextContent,
   yieldToEventLoop,

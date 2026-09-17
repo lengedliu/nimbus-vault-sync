@@ -35,8 +35,12 @@
     treeFoldersInitialized: false,
     flatListPage: 1,
     flatListPageSize: parseInt(localStorage.getItem('nimbus_flat_page_size') || '50', 10),
+    selectedFiles: new Set(),
     searchQuery: '',
     appVersion: '1.3.0',
+    vaultCursor: 0,
+    wsClient: null,
+    wsDebounceTimer: null,
   };
 
   function setAppVersion(ver) {
@@ -1960,6 +1964,139 @@
 
   // --------------------------- Vault Main Views -------------------------------
 
+  function scheduleDebouncedViewUpdate(vaultId) {
+    if (state.activeVaultId !== vaultId) return;
+    if (state.wsDebounceTimer) clearTimeout(state.wsDebounceTimer);
+    state.wsDebounceTimer = setTimeout(() => {
+      // Update file count badge in header
+      const countBadge = document.querySelector('.vault-title .badge');
+      if (countBadge && state.manifest) {
+        countBadge.textContent = `${Object.keys(state.manifest).length} 个文件`;
+      }
+      // If currently on files subtab, refresh file list view seamlessly
+      if (state.activeSubtab === 'files') {
+        const fileViewWrap = document.getElementById('vault-file-view-wrap');
+        if (fileViewWrap) {
+          renderFileList(vaultId, fileViewWrap);
+        }
+      }
+    }, 200);
+  }
+
+  async function syncVaultDelta(vaultId) {
+    if (!state.token || !vaultId || !state.manifest) return false;
+    try {
+      const since = state.vaultCursor || 0;
+      const res = await api(`/api/vaults/${vaultId}/changes?since=${since}&limit=500`);
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (data.full || data.fullSyncRequired) {
+        state.manifest = data.manifest;
+        state.vaultCursor = data.cursor || data.latestCursor || 0;
+        scheduleDebouncedViewUpdate(vaultId);
+        return true;
+      }
+      if (data.changesCount > 0) {
+        if (Array.isArray(data.updates)) {
+          for (const u of data.updates) {
+            state.manifest[u.path] = {
+              size: u.size || 0,
+              mtime: u.mtime || Date.now(),
+              ctime: u.mtime || Date.now(),
+              hash: u.hash || '',
+            };
+          }
+        }
+        if (Array.isArray(data.deletes)) {
+          for (const d of data.deletes) {
+            delete state.manifest[d.path];
+          }
+        }
+        state.vaultCursor = data.cursor || state.vaultCursor;
+        scheduleDebouncedViewUpdate(vaultId);
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  function connectVaultWs(vaultId) {
+    if (state.wsClient) {
+      try {
+        state.wsClient.onclose = null;
+        state.wsClient.onerror = null;
+        state.wsClient.close();
+      } catch {}
+      state.wsClient = null;
+    }
+    if (!state.token || !vaultId) return;
+
+    try {
+      const loc = window.location;
+      const wsProto = loc.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsHost = state.serverBase ? state.serverBase.replace(/^https?:\/\//i, '').replace(/\/$/, '') : loc.host;
+      const wsUrl = `${wsProto}//${wsHost}/ws?vaultId=${encodeURIComponent(vaultId)}&token=${encodeURIComponent(state.token)}&deviceName=Web+Client`;
+      const ws = new WebSocket(wsUrl);
+      state.wsClient = ws;
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.cursor) {
+            state.vaultCursor = Math.max(state.vaultCursor || 0, msg.cursor);
+          }
+          if (msg.type === 'init' && msg.manifest) {
+            state.manifest = msg.manifest;
+            if (msg.cursor) state.vaultCursor = msg.cursor;
+            scheduleDebouncedViewUpdate(vaultId);
+          } else if (msg.type === 'change') {
+            if (!state.manifest) state.manifest = {};
+            state.manifest[msg.path] = {
+              size: msg.size || 0,
+              mtime: msg.mtime || Date.now(),
+              ctime: msg.ctime || Date.now(),
+              hash: msg.hash || '',
+            };
+            scheduleDebouncedViewUpdate(vaultId);
+          } else if (msg.type === 'deleted') {
+            if (state.manifest && state.manifest[msg.path]) {
+              delete state.manifest[msg.path];
+              scheduleDebouncedViewUpdate(vaultId);
+            }
+          } else if (msg.type === 'batch_file_change' && Array.isArray(msg.changes)) {
+            if (!state.manifest) state.manifest = {};
+            for (const c of msg.changes) {
+              if (c.action === 'delete') {
+                delete state.manifest[c.path];
+              } else {
+                state.manifest[c.path] = {
+                  size: c.size || 0,
+                  mtime: c.mtime || Date.now(),
+                  ctime: c.ctime || Date.now(),
+                  hash: c.hash || '',
+                };
+              }
+            }
+            scheduleDebouncedViewUpdate(vaultId);
+          }
+        } catch {}
+      };
+
+      ws.onerror = () => {};
+      ws.onclose = () => {
+        if (state.activeVaultId === vaultId) {
+          // Reconnect with backoff and try delta sync
+          setTimeout(() => {
+            if (state.activeVaultId === vaultId) {
+              syncVaultDelta(vaultId);
+              connectVaultWs(vaultId);
+            }
+          }, 5000);
+        }
+      };
+    } catch {}
+  }
+
   async function openVault(vaultId, subtab = 'files') {
     if (state.activeVaultId !== vaultId) {
       state.treeFoldersInitialized = false;
@@ -1974,7 +2111,9 @@
     const res = await api(`/api/vaults/${vaultId}/manifest`);
     const body = await res.json();
     state.manifest = body.manifest;
+    state.vaultCursor = body.cursor || body.latestCursor || 0;
 
+    connectVaultWs(vaultId);
     renderVaultContainer(vaultId);
   }
 
@@ -2076,6 +2215,13 @@
     // Toolbar
     const toolbar = document.createElement('div');
     toolbar.className = 'vault-toolbar';
+    const allPaths = Object.keys(state.manifest || {});
+    const mdCount = allPaths.filter((p) => p.toLowerCase().endsWith('.md')).length;
+    const htmlCount = allPaths.filter((p) => /\.(html|htm)$/i.test(p)).length;
+    const mediaCount = allPaths.filter((p) => /\.(png|jpg|jpeg|gif|webp|svg|pdf|mp3|mp4|mov|wav|zip)$/i.test(p)).length;
+    const codeCount = allPaths.filter((p) => /\.(json|js|ts|css|py|sh|yml|yaml|csv|sql|xml|txt)$/i.test(p) && !p.startsWith('.obsidian/')).length;
+    const configCount = allPaths.filter((p) => p.startsWith('.obsidian/')).length;
+
     toolbar.innerHTML = `
       <div class="search-box">
         <span class="search-icon">🔍</span>
@@ -2083,11 +2229,12 @@
       </div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <div class="filter-pills">
-          <span class="filter-pill ${state.fileFilter === 'all' ? 'active' : ''}" data-filter="all">全部 (${paths.length})</span>
-          <span class="filter-pill ${state.fileFilter === 'md' ? 'active' : ''}" data-filter="md">Markdown</span>
-          <span class="filter-pill ${state.fileFilter === 'html' ? 'active' : ''}" data-filter="html">HTML 网页</span>
-          <span class="filter-pill ${state.fileFilter === 'media' ? 'active' : ''}" data-filter="media">媒体/附件</span>
-          <span class="filter-pill ${state.fileFilter === 'config' ? 'active' : ''}" data-filter="config">配置 (.obsidian)</span>
+          <span class="filter-pill ${state.fileFilter === 'all' ? 'active' : ''}" data-filter="all">全部 (${allPaths.length})</span>
+          <span class="filter-pill ${state.fileFilter === 'md' ? 'active' : ''}" data-filter="md">Markdown (${mdCount})</span>
+          <span class="filter-pill ${state.fileFilter === 'html' ? 'active' : ''}" data-filter="html">HTML (${htmlCount})</span>
+          <span class="filter-pill ${state.fileFilter === 'media' ? 'active' : ''}" data-filter="media">媒体/附件 (${mediaCount})</span>
+          <span class="filter-pill ${state.fileFilter === 'code' ? 'active' : ''}" data-filter="code">代码/数据 (${codeCount})</span>
+          <span class="filter-pill ${state.fileFilter === 'config' ? 'active' : ''}" data-filter="config">配置 (${configCount})</span>
         </div>
         <div class="view-mode-group">
           <button class="view-mode-btn ${state.fileViewMode === 'tree' ? 'active' : ''}" data-mode="tree" title="按库的原始树状目录结构层级显示">
@@ -2243,6 +2390,8 @@
       paths = paths.filter((p) => /\.(html|htm)$/i.test(p));
     } else if (state.fileFilter === 'media') {
       paths = paths.filter((p) => /\.(png|jpg|jpeg|gif|webp|svg|pdf|mp3|mp4|mov|wav|zip)$/i.test(p));
+    } else if (state.fileFilter === 'code') {
+      paths = paths.filter((p) => /\.(json|js|ts|css|py|sh|yml|yaml|csv|sql|xml|txt)$/i.test(p) && !p.startsWith('.obsidian/'));
     } else if (state.fileFilter === 'config') {
       paths = paths.filter((p) => p.startsWith('.obsidian/'));
     }
@@ -2536,6 +2685,16 @@
         actionsCol.appendChild(shareBtn);
       }
 
+      const moveBtn = document.createElement('button');
+      moveBtn.className = 'secondary';
+      moveBtn.textContent = '📁 移动';
+      moveBtn.title = '移动或重命名文件';
+      moveBtn.onclick = (e) => {
+        e.stopPropagation();
+        showMoveFileModal(vaultId, p);
+      };
+      actionsCol.appendChild(moveBtn);
+
       const histBtn = document.createElement('button');
       histBtn.className = 'secondary';
       histBtn.textContent = '⏱️ 历史';
@@ -2716,7 +2875,7 @@
     toolbar.className = 'flat-list-toolbar';
     toolbar.innerHTML = `
       <div>
-        <span>📋 <strong>平铺文件列表</strong> · 共 ${total} 个文件 · 当前显示第 ${startIndex + 1} - ${endIndex} 项</span>
+        <span>📋 <strong>平铺文件列表</strong> · 共 ${total} 个文件 · 当前显示第 ${total === 0 ? 0 : startIndex + 1} - ${endIndex} 项</span>
       </div>
       <div class="flat-list-toolbar-controls">
         <label class="tree-sort-label">
@@ -2742,6 +2901,77 @@
     `;
     wrapper.appendChild(toolbar);
 
+    // Batch Actions Bar (shown when files are selected)
+    if (state.selectedFiles && state.selectedFiles.size > 0) {
+      const batchBar = document.createElement('div');
+      batchBar.className = 'batch-actions-bar';
+      batchBar.innerHTML = `
+        <div class="batch-bar-left">
+          <span class="batch-badge">已选中 <b>${state.selectedFiles.size}</b> 项</span>
+          <button class="batch-btn batch-btn-secondary" id="batch-select-all-paths-btn">全选所有 (${total})</button>
+          <button class="batch-btn batch-btn-ghost" id="batch-clear-selection-btn">✕ 取消全选</button>
+        </div>
+        <div class="batch-bar-right">
+          <button class="batch-btn" id="batch-zip-btn">📦 打包下载 (ZIP)</button>
+          <button class="batch-btn" id="batch-move-btn">📁 批量移动</button>
+          <button class="batch-btn batch-btn-danger" id="batch-del-btn">🗑️ 批量删除</button>
+        </div>
+      `;
+      wrapper.appendChild(batchBar);
+
+      batchBar.querySelector('#batch-select-all-paths-btn').onclick = () => {
+        sortedPaths.forEach((p) => state.selectedFiles.add(p));
+        renderFlatFileList(vaultId, listWrapper, paths, manifest);
+      };
+
+      batchBar.querySelector('#batch-clear-selection-btn').onclick = () => {
+        state.selectedFiles.clear();
+        renderFlatFileList(vaultId, listWrapper, paths, manifest);
+      };
+
+      batchBar.querySelector('#batch-zip-btn').onclick = () => {
+        const fileList = Array.from(state.selectedFiles);
+        if (fileList.length === 0) return;
+        const q = encodeURIComponent(JSON.stringify(fileList));
+        window.open(`${state.serverBase.replace(/\/$/, '')}/api/vaults/${vaultId}/batch/download?paths=${q}&token=${encodeURIComponent(state.token)}`, '_blank');
+      };
+
+      batchBar.querySelector('#batch-move-btn').onclick = () => {
+        const fileList = Array.from(state.selectedFiles);
+        if (fileList.length === 0) return;
+        showBatchMoveModal(vaultId, fileList);
+      };
+
+      batchBar.querySelector('#batch-del-btn').onclick = async () => {
+        const fileList = Array.from(state.selectedFiles);
+        if (fileList.length === 0) return;
+        const ok = await showConfirm({
+          title: '批量移入回收站确认',
+          message: `确定要将选中的 ${fileList.length} 个文件移入回收站吗？可在回收站中随时恢复。`,
+          confirmText: '全部移至回收站',
+          type: 'danger',
+          icon: '🗑️',
+        });
+        if (!ok) return;
+        try {
+          const res = await api(`/api/vaults/${vaultId}/batch/delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paths: fileList }),
+          });
+          const data = await res.json();
+          toast(`已成功将 ${data.count || fileList.length} 个文件移至回收站`);
+          state.selectedFiles.clear();
+          const manRes = await api(`/api/vaults/${vaultId}/manifest`);
+          const manData = await manRes.json();
+          state.manifest = manData.manifest;
+          openVault(vaultId, 'files');
+        } catch (err) {
+          toast('批量删除失败: ' + err.message, 'error');
+        }
+      };
+    }
+
     // Bind toolbar events
     const sortSelect = toolbar.querySelector('#flat-sort-select');
     if (sortSelect) {
@@ -2762,6 +2992,8 @@
       };
     }
 
+    const isAllPageSelected = pageItems.length > 0 && pageItems.every((p) => state.selectedFiles.has(p));
+
     // Table
     const table = document.createElement('table');
     table.className = 'file-table';
@@ -2770,15 +3002,29 @@
     table.innerHTML = `
       <thead>
         <tr>
+          <th style="width:36px;text-align:center;"><input type="checkbox" id="flat-select-all-chk" ${isAllPageSelected ? 'checked' : ''} title="全选/取消全选本页" /></th>
           <th>文件路径</th>
           <th style="width:100px">大小</th>
           <th style="width:160px">创建时间</th>
           <th style="width:160px">修改时间</th>
-          <th style="width:200px;text-align:right">操作</th>
+          <th style="width:230px;text-align:right">操作</th>
         </tr>
       </thead>
       <tbody></tbody>
     `;
+
+    const selectAllChk = table.querySelector('#flat-select-all-chk');
+    if (selectAllChk) {
+      selectAllChk.onclick = (e) => {
+        const checked = e.target.checked;
+        pageItems.forEach((p) => {
+          if (checked) state.selectedFiles.add(p);
+          else state.selectedFiles.delete(p);
+        });
+        renderFlatFileList(vaultId, listWrapper, paths, manifest);
+      };
+    }
+
     const tbody = table.querySelector('tbody');
 
     for (const p of pageItems) {
@@ -2794,8 +3040,14 @@
       const ctimeStr = new Date(ctimeVal).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
       const mtimeStr = new Date(mtimeVal).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 
+      const isSelected = state.selectedFiles.has(p);
       const tr = document.createElement('tr');
+      if (isSelected) tr.classList.add('selected-row');
+
       tr.innerHTML = `
+        <td style="text-align:center;" class="chk-cell">
+          <input type="checkbox" class="flat-row-chk" data-path="${escapeHtml(p)}" ${isSelected ? 'checked' : ''} />
+        </td>
         <td><div class="file-name"><span>${icon}</span> <span>${escapeHtml(p)}</span></div></td>
         <td class="meta">${formatBytes(meta.size)}</td>
         <td class="meta">${ctimeStr}</td>
@@ -2803,8 +3055,19 @@
         <td class="actions"></td>
       `;
 
+      const rowChk = tr.querySelector('.flat-row-chk');
+      rowChk.onclick = (e) => {
+        e.stopPropagation();
+        if (rowChk.checked) {
+          state.selectedFiles.add(p);
+        } else {
+          state.selectedFiles.delete(p);
+        }
+        renderFlatFileList(vaultId, listWrapper, paths, manifest);
+      };
+
       tr.onclick = (e) => {
-        if (e.target.closest('button')) return;
+        if (e.target.closest('button') || e.target.closest('input')) return;
         openFile(vaultId, p);
       };
 
@@ -2820,6 +3083,16 @@
         };
         actionsCell.appendChild(shareBtn);
       }
+
+      const moveBtn = document.createElement('button');
+      moveBtn.className = 'secondary';
+      moveBtn.textContent = '📁 移动';
+      moveBtn.title = '移动或重命名文件';
+      moveBtn.onclick = (e) => {
+        e.stopPropagation();
+        showMoveFileModal(vaultId, p);
+      };
+      actionsCell.appendChild(moveBtn);
 
       const histBtn = document.createElement('button');
       histBtn.className = 'secondary';
@@ -2846,6 +3119,7 @@
         if (!ok) return;
         await api(`/api/vaults/${vaultId}/files/${encodeURIComponentPath(p)}`, { method: 'DELETE' });
         toast('已移至回收站');
+        state.selectedFiles.delete(p);
         openVault(vaultId, 'files');
       };
       actionsCell.appendChild(delBtn);
@@ -5215,6 +5489,200 @@
       </div>
     `;
     showModal(html);
+  }
+
+  function getVaultFolderList(manifest) {
+    const folders = new Set();
+    folders.add(''); // Root
+    for (const p of Object.keys(manifest || {})) {
+      const parts = p.split('/');
+      parts.pop(); // remove filename
+      let current = '';
+      for (const part of parts) {
+        current = current ? `${current}/${part}` : part;
+        folders.add(current);
+      }
+    }
+    return Array.from(folders).sort();
+  }
+
+  function showMoveFileModal(vaultId, currentPath) {
+    const parts = currentPath.split('/');
+    const fileName = parts.pop();
+    const currentFolder = parts.join('/');
+    const folders = getVaultFolderList(state.manifest);
+
+    let folderOptions = '';
+    for (const f of folders) {
+      const label = f === '' ? '📁 [根目录] /' : `📁 /${f}`;
+      folderOptions += `<option value="${escapeHtml(f)}" ${f === currentFolder ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+    }
+
+    const html = `
+      <div class="modal-header">
+        <h3>📁 移动或重命名文件</h3>
+        <button class="modal-close ghost">✕</button>
+      </div>
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:14px;">
+        <div>
+          <label style="display:block;font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-secondary);">当前路径</label>
+          <div style="font-family:monospace;font-size:13px;padding:8px 12px;background:var(--panel-2);border:1px solid var(--border);border-radius:6px;word-break:break-all;">${escapeHtml(currentPath)}</div>
+        </div>
+        <div>
+          <label style="display:block;font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text);">目标目录 (可选择或输入新目录)</label>
+          <div style="display:flex;gap:8px;">
+            <select id="move-folder-select" style="flex:1;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--panel-2);color:var(--text);font-size:13px;">
+              ${folderOptions}
+              <option value="__CUSTOM__">➕ 输入其他新目录路径...</option>
+            </select>
+          </div>
+          <input type="text" id="move-custom-folder-input" placeholder="例如: projects/2026/notes" style="display:none;margin-top:8px;width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--panel-2);color:var(--text);font-size:13px;" />
+        </div>
+        <div>
+          <label style="display:block;font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text);">文件名</label>
+          <input type="text" id="move-filename-input" value="${escapeHtml(fileName)}" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--panel-2);color:var(--text);font-size:13px;" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="modal-close secondary">取消</button>
+        <button class="btn-primary" id="confirm-move-btn">确认移动</button>
+      </div>
+    `;
+
+    showModal(html, (dialog) => {
+      const folderSelect = dialog.querySelector('#move-folder-select');
+      const customInput = dialog.querySelector('#move-custom-folder-input');
+      const filenameInput = dialog.querySelector('#move-filename-input');
+      const confirmBtn = dialog.querySelector('#confirm-move-btn');
+
+      folderSelect.onchange = () => {
+        if (folderSelect.value === '__CUSTOM__') {
+          customInput.style.display = 'block';
+          customInput.focus();
+        } else {
+          customInput.style.display = 'none';
+        }
+      };
+
+      confirmBtn.onclick = async () => {
+        const newName = filenameInput.value.trim();
+        if (!newName) {
+          toast('请输入有效的文件名', 'error');
+          return;
+        }
+        let targetDir = folderSelect.value === '__CUSTOM__' ? customInput.value.trim() : folderSelect.value;
+        targetDir = targetDir.replace(/^\/+|\/+$/g, '');
+        const newFullPath = targetDir ? `${targetDir}/${newName}` : newName;
+
+        if (newFullPath === currentPath) {
+          closeModal();
+          return;
+        }
+
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = '移动中...';
+        try {
+          const res = await api(`/api/vaults/${vaultId}/batch/move`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paths: [currentPath], targetFolder: targetDir }),
+          });
+          const data = await res.json();
+          if (data.results && data.results[0] && !data.results[0].success) {
+            throw new Error(data.results[0].error || '移动失败');
+          }
+          toast(`文件已成功移动至 /${newFullPath}`);
+          closeModal();
+          const manRes = await api(`/api/vaults/${vaultId}/manifest`);
+          const manData = await manRes.json();
+          state.manifest = manData.manifest;
+          openVault(vaultId, 'files');
+        } catch (err) {
+          toast('移动失败: ' + err.message, 'error');
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = '确认移动';
+        }
+      };
+    });
+  }
+
+  function showBatchMoveModal(vaultId, paths) {
+    if (!paths || paths.length === 0) return;
+    const folders = getVaultFolderList(state.manifest);
+    let folderOptions = '';
+    for (const f of folders) {
+      const label = f === '' ? '📁 [根目录] /' : `📁 /${f}`;
+      folderOptions += `<option value="${escapeHtml(f)}">${escapeHtml(label)}</option>`;
+    }
+
+    const html = `
+      <div class="modal-header">
+        <h3>📁 批量移动文件 (${paths.length} 项)</h3>
+        <button class="modal-close ghost">✕</button>
+      </div>
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:14px;">
+        <div style="font-size:13px;color:var(--text-secondary);">
+          即将把选中的 <b>${paths.length}</b> 个文件统一移动到指定目录：
+        </div>
+        <div style="max-height:120px;overflow-y:auto;padding:8px 12px;background:var(--panel-2);border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:monospace;display:flex;flex-direction:column;gap:4px;">
+          ${paths.map((p) => `<div>📄 ${escapeHtml(p)}</div>`).join('')}
+        </div>
+        <div>
+          <label style="display:block;font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text);">目标目录 (可选择或输入新目录)</label>
+          <select id="batch-move-folder-select" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--panel-2);color:var(--text);font-size:13px;">
+            ${folderOptions}
+            <option value="__CUSTOM__">➕ 输入其他新目录路径...</option>
+          </select>
+          <input type="text" id="batch-move-custom-input" placeholder="例如: archive/2026" style="display:none;margin-top:8px;width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--panel-2);color:var(--text);font-size:13px;" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="modal-close secondary">取消</button>
+        <button class="btn-primary" id="confirm-batch-move-btn">确认批量移动</button>
+      </div>
+    `;
+
+    showModal(html, (dialog) => {
+      const folderSelect = dialog.querySelector('#batch-move-folder-select');
+      const customInput = dialog.querySelector('#batch-move-custom-input');
+      const confirmBtn = dialog.querySelector('#confirm-batch-move-btn');
+
+      folderSelect.onchange = () => {
+        if (folderSelect.value === '__CUSTOM__') {
+          customInput.style.display = 'block';
+          customInput.focus();
+        } else {
+          customInput.style.display = 'none';
+        }
+      };
+
+      confirmBtn.onclick = async () => {
+        let targetDir = folderSelect.value === '__CUSTOM__' ? customInput.value.trim() : folderSelect.value;
+        targetDir = targetDir.replace(/^\/+|\/+$/g, '');
+
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = '移动中...';
+        try {
+          const res = await api(`/api/vaults/${vaultId}/batch/move`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paths, targetFolder: targetDir }),
+          });
+          const data = await res.json();
+          toast(`已成功批量移动 ${data.count || paths.length} 个文件至 /${targetDir || ''}`);
+          state.selectedFiles.clear();
+          closeModal();
+          const manRes = await api(`/api/vaults/${vaultId}/manifest`);
+          const manData = await manRes.json();
+          state.manifest = manData.manifest;
+          openVault(vaultId, 'files');
+        } catch (err) {
+          toast('批量移动失败: ' + err.message, 'error');
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = '确认批量移动';
+        }
+      };
+    });
   }
 
   // --------------------------- File Upload & New -----------------------------

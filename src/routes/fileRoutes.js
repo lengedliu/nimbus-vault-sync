@@ -213,4 +213,139 @@ router.delete('/:vaultId/files/*', (req, res) => {
   res.json({ deleted: ok });
 });
 
+// POST batch delete files into trash
+router.post('/:vaultId/batch/delete', express.json(), (req, res) => {
+  if (!requireWriteAccess(req, res)) return;
+  const { paths } = req.body;
+  if (!Array.isArray(paths) || paths.length === 0) {
+    return res.status(400).json({ error: '请提供要删除的文件路径列表' });
+  }
+
+  const { vaultId } = req.params;
+  const fnsHub = req.app.get('fnsHub');
+  const deviceName = req.headers['x-device-name'] || 'Web Client (Batch)';
+  const results = [];
+  const deletedChanges = [];
+  let successCount = 0;
+
+  for (const relPath of paths) {
+    if (!relPath || typeof relPath !== 'string') continue;
+    const ok = storage.deleteFile(vaultId, relPath);
+    if (ok) {
+      successCount++;
+      deletedChanges.push({ action: 'delete', path: relPath });
+      webhooks.trigger('file.deleted', {
+        vaultId,
+        path: relPath,
+        userId: req.user.id,
+        username: req.user.username,
+      }).catch(() => {});
+    }
+    results.push({ path: relPath, success: ok });
+  }
+
+  if (fnsHub && deletedChanges.length > 0) {
+    if (deletedChanges.length === 1) {
+      fnsHub.broadcastFileDelete(vaultId, deletedChanges[0].path, req.user.id);
+    } else {
+      fnsHub.broadcastBatchChanges(vaultId, deletedChanges, req.user.id);
+    }
+  }
+
+  syncLogger.recordLog({
+    vaultId,
+    userId: req.user.id,
+    username: req.user.username,
+    deviceName,
+    clientIp: req.ip || req.connection.remoteAddress,
+    action: 'delete',
+    path: `批量删除 (${successCount}/${paths.length} 项)`,
+    status: successCount > 0 ? 'success' : 'error',
+    detail: `批量移入回收站: ${successCount} 个文件成功`,
+  });
+
+  res.json({ success: true, count: successCount, results });
+});
+
+// POST batch move files to target folder
+router.post('/:vaultId/batch/move', express.json(), (req, res) => {
+  if (!requireWriteAccess(req, res)) return;
+  const { paths, targetFolder } = req.body;
+  if (!Array.isArray(paths) || paths.length === 0) {
+    return res.status(400).json({ error: '请提供要移动的文件列表' });
+  }
+
+  const { vaultId } = req.params;
+  const fnsHub = req.app.get('fnsHub');
+  const targetDir = (targetFolder || '').trim().replace(/^\/+|\/+$/g, '');
+  const results = [];
+  const batchChanges = [];
+  let successCount = 0;
+
+  for (const relPath of paths) {
+    if (!relPath || typeof relPath !== 'string') continue;
+    const filename = relPath.split('/').pop();
+    const newRelPath = targetDir ? `${targetDir}/${filename}` : filename;
+    if (newRelPath === relPath) {
+      results.push({ path: relPath, newPath: newRelPath, success: true, unchanged: true });
+      continue;
+    }
+
+    const moveRes = storage.moveVaultFile(vaultId, relPath, newRelPath);
+    if (moveRes.ok) {
+      successCount++;
+      batchChanges.push({ action: 'delete', path: relPath });
+      const newMeta = storage.getManifestEntry(vaultId, newRelPath);
+      batchChanges.push({ action: 'update', path: newRelPath, ...newMeta });
+    }
+    results.push({ path: relPath, newPath: newRelPath, success: moveRes.ok, error: moveRes.error });
+  }
+
+  if (fnsHub && batchChanges.length > 0) {
+    fnsHub.broadcastBatchChanges(vaultId, batchChanges, req.user.id);
+  }
+
+  syncLogger.recordLog({
+    vaultId,
+    userId: req.user.id,
+    username: req.user.username,
+    deviceName: req.headers['x-device-name'] || 'Web Client (Batch)',
+    clientIp: req.ip || req.connection.remoteAddress,
+    action: 'update',
+    path: `批量移动 (${successCount} 项 -> /${targetDir})`,
+    status: successCount > 0 ? 'success' : 'error',
+    detail: `批量移动至目录「/${targetDir}」: ${successCount} 个文件成功`,
+  });
+
+  res.json({ success: true, count: successCount, results });
+});
+
+// GET / POST batch download selected files as ZIP
+router.get('/:vaultId/batch/download', (req, res) => {
+  if (!requireReadAccess(req, res)) return;
+  const { vaultId } = req.params;
+  let paths = [];
+  try {
+    if (req.query.paths) {
+      paths = JSON.parse(req.query.paths);
+    }
+  } catch {
+    paths = (req.query.paths || '').split(',').map((p) => decodeURIComponent(p.trim())).filter(Boolean);
+  }
+
+  if (!Array.isArray(paths) || paths.length === 0) {
+    return res.status(400).json({ error: '请提供要下载的文件列表' });
+  }
+
+  const filename = `vault-selected-${paths.length}-files-${new Date().toISOString().slice(0, 10)}.zip`;
+  res.set({
+    'Content-Type': 'application/zip',
+    'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
+  });
+
+  storage.exportFilesZip(vaultId, paths, res).catch((err) => {
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  });
+});
+
 module.exports = router;
