@@ -1245,6 +1245,21 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
   flex: 1;
   overflow-y: auto;
   padding: 16px 12px 12px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(140, 149, 159, 0.25) transparent;
+}
+.sidebar-body::-webkit-scrollbar {
+  width: 4px;
+}
+.sidebar-body::-webkit-scrollbar-thumb {
+  background: rgba(140, 149, 159, 0.25);
+  border-radius: 4px;
+}
+.sidebar-body::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+.sidebar-body::-webkit-scrollbar-track {
+  background: transparent;
 }
 .sidebar-footer {
   padding: 10px 14px;
@@ -1301,6 +1316,44 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
   color: var(--muted);
   font-weight: 600;
   padding: 0 6px 6px;
+}
+.nav-section-header.collapsible {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 20px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.nav-section-header.collapsible:hover {
+  background: var(--panel-2);
+}
+.nav-section-header.collapsible .nav-section-title {
+  padding: 0;
+  margin: 0;
+  pointer-events: none;
+}
+.nav-section-header.collapsible:hover .nav-section-title {
+  color: var(--text);
+}
+.nav-section-toggle-icon {
+  font-size: 11px;
+  color: var(--muted);
+  transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1), color 0.15s ease;
+  line-height: 1;
+  display: inline-block;
+}
+.nav-section-header.collapsible:hover .nav-section-toggle-icon {
+  color: var(--text);
+}
+.nav-section-header.collapsible.collapsed .nav-section-toggle-icon {
+  transform: rotate(-90deg);
+}
+.nav-menu.collapsed {
+  display: none !important;
 }
 .vault-list, .nav-menu {
   list-style: none;
@@ -2253,12 +2306,13 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
 
 /* ----------------- Drag and Drop Zone ----------------- */
 .drop-zone {
-  border: 2px dashed var(--border);
+  border: 1.5px dashed var(--border);
   border-radius: var(--radius);
-  padding: 30px;
+  padding: 12px 20px;
   text-align: center;
   color: var(--muted);
-  margin-bottom: 16px;
+  font-size: 13px;
+  margin-bottom: 12px;
   transition: all 0.2s;
 }
 .drop-zone.dragover {
@@ -3109,8 +3163,8 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
   position: relative;
   overflow-y: auto;
   overflow-x: hidden;
-  height: calc(100vh - 340px);
-  min-height: 360px;
+  height: calc(100vh - 430px);
+  min-height: 120px;
   background: var(--panel);
   scrollbar-width: none; /* Firefox */
   -ms-overflow-style: none; /* IE / Edge */

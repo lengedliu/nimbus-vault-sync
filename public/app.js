@@ -1218,8 +1218,46 @@
     }
 
     setupGlobalSearch();
+    setupCollapsibleSections();
 
     await loadVaults();
+  }
+
+  function setupCollapsibleSections() {
+    function setupToggle(headerId, targetMenuId, storageKey, defaultCollapsed = false) {
+      const header = document.getElementById(headerId);
+      const menu = document.getElementById(targetMenuId);
+      if (!header || !menu) return;
+
+      const isCollapsed = localStorage.getItem(storageKey) !== null
+        ? localStorage.getItem(storageKey) === 'true'
+        : defaultCollapsed;
+
+      if (isCollapsed) {
+        header.classList.add('collapsed');
+        menu.classList.add('collapsed');
+      } else {
+        header.classList.remove('collapsed');
+        menu.classList.remove('collapsed');
+      }
+
+      header.onclick = (e) => {
+        e.preventDefault();
+        const collapsed = header.classList.toggle('collapsed');
+        menu.classList.toggle('collapsed', collapsed);
+        localStorage.setItem(storageKey, collapsed ? 'true' : 'false');
+      };
+
+      header.onkeydown = (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          header.click();
+        }
+      };
+    }
+
+    setupToggle('section-tools-header', 'tools-nav-menu', 'nimbus_sidebar_collapsed_tools', false);
+    setupToggle('section-admin-header', 'admin-nav-menu', 'nimbus_sidebar_collapsed_admin', false);
   }
 
   // --------------------------- Vault List ------------------------------------
@@ -1299,6 +1337,19 @@
     state.activeVaultId = null;
     state.activeTab = tab;
     document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+
+    // Auto-expand admin section if an admin-specific tab is activated
+    const adminSpecificTabs = ['database', 'webhooks', 'synclogs', 'users', 'all-vaults'];
+    if (adminSpecificTabs.includes(tab)) {
+      const adminHeader = document.getElementById('section-admin-header');
+      const adminMenu = document.getElementById('admin-nav-menu');
+      if (adminHeader && adminHeader.classList.contains('collapsed')) {
+        adminHeader.classList.remove('collapsed');
+        if (adminMenu) adminMenu.classList.remove('collapsed');
+        localStorage.setItem('nimbus_sidebar_collapsed_admin', 'false');
+      }
+    }
+
     const globalSettingsBtn = $('#global-settings-btn');
     if (globalSettingsBtn) {
       globalSettingsBtn.classList.toggle('active', tab === 'settings');
@@ -1930,6 +1981,7 @@
   function renderVaultContainer(vaultId) {
     const vault = state.vaults.find((v) => v.id === vaultId) || { name: 'Vault', id: vaultId };
     mainPanel.innerHTML = '';
+    mainPanel.scrollTop = 0;
 
     const isReadOnly = vault.myPermission === 'read-only';
     const permBadgeText = vault.isOwner ? '所有者' : vault.myPermission === 'read-only' ? '只读' : '读写';
@@ -2554,7 +2606,8 @@
       const mainRect = mainPanel.getBoundingClientRect();
       const bodyRect = body.getBoundingClientRect();
       const topOffset = (bodyRect.top - mainRect.top) + mainPanel.scrollTop;
-      const available = Math.max(320, Math.floor(mainPanel.clientHeight - topOffset - 24));
+      // Main panel has 24px padding-bottom. Provide 32px safe margin to eliminate outer vertical scrollbar
+      const available = Math.max(120, Math.floor(mainPanel.clientHeight - topOffset - 32));
 
       if (body.style.height !== `${available}px`) {
         body.style.height = `${available}px`;
@@ -2608,6 +2661,7 @@
     updateTreeHeight();
     requestAnimationFrame(updateTreeHeight);
     setTimeout(updateTreeHeight, 60);
+    setTimeout(updateTreeHeight, 180);
 
     const onResize = () => {
       if (!body || !body.isConnected) {
@@ -2677,6 +2731,7 @@
         <label class="tree-sort-label">
           <span style="white-space:nowrap;flex-shrink:0;">每页:</span>
           <select class="pagination-page-size-select" id="flat-page-size-select" title="选择每页显示的文件数量">
+            <option value="10" ${pageSize === 10 ? 'selected' : ''}>10 条</option>
             <option value="25" ${pageSize === 25 ? 'selected' : ''}>25 条</option>
             <option value="50" ${pageSize === 50 ? 'selected' : ''}>50 条</option>
             <option value="100" ${pageSize === 100 ? 'selected' : ''}>100 条</option>

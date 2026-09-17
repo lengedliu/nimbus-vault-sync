@@ -190,8 +190,11 @@
         </div>
         <ul id="vault-list" class="vault-list"></ul>
 
-        <div class="nav-section-title" style="margin-top:24px" data-i18n="sidebar.quick_tools">快捷工具</div>
-        <ul class="nav-menu">
+        <div class="nav-section-header collapsible" id="section-tools-header" role="button" tabindex="0" title="点击展开/折叠快捷工具">
+          <span class="nav-section-title" data-i18n="sidebar.quick_tools">快捷工具</span>
+          <span class="nav-section-toggle-icon">▾</span>
+        </div>
+        <ul class="nav-menu" id="tools-nav-menu">
           <li><button class="nav-item tab-btn" id="global-settings-btn" data-tab="settings" data-i18n="sidebar.settings">⚙️ 设置</button></li>
           <li><button class="nav-item tab-btn" data-tab="devices" data-i18n="sidebar.devices">📱 接入设备管理</button></li>
           <li><button class="nav-item" id="global-connect-btn" data-i18n="sidebar.connect_guide">⚡ Obsidian 连接指引</button></li>
@@ -201,8 +204,11 @@
         </ul>
 
         <div id="admin-nav" class="hidden">
-          <div class="nav-section-title" style="margin-top:24px" data-i18n="sidebar.admin_section">系统管理</div>
-          <ul class="nav-menu">
+          <div class="nav-section-header collapsible" id="section-admin-header" role="button" tabindex="0" title="点击展开/折叠系统管理">
+            <span class="nav-section-title" data-i18n="sidebar.admin_section">系统管理</span>
+            <span class="nav-section-toggle-icon">▾</span>
+          </div>
+          <ul class="nav-menu" id="admin-nav-menu">
             <li><button class="tab-btn" data-tab="dashboard" data-i18n="sidebar.dashboard">📊 看板总览</button></li>
             <li><button class="tab-btn" data-tab="settings" data-i18n="sidebar.settings">⚙️ 设置</button></li>
             <li><button class="tab-btn" data-tab="database" data-i18n="sidebar.database">🗄️ 数据库管理</button></li>
