@@ -13,6 +13,13 @@
       "userId": "u_perm_member",
       "permission": "read-write",
       "createdAt": 1789656962599
+    },
+    {
+      "id": "b7abc8a5-6b11-4c39-ba4e-b42f8d608d33",
+      "vaultId": "c008795c-ba47-478a-9e4a-0f2aa681ddee",
+      "userId": "u_perm_member",
+      "permission": "read-write",
+      "createdAt": 1789684232636
     }
   ]
 }

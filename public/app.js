@@ -1223,8 +1223,67 @@
 
     setupGlobalSearch();
     setupCollapsibleSections();
+    setupMobileDrawer();
 
     await loadVaults();
+  }
+
+  function closeMobileDrawer() {
+    const sidebar = document.querySelector('.sidebar');
+    const backdrop = document.getElementById('sidebar-backdrop');
+    if (sidebar) sidebar.classList.remove('mobile-drawer-open');
+    if (backdrop) backdrop.classList.remove('active');
+    document.body.classList.remove('mobile-drawer-lock');
+  }
+
+  function toggleMobileDrawer() {
+    const sidebar = document.querySelector('.sidebar');
+    const backdrop = document.getElementById('sidebar-backdrop');
+    if (!sidebar) return;
+    const willOpen = !sidebar.classList.contains('mobile-drawer-open');
+    sidebar.classList.toggle('mobile-drawer-open', willOpen);
+    if (backdrop) backdrop.classList.toggle('active', willOpen);
+    document.body.classList.toggle('mobile-drawer-lock', willOpen);
+  }
+
+  function setupMobileDrawer() {
+    const toggleBtn = $('#mobile-sidebar-toggle');
+    const closeBtn = $('#mobile-sidebar-close');
+    const backdrop = $('#sidebar-backdrop');
+
+    if (toggleBtn) {
+      toggleBtn.onclick = (e) => {
+        e.stopPropagation();
+        toggleMobileDrawer();
+      };
+    }
+    if (closeBtn) {
+      closeBtn.onclick = (e) => {
+        e.stopPropagation();
+        closeMobileDrawer();
+      };
+    }
+    if (backdrop) {
+      backdrop.onclick = () => {
+        closeMobileDrawer();
+      };
+    }
+
+    // Auto-close drawer on narrow screens when any navigation item is clicked
+    document.querySelectorAll('.sidebar .nav-item, .sidebar .tab-btn').forEach((item) => {
+      item.addEventListener('click', () => {
+        if (window.innerWidth <= 768) {
+          closeMobileDrawer();
+        }
+      });
+    });
+
+    // Reset drawer state cleanly if resized to desktop window
+    window.addEventListener('resize', () => {
+      if (window.innerWidth > 768) {
+        closeMobileDrawer();
+      }
+    });
   }
 
   function setupCollapsibleSections() {
@@ -1338,6 +1397,9 @@
   });
 
   function showTab(tab) {
+    if (window.innerWidth <= 768) {
+      closeMobileDrawer();
+    }
     state.activeVaultId = null;
     state.activeTab = tab;
     document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
@@ -2098,6 +2160,9 @@
   }
 
   async function openVault(vaultId, subtab = 'files') {
+    if (window.innerWidth <= 768) {
+      closeMobileDrawer();
+    }
     if (state.activeVaultId !== vaultId) {
       state.treeFoldersInitialized = false;
       state.flatListPage = 1;

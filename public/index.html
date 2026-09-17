@@ -77,6 +77,9 @@
 
 <div id="app-view" class="app hidden">
   <header class="topbar">
+    <button id="mobile-sidebar-toggle" class="mobile-menu-btn" aria-label="打开侧边导航" title="打开导航">
+      <span class="hamburger-icon">☰</span>
+    </button>
     <div class="brand" id="brand-logo-btn" style="cursor:pointer;" title="返回看板总览">
       <span class="logo">☁️</span>
       <span class="brand-name">Nimbus Vault Sync</span>
@@ -175,6 +178,7 @@
   </header>
 
   <div class="layout">
+    <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
     <nav class="sidebar">
       <div class="sidebar-body">
         <div style="margin-bottom: 14px;">
@@ -186,7 +190,10 @@
 
         <div class="sidebar-header">
           <div class="nav-section-title" data-i18n="sidebar.my_vaults">我的 Vaults</div>
-          <button id="new-vault-btn" class="btn-icon" data-i18n-title="sidebar.new_vault" title="新建 Vault">+</button>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <button id="new-vault-btn" class="btn-icon" data-i18n-title="sidebar.new_vault" title="新建 Vault">+</button>
+            <button id="mobile-sidebar-close" class="mobile-sidebar-close-btn" aria-label="收起侧边栏" data-i18n-title="common.close" title="收起菜单">✕</button>
+          </div>
         </div>
         <ul id="vault-list" class="vault-list"></ul>
 
