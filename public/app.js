@@ -33,6 +33,8 @@
     treeSortOrder: localStorage.getItem('nimbus_tree_sort_order') || 'ctime-desc', // 'ctime-desc' | 'ctime-asc' | 'mtime-desc' | 'name-asc'
     expandedFolders: new Set(),
     treeFoldersInitialized: false,
+    flatListPage: 1,
+    flatListPageSize: parseInt(localStorage.getItem('nimbus_flat_page_size') || '50', 10),
     searchQuery: '',
     appVersion: '1.3.0',
   };
@@ -1910,6 +1912,7 @@
   async function openVault(vaultId, subtab = 'files') {
     if (state.activeVaultId !== vaultId) {
       state.treeFoldersInitialized = false;
+      state.flatListPage = 1;
     }
     state.activeVaultId = vaultId;
     state.activeSubtab = subtab;
@@ -2074,6 +2077,7 @@
     toolbar.querySelectorAll('.filter-pill').forEach((pill) => {
       pill.onclick = () => {
         state.fileFilter = pill.dataset.filter;
+        state.flatListPage = 1;
         renderVaultContainer(vaultId);
       };
     });
@@ -2082,6 +2086,7 @@
     toolbar.querySelectorAll('.view-mode-btn').forEach((btn) => {
       btn.onclick = () => {
         state.fileViewMode = btn.dataset.mode;
+        state.flatListPage = 1;
         localStorage.setItem('nimbus_file_view_mode', state.fileViewMode);
         toolbar.querySelectorAll('.view-mode-btn').forEach((b) => b.classList.toggle('active', b.dataset.mode === state.fileViewMode));
         renderFileList(vaultId, container);
@@ -2095,6 +2100,7 @@
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         state.searchQuery = searchInput.value;
+        state.flatListPage = 1;
         renderFileList(vaultId, container);
       }, 250);
     };
@@ -2540,9 +2546,26 @@
       content.appendChild(frag);
     }
 
+    function updateTreeHeight() {
+      if (!body || !body.isConnected) return;
+      const mainPanel = document.getElementById('main-panel');
+      if (!mainPanel) return;
+
+      const mainRect = mainPanel.getBoundingClientRect();
+      const bodyRect = body.getBoundingClientRect();
+      const topOffset = (bodyRect.top - mainRect.top) + mainPanel.scrollTop;
+      const available = Math.max(320, Math.floor(mainPanel.clientHeight - topOffset - 24));
+
+      if (body.style.height !== `${available}px`) {
+        body.style.height = `${available}px`;
+        renderVirtualWindow();
+      }
+    }
+
     function refreshVirtualTree(resetScroll = false) {
       const sortOrder = state.treeSortOrder || 'ctime-desc';
       visibleItems = flattenVisibleTree(root, 0, sortOrder, state.expandedFolders);
+      updateTreeHeight();
       if (resetScroll) {
         body.scrollTop = 0;
       }
@@ -2556,6 +2579,10 @@
 
     if (window.ResizeObserver) {
       const ro = new ResizeObserver(() => {
+        if (!body || !body.isConnected) {
+          ro.disconnect();
+          return;
+        }
         renderVirtualWindow();
       });
       ro.observe(body);
@@ -2576,13 +2603,27 @@
 
     wrapper.appendChild(body);
     listWrapper.appendChild(wrapper);
+
+    // Dynamic auto-fill screen height
+    updateTreeHeight();
+    requestAnimationFrame(updateTreeHeight);
+    setTimeout(updateTreeHeight, 60);
+
+    const onResize = () => {
+      if (!body || !body.isConnected) {
+        window.removeEventListener('resize', onResize);
+        return;
+      }
+      updateTreeHeight();
+    };
+    window.addEventListener('resize', onResize);
   }
 
   function renderFlatFileList(vaultId, listWrapper, paths, manifest) {
+    const sortOrder = state.treeSortOrder || 'ctime-desc';
     const sortedPaths = [...paths].sort((a, b) => {
       const metaA = manifest[a] || {};
       const metaB = manifest[b] || {};
-      const sortOrder = state.treeSortOrder || 'ctime-desc';
       const ctimeA = metaA.ctime || metaA.mtime || 0;
       const ctimeB = metaB.ctime || metaB.mtime || 0;
       const mtimeA = metaA.mtime || 0;
@@ -2602,8 +2643,75 @@
       }
     });
 
+    const total = sortedPaths.length;
+    const pageSize = state.flatListPageSize || 50;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    if (state.flatListPage > totalPages) state.flatListPage = totalPages;
+    if (state.flatListPage < 1) state.flatListPage = 1;
+    const currentPage = state.flatListPage;
+
+    const startIndex = (currentPage - 1) * pageSize;
+    const endIndex = Math.min(total, startIndex + pageSize);
+    const pageItems = sortedPaths.slice(startIndex, endIndex);
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'flat-list-wrapper';
+
+    // Toolbar (summary, sort, page-size)
+    const toolbar = document.createElement('div');
+    toolbar.className = 'flat-list-toolbar';
+    toolbar.innerHTML = `
+      <div>
+        <span>📋 <strong>平铺文件列表</strong> · 共 ${total} 个文件 · 当前显示第 ${startIndex + 1} - ${endIndex} 项</span>
+      </div>
+      <div class="flat-list-toolbar-controls">
+        <label class="tree-sort-label">
+          <span style="white-space:nowrap;flex-shrink:0;">排序:</span>
+          <select class="tree-sort-select" id="flat-sort-select" title="选择文件排序规则">
+            <option value="ctime-desc" ${sortOrder === 'ctime-desc' ? 'selected' : ''}>⏳ 创建时间 (最新优先)</option>
+            <option value="ctime-asc" ${sortOrder === 'ctime-asc' ? 'selected' : ''}>⌛ 创建时间 (最旧优先)</option>
+            <option value="mtime-desc" ${sortOrder === 'mtime-desc' ? 'selected' : ''}>📝 修改时间 (最新优先)</option>
+            <option value="name-asc" ${sortOrder === 'name-asc' ? 'selected' : ''}>🔤 文件名称 (A-Z)</option>
+          </select>
+        </label>
+        <label class="tree-sort-label">
+          <span style="white-space:nowrap;flex-shrink:0;">每页:</span>
+          <select class="pagination-page-size-select" id="flat-page-size-select" title="选择每页显示的文件数量">
+            <option value="25" ${pageSize === 25 ? 'selected' : ''}>25 条</option>
+            <option value="50" ${pageSize === 50 ? 'selected' : ''}>50 条</option>
+            <option value="100" ${pageSize === 100 ? 'selected' : ''}>100 条</option>
+            <option value="200" ${pageSize === 200 ? 'selected' : ''}>200 条</option>
+          </select>
+        </label>
+      </div>
+    `;
+    wrapper.appendChild(toolbar);
+
+    // Bind toolbar events
+    const sortSelect = toolbar.querySelector('#flat-sort-select');
+    if (sortSelect) {
+      sortSelect.onchange = () => {
+        state.treeSortOrder = sortSelect.value;
+        localStorage.setItem('nimbus_tree_sort_order', state.treeSortOrder);
+        renderFlatFileList(vaultId, listWrapper, paths, manifest);
+      };
+    }
+
+    const pageSizeSelect = toolbar.querySelector('#flat-page-size-select');
+    if (pageSizeSelect) {
+      pageSizeSelect.onchange = () => {
+        state.flatListPageSize = parseInt(pageSizeSelect.value, 10) || 50;
+        localStorage.setItem('nimbus_flat_page_size', state.flatListPageSize);
+        state.flatListPage = 1;
+        renderFlatFileList(vaultId, listWrapper, paths, manifest);
+      };
+    }
+
+    // Table
     const table = document.createElement('table');
     table.className = 'file-table';
+    table.style.border = 'none';
+    table.style.borderRadius = '0';
     table.innerHTML = `
       <thead>
         <tr>
@@ -2618,7 +2726,7 @@
     `;
     const tbody = table.querySelector('tbody');
 
-    for (const p of sortedPaths) {
+    for (const p of pageItems) {
       const meta = manifest[p] || { size: 0, mtime: Date.now(), ctime: Date.now() };
       const isMd = p.toLowerCase().endsWith('.md');
       const isHtml = /\.(html|htm)$/i.test(p);
@@ -2690,7 +2798,103 @@
       tbody.appendChild(tr);
     }
 
-    listWrapper.appendChild(table);
+    wrapper.appendChild(table);
+
+    // Pagination Footer
+    const pagination = document.createElement('div');
+    pagination.className = 'flat-list-pagination';
+
+    function getPageNumbers(cur, tot) {
+      if (tot <= 7) {
+        return Array.from({ length: tot }, (_, i) => i + 1);
+      }
+      if (cur <= 4) {
+        return [1, 2, 3, 4, 5, '...', tot];
+      }
+      if (cur >= tot - 3) {
+        return [1, '...', tot - 4, tot - 3, tot - 2, tot - 1, tot];
+      }
+      return [1, '...', cur - 1, cur, cur + 1, '...', tot];
+    }
+
+    const pageNumbers = getPageNumbers(currentPage, totalPages);
+    let pageChipsHtml = '';
+    for (const item of pageNumbers) {
+      if (item === '...') {
+        pageChipsHtml += `<span class="pagination-ellipsis">…</span>`;
+      } else {
+        pageChipsHtml += `<button class="pagination-btn ${item === currentPage ? 'active' : ''}" data-page="${item}">${item}</button>`;
+      }
+    }
+
+    pagination.innerHTML = `
+      <div>
+        <span>第 <b>${currentPage}</b> / <b>${totalPages}</b> 页 (共 ${total} 个文件)</span>
+      </div>
+      <div class="pagination-controls">
+        <button class="pagination-btn" id="flat-first-page-btn" ${currentPage <= 1 ? 'disabled' : ''} title="首页">⏮️ 首页</button>
+        <button class="pagination-btn" id="flat-prev-page-btn" ${currentPage <= 1 ? 'disabled' : ''} title="上一页">◀ 上一页</button>
+        <div class="pagination-pages" style="display:inline-flex;gap:4px;align-items:center;">
+          ${pageChipsHtml}
+        </div>
+        <button class="pagination-btn" id="flat-next-page-btn" ${currentPage >= totalPages ? 'disabled' : ''} title="下一页">下一页 ▶</button>
+        <button class="pagination-btn" id="flat-last-page-btn" ${currentPage >= totalPages ? 'disabled' : ''} title="末页">末页 ⏭️</button>
+        <div class="pagination-jump">
+          <span>跳至</span>
+          <input type="number" min="1" max="${totalPages}" value="${currentPage}" id="flat-jump-input" />
+          <span>页</span>
+          <button class="pagination-btn" id="flat-jump-btn">前往</button>
+        </div>
+      </div>
+    `;
+    wrapper.appendChild(pagination);
+
+    function goToPage(target) {
+      const p = Math.max(1, Math.min(totalPages, target));
+      if (p === state.flatListPage) return;
+      state.flatListPage = p;
+      renderFlatFileList(vaultId, listWrapper, paths, manifest);
+      const mainPanel = document.getElementById('main-panel');
+      if (mainPanel) mainPanel.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    // Pagination events
+    const firstBtn = pagination.querySelector('#flat-first-page-btn');
+    if (firstBtn) firstBtn.onclick = () => goToPage(1);
+
+    const prevBtn = pagination.querySelector('#flat-prev-page-btn');
+    if (prevBtn) prevBtn.onclick = () => goToPage(currentPage - 1);
+
+    const nextBtn = pagination.querySelector('#flat-next-page-btn');
+    if (nextBtn) nextBtn.onclick = () => goToPage(currentPage + 1);
+
+    const lastBtn = pagination.querySelector('#flat-last-page-btn');
+    if (lastBtn) lastBtn.onclick = () => goToPage(totalPages);
+
+    pagination.querySelectorAll('.pagination-pages button[data-page]').forEach((btn) => {
+      btn.onclick = () => {
+        const p = parseInt(btn.dataset.page, 10);
+        if (!isNaN(p)) goToPage(p);
+      };
+    });
+
+    const jumpInput = pagination.querySelector('#flat-jump-input');
+    const jumpBtn = pagination.querySelector('#flat-jump-btn');
+    if (jumpBtn && jumpInput) {
+      jumpBtn.onclick = () => {
+        const val = parseInt(jumpInput.value, 10);
+        if (!isNaN(val)) goToPage(val);
+      };
+      jumpInput.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+          const val = parseInt(jumpInput.value, 10);
+          if (!isNaN(val)) goToPage(val);
+        }
+      };
+    }
+
+    listWrapper.innerHTML = '';
+    listWrapper.appendChild(wrapper);
   }
 
   function renderSearchResultsTable(vaultId, container, results) {
