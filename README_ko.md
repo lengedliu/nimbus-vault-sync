@@ -2,7 +2,7 @@
 
 [简体中文](README.md) | [English](README_en.md) | [繁體中文](README_zh-TW.md) | [日本語](README_ja.md) | [한국어](README_ko.md)
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](package.json)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-339933?style=flat&logo=nodedotjs&logoColor=white)](https://nodejs.org)
 [![WebSocket](https://img.shields.io/badge/WebSocket-Realtime-010101?style=flat&logo=socketdotio&logoColor=white)](https://github.com/websockets/ws)
 [![MCP](https://img.shields.io/badge/MCP-22_Tools-8A2BE2?style=flat&logo=anthropic&logoColor=white)](https://modelcontextprotocol.io)
@@ -260,6 +260,20 @@ Web 콘솔 왼쪽 사이드바의 **「🤖 AI / MCP」**를 클릭하여 대상
 2. **리버스 프록시 및 HTTPS/WSS 적용**: Nginx, Caddy, Cloudflare 등을 통해 SSL/TLS 암호화를 적용하고, 리버스 프록시 사용 시 `TRUST_PROXY=1`을 설정하세요.
 3. **CORS 접근 제어**: 고정 도메인 운영 시 `CORS_ALLOWED_ORIGINS=https://your-domain.com`을 설정하여 교차 출처 요청을 제한하세요.
 4. **정기 데이터 백업**: 모든 노트, 스냅샷, 휴지통 및 DB 설정은 `./data` 폴더에 저장됩니다. 이 디렉터리를 정기적으로 백업하세요.
+
+---
+
+## ☕ 후원 및 지원
+
+- 이 프로젝트가 유용하고 지속적인 개발을 응원하고 싶으시다면 다음 방법으로 후원해 주실 수 있습니다:
+
+| Ko-fi *글로벌 / 해외* | WeChat Pay *중국 지역* |
+| :---: | :---: |
+| [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/lengedliu) | <img src="./public/wechat-reward.jpg" width="180" alt="WeChat Pay QR 코드" /> |
+
+- 후원자 명단：
+  - [Support.zh-CN.md](Support.zh-CN.md)
+  - [Support.zh-CN.md (cnb.cool 미러)](https://cnb.cool/lengedliu/nimbus-vault-sync/-/blob/main/Support.zh-CN.md)
 
 ---
 

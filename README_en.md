@@ -2,7 +2,7 @@
 
 [简体中文](README.md) | [English](README_en.md) | [繁體中文](README_zh-TW.md) | [日本語](README_ja.md) | [한국어](README_ko.md)
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](package.json)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-339933?style=flat&logo=nodedotjs&logoColor=white)](https://nodejs.org)
 [![WebSocket](https://img.shields.io/badge/WebSocket-Realtime-010101?style=flat&logo=socketdotio&logoColor=white)](https://github.com/websockets/ws)
 [![MCP](https://img.shields.io/badge/MCP-22_Tools-8A2BE2?style=flat&logo=anthropic&logoColor=white)](https://modelcontextprotocol.io)
@@ -264,6 +264,20 @@ In the Web Console, click **"🤖 AI / MCP"** on the sidebar to select your vaul
 2. **Reverse Proxy & HTTPS/WSS**: Deploy behind Nginx, Caddy, or Cloudflare with SSL/TLS enabled, and set `TRUST_PROXY=1` when behind reverse proxies.
 3. **CORS Restrictions**: In production domains, set `CORS_ALLOWED_ORIGINS=https://your-domain.com` to lock down cross-origin API requests.
 4. **Regular Data Backups**: All notes, snapshots, trash items, and database files reside in `./data`. Regularly backup this directory.
+
+---
+
+## ☕ Sponsors & Support
+
+- If you find this project useful and would like to support its ongoing development, please consider contributing through:
+
+| Ko-fi *Global / International* | WeChat Pay *China* |
+| :---: | :---: |
+| [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/lengedliu) | <img src="./public/wechat-reward.jpg" width="180" alt="WeChat Pay QR Code" /> |
+
+- Supporters List:
+  - [Support.zh-CN.md](Support.zh-CN.md)
+  - [Support.zh-CN.md (cnb.cool Mirror)](https://cnb.cool/lengedliu/nimbus-vault-sync/-/blob/main/Support.zh-CN.md)
 
 ---
 

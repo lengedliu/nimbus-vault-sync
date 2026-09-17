@@ -2,7 +2,7 @@
 
 [简体中文](README.md) | [English](README_en.md) | [繁體中文](README_zh-TW.md) | [日本語](README_ja.md) | [한국어](README_ko.md)
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](package.json)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-339933?style=flat&logo=nodedotjs&logoColor=white)](https://nodejs.org)
 [![WebSocket](https://img.shields.io/badge/WebSocket-Realtime-010101?style=flat&logo=socketdotio&logoColor=white)](https://github.com/websockets/ws)
 [![MCP](https://img.shields.io/badge/MCP-22_Tools-8A2BE2?style=flat&logo=anthropic&logoColor=white)](https://modelcontextprotocol.io)
@@ -273,6 +273,20 @@ Nimbus 原生内置 **StreamableHTTP** 协议的 MCP 接口，AI 客户端无需
 2. **反向代理与 HTTPS/WSS**：建议通过 Nginx / Caddy / Cloudflare 等反向代理暴露服务，开启 SSL/TLS 加密，并在启用反向代理时设置 `TRUST_PROXY=1`。
 3. **CORS 收紧**：在固定域名下部署时，建议配置 `CORS_ALLOWED_ORIGINS=https://your-domain.com` 收紧跨域策略。
 4. **定期数据备份**：Nimbus 所有笔记、快照、回收站与系统配置均存储在 `./data` 目录中，定期备份该目录即可完整保护数据资产。
+
+---
+
+## ☕ 赞助与支持
+
+- 如果觉得这个插件很有用，并且想要它继续开发，请在以下方式支持我：
+
+| Ko-fi *非中国地区* | 微信扫码打赏 *中国地区* |
+| :---: | :---: |
+| [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/lengedliu) | <img src="./public/wechat-reward.jpg" width="180" alt="微信赞赏码" /> |
+
+- 已支持名单：
+  - [Support.zh-CN.md](Support.zh-CN.md)
+  - [Support.zh-CN.md (cnb.cool 镜像库)](https://cnb.cool/lengedliu/nimbus-vault-sync/-/blob/main/Support.zh-CN.md)
 
 ---
 

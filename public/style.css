@@ -3105,11 +3105,38 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
   letter-spacing: .03em;
 }
 
+.tree-body {
+  position: relative;
+  overflow-y: auto;
+  overflow-x: hidden;
+  max-height: clamp(420px, calc(100vh - 310px), 820px);
+  min-height: 240px;
+}
+
+.tree-virtual-phantom {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.tree-virtual-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  will-change: transform;
+}
+
 .tree-node-row {
   display: grid;
   grid-template-columns: minmax(240px, 1fr) 90px 155px 155px 170px;
   align-items: center;
-  padding: 7px 14px;
+  padding: 0 14px;
+  height: 38px;
+  box-sizing: border-box;
   border-bottom: 1px solid rgba(128, 128, 128, 0.1);
   font-size: 13px;
   cursor: pointer;

@@ -34,7 +34,7 @@
     expandedFolders: new Set(),
     treeFoldersInitialized: false,
     searchQuery: '',
-    appVersion: '1.2.0',
+    appVersion: '1.3.0',
   };
 
   function setAppVersion(ver) {
@@ -2259,18 +2259,10 @@
       sortSelect.onchange = () => {
         state.treeSortOrder = sortSelect.value;
         localStorage.setItem('nimbus_tree_sort_order', state.treeSortOrder);
-        renderFileList(vaultId, listWrapper);
+        refreshVirtualTree(false);
       };
     }
 
-    bar.querySelector('#tree-expand-all-btn').onclick = () => {
-      allFolderPaths.forEach((fp) => state.expandedFolders.add(fp));
-      renderFileList(vaultId, listWrapper);
-    };
-    bar.querySelector('#tree-collapse-all-btn').onclick = () => {
-      state.expandedFolders.clear();
-      renderFileList(vaultId, listWrapper);
-    };
     const refreshBtn = bar.querySelector('#tree-refresh-btn');
     if (refreshBtn) {
       refreshBtn.onclick = async () => {
@@ -2306,7 +2298,21 @@
     const body = document.createElement('div');
     body.className = 'tree-body';
 
-    function renderBranch(node, depth) {
+    const phantom = document.createElement('div');
+    phantom.className = 'tree-virtual-phantom';
+    body.appendChild(phantom);
+
+    const content = document.createElement('div');
+    content.className = 'tree-virtual-content';
+    body.appendChild(content);
+
+    const ROW_HEIGHT = 38;
+    const OVERSCAN = 6;
+    let visibleItems = [];
+    let rafId = null;
+
+    function flattenVisibleTree(node, depth = 0, sortOrder = 'ctime-desc', expandedSet = state.expandedFolders) {
+      const result = [];
       const keys = Object.keys(node.children).sort((a, b) => {
         const itemA = node.children[a];
         const itemB = node.children[b];
@@ -2319,7 +2325,6 @@
           return itemA.name.localeCompare(itemB.name, 'zh-CN', { numeric: true, sensitivity: 'base' });
         }
         // For files within directory: sort by creation time (or user selected order)
-        const sortOrder = state.treeSortOrder || 'ctime-desc';
         const ctimeA = itemA.meta?.ctime || itemA.meta?.mtime || 0;
         const ctimeB = itemB.meta?.ctime || itemB.meta?.mtime || 0;
         const mtimeA = itemA.meta?.mtime || 0;
@@ -2342,144 +2347,233 @@
       for (const key of keys) {
         const item = node.children[key];
         if (item.type === 'folder') {
-          const isExpanded = state.expandedFolders.has(item.path);
-          const row = document.createElement('div');
-          row.className = 'tree-node-row folder-row';
-
-          let indentHtml = '';
-          for (let d = 0; d < depth; d++) {
-            indentHtml += '<span class="tree-indent-spacer"></span>';
-          }
-
-          row.innerHTML = `
-            <div class="tree-name-col">
-              ${indentHtml}
-              <span class="tree-toggle-arrow ${isExpanded ? 'open' : ''}">▶</span>
-              <span class="tree-icon">${isExpanded ? '📂' : '📁'}</span>
-              <span class="tree-name-text">${escapeHtml(item.name)}</span>
-              <span class="tree-badge">${item.fileCount} 项</span>
-            </div>
-            <div class="tree-meta-col">${formatBytes(item.totalSize)}</div>
-            <div class="tree-meta-col" style="color:var(--text-muted);font-size:12px;">-</div>
-            <div class="tree-meta-col" style="color:var(--text-muted);font-size:12px;">-</div>
-            <div class="tree-actions-col"></div>
-          `;
-
-          row.onclick = () => {
-            if (state.expandedFolders.has(item.path)) {
-              state.expandedFolders.delete(item.path);
-            } else {
-              state.expandedFolders.add(item.path);
-            }
-            renderFileList(vaultId, listWrapper);
-          };
-
-          body.appendChild(row);
-
+          const isExpanded = expandedSet.has(item.path);
+          result.push({
+            type: 'folder',
+            name: item.name,
+            path: item.path,
+            depth,
+            isExpanded,
+            fileCount: item.fileCount,
+            totalSize: item.totalSize,
+            children: item.children,
+          });
           if (isExpanded) {
-            renderBranch(item, depth + 1);
+            const childItems = flattenVisibleTree(item, depth + 1, sortOrder, expandedSet);
+            for (let i = 0; i < childItems.length; i++) {
+              result.push(childItems[i]);
+            }
           }
         } else {
-          // File row
-          const p = item.path;
-          const meta = item.meta || {};
-          const isMd = p.toLowerCase().endsWith('.md');
-          const isHtml = /\.(html|htm)$/i.test(p);
-          const isImg = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(p);
-          const isPdf = /\.pdf$/i.test(p);
-          const icon = isMd ? '📄' : isHtml ? '🌐' : isImg ? '🖼️' : isPdf ? '📕' : p.startsWith('.obsidian/') ? '⚙️' : '📎';
-
-          const ctimeVal = meta.ctime || meta.mtime || Date.now();
-          const mtimeVal = meta.mtime || Date.now();
-          const ctimeStr = new Date(ctimeVal).toLocaleString('zh-CN', {
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
+          result.push({
+            type: 'file',
+            name: item.name,
+            path: item.path,
+            depth,
+            meta: item.meta || {},
           });
-          const mtimeStr = new Date(mtimeVal).toLocaleString('zh-CN', {
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-          });
-
-          const row = document.createElement('div');
-          row.className = 'tree-node-row file-row';
-
-          let indentHtml = '';
-          for (let d = 0; d < depth; d++) {
-            indentHtml += '<span class="tree-indent-spacer"></span>';
-          }
-
-          row.innerHTML = `
-            <div class="tree-name-col">
-              ${indentHtml}
-              <span class="tree-indent-spacer" style="width:18px;"></span>
-              <span class="tree-icon">${icon}</span>
-              <span class="tree-name-text" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</span>
-            </div>
-            <div class="tree-meta-col">${formatBytes(meta.size)}</div>
-            <div class="tree-meta-col" title="创建时间: ${ctimeStr}">${ctimeStr}</div>
-            <div class="tree-meta-col" title="修改时间: ${mtimeStr}">${mtimeStr}</div>
-            <div class="tree-actions-col"></div>
-          `;
-
-          row.onclick = (e) => {
-            if (e.target.closest('button')) return;
-            openFile(vaultId, p);
-          };
-
-          const actionsCol = row.querySelector('.tree-actions-col');
-
-          if (isMd || isHtml) {
-            const shareBtn = document.createElement('button');
-            shareBtn.className = 'secondary';
-            shareBtn.textContent = '🔗 分享';
-            shareBtn.onclick = (e) => {
-              e.stopPropagation();
-              showCreateShareModal(vaultId, p);
-            };
-            actionsCol.appendChild(shareBtn);
-          }
-
-          const histBtn = document.createElement('button');
-          histBtn.className = 'secondary';
-          histBtn.textContent = '⏱️ 历史';
-          histBtn.onclick = (e) => {
-            e.stopPropagation();
-            showHistoryModal(vaultId, p);
-          };
-          actionsCol.appendChild(histBtn);
-
-          const delBtn = document.createElement('button');
-          delBtn.className = 'danger';
-          delBtn.textContent = '🗑️';
-          delBtn.title = '移至回收站';
-          delBtn.onclick = async (e) => {
-            e.stopPropagation();
-            const ok = await showConfirm({
-              title: '移入回收站确认',
-              message: `确定要将笔记「${p}」移入回收站吗？可在回收站中随时恢复。`,
-              confirmText: '移至回收站',
-              type: 'danger',
-              icon: '🗑️',
-            });
-            if (!ok) return;
-            await api(`/api/vaults/${vaultId}/files/${encodeURIComponentPath(p)}`, { method: 'DELETE' });
-            toast('已移至回收站');
-            openVault(vaultId, 'files');
-          };
-          actionsCol.appendChild(delBtn);
-
-          body.appendChild(row);
         }
       }
+      return result;
     }
 
-    renderBranch(root, 0);
+    function createRowElement(item) {
+      if (item.type === 'folder') {
+        const row = document.createElement('div');
+        row.className = 'tree-node-row folder-row';
+
+        let indentHtml = '';
+        for (let d = 0; d < item.depth; d++) {
+          indentHtml += '<span class="tree-indent-spacer"></span>';
+        }
+
+        row.innerHTML = `
+          <div class="tree-name-col">
+            ${indentHtml}
+            <span class="tree-toggle-arrow ${item.isExpanded ? 'open' : ''}">▶</span>
+            <span class="tree-icon">${item.isExpanded ? '📂' : '📁'}</span>
+            <span class="tree-name-text">${escapeHtml(item.name)}</span>
+            <span class="tree-badge">${item.fileCount} 项</span>
+          </div>
+          <div class="tree-meta-col">${formatBytes(item.totalSize)}</div>
+          <div class="tree-meta-col" style="color:var(--text-muted);font-size:12px;">-</div>
+          <div class="tree-meta-col" style="color:var(--text-muted);font-size:12px;">-</div>
+          <div class="tree-actions-col"></div>
+        `;
+
+        row.onclick = () => {
+          if (state.expandedFolders.has(item.path)) {
+            state.expandedFolders.delete(item.path);
+          } else {
+            state.expandedFolders.add(item.path);
+          }
+          refreshVirtualTree(false);
+        };
+
+        return row;
+      }
+
+      // File row
+      const p = item.path;
+      const meta = item.meta || {};
+      const isMd = p.toLowerCase().endsWith('.md');
+      const isHtml = /\.(html|htm)$/i.test(p);
+      const isImg = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(p);
+      const isPdf = /\.pdf$/i.test(p);
+      const icon = isMd ? '📄' : isHtml ? '🌐' : isImg ? '🖼️' : isPdf ? '📕' : p.startsWith('.obsidian/') ? '⚙️' : '📎';
+
+      const ctimeVal = meta.ctime || meta.mtime || Date.now();
+      const mtimeVal = meta.mtime || Date.now();
+      const ctimeStr = new Date(ctimeVal).toLocaleString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      const mtimeStr = new Date(mtimeVal).toLocaleString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+
+      const row = document.createElement('div');
+      row.className = 'tree-node-row file-row';
+
+      let indentHtml = '';
+      for (let d = 0; d < item.depth; d++) {
+        indentHtml += '<span class="tree-indent-spacer"></span>';
+      }
+
+      row.innerHTML = `
+        <div class="tree-name-col">
+          ${indentHtml}
+          <span class="tree-indent-spacer" style="width:18px;"></span>
+          <span class="tree-icon">${icon}</span>
+          <span class="tree-name-text" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</span>
+        </div>
+        <div class="tree-meta-col">${formatBytes(meta.size)}</div>
+        <div class="tree-meta-col" title="创建时间: ${ctimeStr}">${ctimeStr}</div>
+        <div class="tree-meta-col" title="修改时间: ${mtimeStr}">${mtimeStr}</div>
+        <div class="tree-actions-col"></div>
+      `;
+
+      row.onclick = (e) => {
+        if (e.target.closest('button')) return;
+        openFile(vaultId, p);
+      };
+
+      const actionsCol = row.querySelector('.tree-actions-col');
+
+      if (isMd || isHtml) {
+        const shareBtn = document.createElement('button');
+        shareBtn.className = 'secondary';
+        shareBtn.textContent = '🔗 分享';
+        shareBtn.onclick = (e) => {
+          e.stopPropagation();
+          showCreateShareModal(vaultId, p);
+        };
+        actionsCol.appendChild(shareBtn);
+      }
+
+      const histBtn = document.createElement('button');
+      histBtn.className = 'secondary';
+      histBtn.textContent = '⏱️ 历史';
+      histBtn.onclick = (e) => {
+        e.stopPropagation();
+        showHistoryModal(vaultId, p);
+      };
+      actionsCol.appendChild(histBtn);
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'danger';
+      delBtn.textContent = '🗑️';
+      delBtn.title = '移至回收站';
+      delBtn.onclick = async (e) => {
+        e.stopPropagation();
+        const ok = await showConfirm({
+          title: '移入回收站确认',
+          message: `确定要将笔记「${p}」移入回收站吗？可在回收站中随时恢复。`,
+          confirmText: '移至回收站',
+          type: 'danger',
+          icon: '🗑️',
+        });
+        if (!ok) return;
+        await api(`/api/vaults/${vaultId}/files/${encodeURIComponentPath(p)}`, { method: 'DELETE' });
+        toast('已移至回收站');
+        openVault(vaultId, 'files');
+      };
+      actionsCol.appendChild(delBtn);
+
+      return row;
+    }
+
+    function renderVirtualWindow() {
+      const total = visibleItems.length;
+      phantom.style.height = `${total * ROW_HEIGHT}px`;
+
+      if (total === 0) {
+        content.innerHTML = '<div class="empty-state" style="padding:24px;">目录为空</div>';
+        content.style.transform = 'translateY(0px)';
+        return;
+      }
+
+      const scrollTop = body.scrollTop || 0;
+      const clientHeight = body.clientHeight || 500;
+
+      let startIndex = Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN;
+      if (startIndex < 0) startIndex = 0;
+
+      let endIndex = Math.ceil((scrollTop + clientHeight) / ROW_HEIGHT) + OVERSCAN;
+      if (endIndex > total) endIndex = total;
+
+      const offsetY = startIndex * ROW_HEIGHT;
+      content.style.transform = `translateY(${offsetY}px)`;
+
+      const frag = document.createDocumentFragment();
+      for (let i = startIndex; i < endIndex; i++) {
+        frag.appendChild(createRowElement(visibleItems[i]));
+      }
+      content.innerHTML = '';
+      content.appendChild(frag);
+    }
+
+    function refreshVirtualTree(resetScroll = false) {
+      const sortOrder = state.treeSortOrder || 'ctime-desc';
+      visibleItems = flattenVisibleTree(root, 0, sortOrder, state.expandedFolders);
+      if (resetScroll) {
+        body.scrollTop = 0;
+      }
+      renderVirtualWindow();
+    }
+
+    body.addEventListener('scroll', () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(renderVirtualWindow);
+    }, { passive: true });
+
+    if (window.ResizeObserver) {
+      const ro = new ResizeObserver(() => {
+        renderVirtualWindow();
+      });
+      ro.observe(body);
+    }
+
+    bar.querySelector('#tree-expand-all-btn').onclick = () => {
+      allFolderPaths.forEach((fp) => state.expandedFolders.add(fp));
+      refreshVirtualTree(false);
+    };
+
+    bar.querySelector('#tree-collapse-all-btn').onclick = () => {
+      state.expandedFolders.clear();
+      refreshVirtualTree(true);
+    };
+
+    // Initialize list and render initial slice
+    refreshVirtualTree(true);
+
     wrapper.appendChild(body);
     listWrapper.appendChild(wrapper);
   }
@@ -6349,7 +6443,7 @@
     }
 
     const t = window.t || ((k, f) => f || k);
-    const displayVersion = 'v' + (state.appVersion || overviewData.version || overviewData.stats?.version || '1.2.0').replace(/^v/i, '');
+    const displayVersion = 'v' + (state.appVersion || overviewData.version || overviewData.stats?.version || '1.3.0').replace(/^v/i, '');
 
     mainPanel.innerHTML = `
       <div class="dashboard-container">

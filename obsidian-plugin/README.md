@@ -29,3 +29,18 @@
 
 - **一键导入（推荐）**：在 Nimbus Web 管理控制台点击 **「⚡ Obsidian 连接指引」** ➔ **「下载 data.json」**，保存至 `.obsidian/plugins/nimbus-sync/data.json` 即可免配置启动。
 - **手动设置**：在 Obsidian 插件设置中填入 Server URL、Vault ID 及专属 Token 即可开始全双工实时同步。
+
+---
+
+## ☕ 赞助与支持
+
+- 如果觉得这个插件很有用，并且想要它继续开发，请在以下方式支持我：
+
+| Ko-fi *非中国地区* | 微信扫码打赏 *中国地区* |
+| :---: | :---: |
+| [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/lengedliu) | <img src="../public/wechat-reward.jpg" width="180" alt="微信赞赏码" /> |
+
+- 已支持名单：
+  - [Support.zh-CN.md](../Support.zh-CN.md)
+  - [Support.zh-CN.md (cnb.cool 镜像库)](https://cnb.cool/lengedliu/nimbus-vault-sync/-/blob/main/Support.zh-CN.md)
+

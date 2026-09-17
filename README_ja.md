@@ -2,7 +2,7 @@
 
 [简体中文](README.md) | [English](README_en.md) | [繁體中文](README_zh-TW.md) | [日本語](README_ja.md) | [한국어](README_ko.md)
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](package.json)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-339933?style=flat&logo=nodedotjs&logoColor=white)](https://nodejs.org)
 [![WebSocket](https://img.shields.io/badge/WebSocket-Realtime-010101?style=flat&logo=socketdotio&logoColor=white)](https://github.com/websockets/ws)
 [![MCP](https://img.shields.io/badge/MCP-22_Tools-8A2BE2?style=flat&logo=anthropic&logoColor=white)](https://modelcontextprotocol.io)
@@ -260,6 +260,20 @@ Web 管理コンソールの **「🤖 AI / MCP」** をクリックし、対象
 2. **リバースプロキシと HTTPS/WSS**: Nginx、Caddy、Cloudflare 等の配下で SSL/TLS 暗号化を有効にして運用し、リバースプロキシ使用時は `TRUST_PROXY=1` を設定してください。
 3. **CORS の制限**: 固定ドメインで運用する場合は、`CORS_ALLOWED_ORIGINS=https://your-domain.com` を指定してクロスオリジンアクセスを制限してください。
 4. **定期データバックアップ**: すべてのノート、スナップショット、ごみ箱、DB 設定は `./data` に集約されています。このディレクトリを定期的にバックアップしてください。
+
+---
+
+## ☕ スポンサーとご支援
+
+- このプロジェクトが役に立ち、今後の継続的な開発を応援していただける場合は、以下の方法でご支援をお願いいたします：
+
+| Ko-fi *日本および海外* | WeChat Pay *中国国内* |
+| :---: | :---: |
+| [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/lengedliu) | <img src="./public/wechat-reward.jpg" width="180" alt="WeChat Pay QRコード" /> |
+
+- ご支援者一覧：
+  - [Support.zh-CN.md](Support.zh-CN.md)
+  - [Support.zh-CN.md (cnb.cool ミラー)](https://cnb.cool/lengedliu/nimbus-vault-sync/-/blob/main/Support.zh-CN.md)
 
 ---
 

@@ -2,7 +2,7 @@ require('dotenv').config();
 const path = require('path');
 const pkg = require('../package.json');
 
-const APP_VERSION = process.env.APP_VERSION || pkg.version || '1.2.0';
+const APP_VERSION = process.env.APP_VERSION || pkg.version || '1.3.0';
 const DATA_DIR = path.resolve(process.cwd(), process.env.DATA_DIR || './data');
 
 module.exports = {
