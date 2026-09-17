@@ -1,19 +1,8 @@
 const crypto = require('crypto');
 const { JWT_SECRET } = require('../config');
 
-// 优先使用专用的 ENCRYPTION_KEY，未设置时平滑回退到 JWT_SECRET
-const FALLBACK_SECRET = 'nimbus-storage-encryption-key-fallback';
-const SECRET = process.env.ENCRYPTION_KEY || JWT_SECRET || FALLBACK_SECRET;
-if (SECRET === FALLBACK_SECRET) {
-  // 走到这一步说明 ENCRYPTION_KEY 和 JWT_SECRET 都没设置——这个兜底字符串是写在
-  // 公开源码里的，起不到任何保密作用，用它加密出来的数据形同明文。JWT_SECRET
-  // 本身已经有生产环境下拒绝启动的检查（见 server.js），正常部署不会走到这里；
-  // 如果真的走到了，说明部署方式有问题，打印警告提醒。
-  console.warn(
-    '[WARN] ENCRYPTION_KEY 和 JWT_SECRET 均未设置，字段加密使用的是写在源码里的公开兜底密钥，' +
-    '不提供任何实际保护。请设置 JWT_SECRET（或专门的 ENCRYPTION_KEY）。'
-  );
-}
+// 优先使用专用的 ENCRYPTION_KEY，未设置时平滑使用由 config 保证高熵安全的 JWT_SECRET
+const SECRET = (process.env.ENCRYPTION_KEY || '').trim() || JWT_SECRET;
 const CIPHER_ALGO = 'aes-256-gcm';
 const KEY = crypto.createHash('sha256').update(String(SECRET)).digest();
 

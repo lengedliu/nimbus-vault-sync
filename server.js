@@ -7,7 +7,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 
-const { PORT, DATA_DIR, VAULTS_DIR, TLS_CERT_PATH, TLS_KEY_PATH, TRUST_PROXY, JWT_SECRET, VERSION } = require('./src/config');
+const { PORT, DATA_DIR, VAULTS_DIR, TLS_CERT_PATH, TLS_KEY_PATH, TRUST_PROXY, JWT_SECRET, JWT_SECRET_SOURCE, VERSION } = require('./src/config');
 const authRoutes = require('./src/routes/authRoutes');
 const vaultRoutes = require('./src/routes/vaultRoutes');
 const fileRoutes = require('./src/routes/fileRoutes');
@@ -37,22 +37,15 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(VAULTS_DIR, { recursive: true });
 storage.cleanupAllStaleUploadTemps();
 
-// JWT_SECRET 用默认值等于把后门钥匙公开在仓库里的 .env.example 里——
-// docker-compose.yml 那条部署路径已经靠 ${JWT_SECRET:?...} 语法强制要求设置，
-// 但直接 `node server.js` 或用 systemd 跑的话没人拦着，这里做统一兜底：
-// 生产环境下直接拒绝启动；非生产环境下只打印醒目警告，不阻断本地开发调试。
-const INSECURE_DEFAULT_JWT_SECRET = 'dev-only-insecure-secret';
-if (JWT_SECRET === INSECURE_DEFAULT_JWT_SECRET) {
-  if (process.env.NODE_ENV === 'production') {
-    console.warn(
-      '[WARN] JWT_SECRET 仍然是默认值。建议在 .env 或环境变量里设置一个随机长字符串，例如: openssl rand -hex 32'
-    );
-  } else {
-    console.warn(
-      '[WARN] JWT_SECRET 使用的是默认值，任何知道这个默认值的人都可以伪造登录令牌。' +
-      '仅适合本地开发调试，正式部署前务必设置一个随机的 JWT_SECRET。'
-    );
-  }
+// JWT_SECRET 强制安全防护：
+if (JWT_SECRET_SOURCE === 'env') {
+  console.log('[AUTH] JWT_SECRET 加载自环境变量配置。');
+} else if (JWT_SECRET_SOURCE === 'file') {
+  console.log(`[AUTH] JWT_SECRET 加载自持久化安全密钥文件 (${path.join(DATA_DIR, '.jwt_secret')})。`);
+} else if (JWT_SECRET_SOURCE === 'generated') {
+  console.log(`[AUTH] 未提供环境变量 JWT_SECRET，已自动生成 256 位高熵随机密钥并持久化至 ${path.join(DATA_DIR, '.jwt_secret')}。`);
+} else {
+  console.log('[AUTH] JWT_SECRET 运行于内存临时高熵密钥模式。');
 }
 
 // Initialize database

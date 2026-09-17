@@ -1,20 +1,6 @@
 {
   "members": [
     {
-      "id": "8eab069e-1761-4ed8-be21-c781d0e44903",
-      "vaultId": "87e44448-d3f1-4e05-9c85-7eb4c7194640",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789627080407
-    },
-    {
-      "id": "c457bdcd-2a53-4231-9394-53f52eb30196",
-      "vaultId": "be51b3a1-38a8-4d53-8338-ada26bb49253",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789627233147
-    },
-    {
       "id": "ad89be0c-d8f8-4875-9a12-3d14f2bdf522",
       "vaultId": "c267ca2f-4bd3-445e-afd4-c2f7b70cfe2d",
       "userId": "u_perm_member",
@@ -22,46 +8,11 @@
       "createdAt": 1789627335565
     },
     {
-      "id": "06c30c51-82ea-4bc0-8d6e-0467109d8656",
-      "vaultId": "8cbed041-0ebc-4924-89b6-b3d13d72e94a",
+      "id": "cb44f6ea-a7d4-4c5b-b066-33e34cfa6869",
+      "vaultId": "1b581c0c-7c0f-4c43-8d34-49d3ad9fcfab",
       "userId": "u_perm_member",
       "permission": "read-write",
-      "createdAt": 1789627797240
-    },
-    {
-      "id": "2292adc9-5d01-4f59-ac41-76305b962e46",
-      "vaultId": "f02047e9-e553-4693-b9f8-dafaa41c249c",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789645927473
-    },
-    {
-      "id": "57cf7d0e-a7f7-4e9c-954d-a6e48fd6836a",
-      "vaultId": "819d74ca-f4e3-4587-b744-fa5841de549b",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789645981755
-    },
-    {
-      "id": "16c115b5-7939-4391-90dd-55133b081538",
-      "vaultId": "a28574cd-2d59-4631-ab19-c92688092a26",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789646777859
-    },
-    {
-      "id": "962ee610-3843-4bda-9e3b-3bf324f7e623",
-      "vaultId": "70e042a6-c8da-419b-93b0-0fe653ad2b71",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789647447244
-    },
-    {
-      "id": "5b4b602d-619b-4063-ba35-5e7d42aea30e",
-      "vaultId": "a80bb844-5a3c-4fce-b3da-96182d42ac86",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789655381302
+      "createdAt": 1789656962599
     }
   ]
 }
