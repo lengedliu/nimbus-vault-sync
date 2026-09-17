@@ -77,6 +77,18 @@
       "ownerId": "u_perm_owner",
       "name": "PermTestVault",
       "createdAt": "2026-09-17T11:53:01.754Z"
+    },
+    {
+      "id": "4adef2a5-7860-41cb-a732-7d379e0b3942",
+      "ownerId": "u_sec_owner",
+      "name": "Test/../../Evil..Vault:Name",
+      "createdAt": "2026-09-17T12:06:17.844Z"
+    },
+    {
+      "id": "a28574cd-2d59-4631-ab19-c92688092a26",
+      "ownerId": "u_perm_owner",
+      "name": "PermTestVault",
+      "createdAt": "2026-09-17T12:06:17.858Z"
     }
   ]
 }
