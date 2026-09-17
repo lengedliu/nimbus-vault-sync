@@ -27,6 +27,20 @@
       "userId": "u_perm_member",
       "permission": "read-write",
       "createdAt": 1789627797240
+    },
+    {
+      "id": "2292adc9-5d01-4f59-ac41-76305b962e46",
+      "vaultId": "f02047e9-e553-4693-b9f8-dafaa41c249c",
+      "userId": "u_perm_member",
+      "permission": "read-write",
+      "createdAt": 1789645927473
+    },
+    {
+      "id": "57cf7d0e-a7f7-4e9c-954d-a6e48fd6836a",
+      "vaultId": "819d74ca-f4e3-4587-b744-fa5841de549b",
+      "userId": "u_perm_member",
+      "permission": "read-write",
+      "createdAt": 1789645981755
     }
   ]
 }

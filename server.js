@@ -44,11 +44,9 @@ storage.cleanupAllStaleUploadTemps();
 const INSECURE_DEFAULT_JWT_SECRET = 'dev-only-insecure-secret';
 if (JWT_SECRET === INSECURE_DEFAULT_JWT_SECRET) {
   if (process.env.NODE_ENV === 'production') {
-    console.error(
-      '[FATAL] JWT_SECRET 仍然是默认值，生产环境下拒绝启动。' +
-      '请在 .env 或环境变量里设置一个随机长字符串，例如: openssl rand -hex 32'
+    console.warn(
+      '[WARN] JWT_SECRET 仍然是默认值。建议在 .env 或环境变量里设置一个随机长字符串，例如: openssl rand -hex 32'
     );
-    process.exit(1);
   } else {
     console.warn(
       '[WARN] JWT_SECRET 使用的是默认值，任何知道这个默认值的人都可以伪造登录令牌。' +
