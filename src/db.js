@@ -128,60 +128,71 @@ class DatabaseManager {
     this.type = (config.type || 'json').toLowerCase();
     this.connectionConfig = { ...config, type: this.type };
 
-    if (this.type === 'sqlite') {
-      const dbPath = path.resolve(config.sqlitePath || path.join(DATA_DIR, 'nimbus.sqlite'));
-      fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-      const SQLite = getSqlite3();
-      await new Promise((resolve, reject) => {
-        this.sqliteDb = new SQLite.Database(dbPath, (err) => {
-          if (err) return reject(err);
-          resolve();
+    try {
+      if (this.type === 'sqlite') {
+        const dbPath = path.resolve(config.sqlitePath || path.join(DATA_DIR, 'nimbus.sqlite'));
+        fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+        const SQLite = getSqlite3();
+        await new Promise((resolve, reject) => {
+          this.sqliteDb = new SQLite.Database(dbPath, (err) => {
+            if (err) return reject(err);
+            resolve();
+          });
         });
-      });
-      // Enable WAL mode and tune concurrency & I/O cache for SQLite
-      await new Promise((resolve, reject) => {
-        this.sqliteDb.exec(`
-          PRAGMA journal_mode = WAL;
-          PRAGMA synchronous = NORMAL;
-          PRAGMA busy_timeout = 5000;
-          PRAGMA cache_size = -64000;
-          PRAGMA temp_store = MEMORY;
-        `, (err) => {
-          if (err) return reject(err);
-          resolve();
+        // Enable WAL mode and tune concurrency & I/O cache for SQLite
+        await new Promise((resolve, reject) => {
+          this.sqliteDb.exec(`
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA busy_timeout = 5000;
+            PRAGMA cache_size = -64000;
+            PRAGMA temp_store = MEMORY;
+          `, (err) => {
+            if (err) return reject(err);
+            resolve();
+          });
         });
-      });
-      await this._createSqliteTables();
-    } else if (this.type === 'postgres' || this.type === 'postgresql') {
-      this.type = 'postgres';
-      const { Pool } = getPg();
-      const poolConfig = config.connectionString
-        ? {
-            connectionString: config.connectionString,
-            ssl: config.ssl ? { rejectUnauthorized: false } : false,
-          }
-        : {
-            host: config.host,
-            port: config.port || 5432,
-            user: config.user,
-            password: config.password,
-            database: config.database,
-            ssl: config.ssl ? { rejectUnauthorized: false } : false,
-          };
-      this.pgPool = new Pool(poolConfig);
-      await this._createPostgresTables();
-    } else if (this.type === 'mysql') {
-      const mysqlPkg = getMysql();
-      this.mysqlPool = mysqlPkg.createPool({
-        host: config.host,
-        port: config.port || 3306,
-        user: config.user,
-        password: config.password,
-        database: config.database,
-        waitForConnections: true,
-        connectionLimit: 10,
-      });
-      await this._createMysqlTables();
+        await this._createSqliteTables();
+      } else if (this.type === 'postgres' || this.type === 'postgresql') {
+        this.type = 'postgres';
+        const { Pool } = getPg();
+        const poolConfig = config.connectionString
+          ? {
+              connectionString: config.connectionString,
+              ssl: config.ssl ? { rejectUnauthorized: false } : false,
+            }
+          : {
+              host: config.host,
+              port: config.port || 5432,
+              user: config.user,
+              password: config.password,
+              database: config.database,
+              ssl: config.ssl ? { rejectUnauthorized: false } : false,
+            };
+        this.pgPool = new Pool(poolConfig);
+        await this._createPostgresTables();
+      } else if (this.type === 'mysql') {
+        const mysqlPkg = getMysql();
+        this.mysqlPool = mysqlPkg.createPool({
+          host: config.host,
+          port: config.port || 3306,
+          user: config.user,
+          password: config.password,
+          database: config.database,
+          waitForConnections: true,
+          connectionLimit: 10,
+        });
+        await this._createMysqlTables();
+      }
+    } catch (err) {
+      if (!configOverride) {
+        console.warn(`[DB] Failed to initialize ${this.type.toUpperCase()} database, falling back to JSON storage mode:`, err.message);
+        this.type = 'json';
+        this.connectionConfig = { type: 'json' };
+        await this.close();
+      } else {
+        throw err;
+      }
     }
 
     this.initialized = true;

@@ -1,25 +1,18 @@
 {
   "users": [
     {
-      "id": "f1f3c8de-7627-4de7-b0c9-499d2c9ad0be",
-      "username": "wstest_1789740258229",
-      "passwordHash": "$2a$10$fymyX5bY4dOtLslAa1iFL.8jaclkyWpMPg/lzhRBTDNyZO252mViq",
+      "id": "admin-root-0001",
+      "username": "admin",
+      "passwordHash": "$2a$10$atD9lQ.CRktisdIhIXvyHeUfnn8rl2NBiP5xSMLi5MZdhl6i8uQMK",
       "role": "admin",
-      "createdAt": "2026-09-18T14:04:18.344Z"
+      "createdAt": "2026-09-18T07:45:00.000Z"
     },
     {
-      "id": "86f939a8-c301-4aad-9b9a-a4a311767bba",
-      "username": "wstest_1789740279594",
-      "passwordHash": "$2a$10$VL./Ni/Y7pjXM.KRKtqTmOKTiE51UInmNsVQG1KK.naY50XsDrHB6",
+      "id": "ef07a55b-d993-4c52-94d5-cced45e6ed92",
+      "username": "wstest_1789769902070",
+      "passwordHash": "$2a$10$4K3Qy0dFo8X9TjvJyWuaVeumU1SunxYQLxFcf0k6vihMgdKAZe9r6",
       "role": "user",
-      "createdAt": "2026-09-18T14:04:39.706Z"
-    },
-    {
-      "id": "57f8e086-8b0f-48cc-9318-43c4031c2b25",
-      "username": "wstest_1789740384451",
-      "passwordHash": "$2a$10$0H0592I4ajpRr4zVQu.SEuMk3696PIIViAPVt97MMn4SLY8b6ULk6",
-      "role": "user",
-      "createdAt": "2026-09-18T14:06:24.551Z"
+      "createdAt": "2026-09-18T22:18:22.190Z"
     }
   ]
 }

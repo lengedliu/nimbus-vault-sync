@@ -125,10 +125,22 @@
       "createdAt": "2026-09-18T14:06:18.862Z"
     },
     {
-      "id": "319cec9a-455a-4c09-94a1-cb0d0e6421e8",
-      "ownerId": "57f8e086-8b0f-48cc-9318-43c4031c2b25",
-      "name": "WS_Test_Vault_1789740384552",
-      "createdAt": "2026-09-18T14:06:24.553Z"
+      "id": "4b06ff34-e5ed-4a3e-84ff-e5491966631f",
+      "ownerId": "u_sec_owner",
+      "name": "Test/../../Evil..Vault:Name",
+      "createdAt": "2026-09-18T22:10:56.744Z"
+    },
+    {
+      "id": "75e6399a-a2fd-417b-8fef-16eca419c17c",
+      "ownerId": "u_perm_owner",
+      "name": "PermTestVault",
+      "createdAt": "2026-09-18T22:10:56.757Z"
+    },
+    {
+      "id": "2b41e153-4117-436c-8e07-4e7b0cb35d2b",
+      "ownerId": "78b58861-db00-46f4-a1df-450b91a25241",
+      "name": "WS_Test_Vault_1789769462437",
+      "createdAt": "2026-09-18T22:11:02.437Z"
     }
   ]
 }

@@ -31,7 +31,8 @@ const DEFAULT_SETTINGS = {
   vaultName: '',
   deviceId: 'Obsidian Device',
   autoSync: true,
-  syncIntervalSeconds: 30
+  syncIntervalSeconds: 30,
+  syncBaselines: {}
 };
 
 module.exports = class NimbusSyncPlugin extends Plugin {
@@ -49,6 +50,15 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     this.fileHashes = new Map();
     this.reconnectTimer = null;
     this.pingTimer = null;
+    this._saveSettingsTimer = null;
+
+    // Load initial file hashes from baseline if present
+    const initialBaseline = this.getVaultBaseline();
+    for (const [path, meta] of Object.entries(initialBaseline)) {
+      if (meta && meta.hash) {
+        this.fileHashes.set(path, meta.hash);
+      }
+    }
 
     // Ribbon icon for quick sync / full sync
     this.addRibbonIcon('refresh-cw', 'Nimbus: 一键全量同步', async () => {
@@ -140,6 +150,44 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       this.settings.token = this.settings.authToken;
     }
     await this.saveData(this.settings);
+  }
+
+  scheduleSaveSettings() {
+    if (this._saveSettingsTimer) {
+      clearTimeout(this._saveSettingsTimer);
+    }
+    this._saveSettingsTimer = setTimeout(async () => {
+      this._saveSettingsTimer = null;
+      await this.saveSettings();
+    }, 400);
+  }
+
+  getVaultBaseline(vaultId = this.settings.vaultId) {
+    if (!vaultId) return {};
+    if (!this.settings.syncBaselines) {
+      this.settings.syncBaselines = {};
+    }
+    return this.settings.syncBaselines[vaultId] || {};
+  }
+
+  updateBaselineEntry(vaultId, filePath, meta) {
+    if (!vaultId || !filePath) return;
+    if (!this.settings.syncBaselines) {
+      this.settings.syncBaselines = {};
+    }
+    if (!this.settings.syncBaselines[vaultId]) {
+      this.settings.syncBaselines[vaultId] = {};
+    }
+    if (meta === null || meta === undefined) {
+      delete this.settings.syncBaselines[vaultId][filePath];
+    } else {
+      this.settings.syncBaselines[vaultId][filePath] = {
+        hash: meta.hash,
+        mtime: meta.mtime || Date.now(),
+        size: meta.size || 0
+      };
+    }
+    this.scheduleSaveSettings();
   }
 
   updateStatusBar(status, customText) {
@@ -440,6 +488,10 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       case 'ack':
         if (msg.hash) {
           this.fileHashes.set(msg.path, msg.hash);
+          this.updateBaselineEntry(this.settings.vaultId, msg.path, {
+            hash: msg.hash,
+            mtime: msg.mtime || Date.now()
+          });
         }
         break;
 
@@ -470,74 +522,148 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   }
 
   async syncManifest(remoteManifest) {
-    new Notice('☁️ Nimbus 正在检查笔记库并自动同步...');
+    new Notice('☁️ Nimbus 正在检查笔记库并自动同步 (3-Way Diff)...');
     try {
+      const vaultId = this.settings.vaultId || 'default';
+      const baseline = { ...this.getVaultBaseline(vaultId) };
       const files = this.app.vault.getFiles();
       const localFileMap = new Map();
       for (const f of files) {
         localFileMap.set(f.path, f);
       }
 
+      const allPaths = new Set([
+        ...localFileMap.keys(),
+        ...Object.keys(remoteManifest || {}),
+        ...Object.keys(baseline)
+      ]);
+
       const toPull = [];
       const toPush = [];
+      const toLocalDelete = [];
+      const toRemoteDelete = [];
 
-      // 1. 比对云端文件：检测缺失拉取、内容哈希比对与时间戳比对
-      for (const [remotePath, meta] of Object.entries(remoteManifest)) {
-        const localFile = localFileMap.get(remotePath);
-        if (!localFile) {
-          // 本地缺失 -> 加入拉取队列
-          toPull.push({ path: remotePath, meta });
-        } else {
-          // 本地存在 -> 计算哈希比对
+      // 3-Way 对比分析：Local (本地当前) vs Remote (云端当前) vs Base (上次同步基线)
+      for (const path of allPaths) {
+        const localFile = localFileMap.get(path);
+        const remoteMeta = remoteManifest ? remoteManifest[path] : null;
+        const baseMeta = baseline[path];
+
+        if (localFile && remoteMeta && baseMeta) {
+          // 场景 1: 三方均存在
           const localHash = await this.computeFileHash(localFile);
+          if (localHash === remoteMeta.hash) {
+            // 内容一致，更新内存与基线
+            this.fileHashes.set(path, remoteMeta.hash);
+            baseline[path] = { hash: remoteMeta.hash, mtime: remoteMeta.mtime, size: remoteMeta.size };
+          } else {
+            const localChanged = (localHash !== baseMeta.hash);
+            const remoteChanged = (remoteMeta.hash !== baseMeta.hash);
 
-          if (meta && meta.hash && localHash) {
-            if (localHash === meta.hash) {
-              // 内容一致
-              this.fileHashes.set(remotePath, meta.hash);
+            if (localChanged && !remoteChanged) {
+              // 仅本地修改 -> 推送至云端
+              this.fileHashes.set(path, localHash);
+              toPush.push(localFile);
+            } else if (!localChanged && remoteChanged) {
+              // 仅云端修改 -> 拉取至本地
+              toPull.push({ path, meta: remoteMeta });
             } else {
-              // 内容不同：比较最后修改时间确定同步方向
+              // 并发修改/时间戳比对
               const localMtime = (localFile.stat && localFile.stat.mtime) ? localFile.stat.mtime : 0;
-              const remoteMtime = (meta && meta.mtime) ? meta.mtime : 0;
-
+              const remoteMtime = (remoteMeta.mtime) ? remoteMeta.mtime : 0;
               if (remoteMtime > localMtime) {
-                // 云端版本较新 -> 加入拉取队列
-                toPull.push({ path: remotePath, meta });
+                toPull.push({ path, meta: remoteMeta });
               } else {
-                // 本地版本较新 -> 加入推送队列
-                this.fileHashes.set(remotePath, localHash);
+                this.fileHashes.set(path, localHash);
                 toPush.push(localFile);
               }
             }
-          } else if (meta && meta.hash) {
-            // 兜底拉取云端
-            toPull.push({ path: remotePath, meta });
           }
-        }
-      }
-
-      // 2. 检查本地独有文件：推送到云端
-      for (const f of files) {
-        if (!remoteManifest[f.path]) {
-          const localHash = await this.computeFileHash(f);
+        } else if (localFile && !remoteMeta && baseMeta) {
+          // 场景 2: 本地存在，基线存在，但云端已不存在 (例如 PC 端删除了云端文件)
+          const localHash = await this.computeFileHash(localFile);
+          const localChanged = (localHash !== baseMeta.hash);
+          if (!localChanged) {
+            // 本地未修改过 -> 遵从云端删除指令，删除本地文件，避免复活云端！
+            toLocalDelete.push(path);
+            delete baseline[path];
+            this.fileHashes.delete(path);
+          } else {
+            // 本地离线有新编辑 -> 保留本地修改，作为新文件重新推送
+            this.fileHashes.set(path, localHash);
+            toPush.push(localFile);
+          }
+        } else if (!localFile && remoteMeta && baseMeta) {
+          // 场景 3: 云端存在，基线存在，但本地已不存在 (例如本端离线时删除了该笔记)
+          const remoteChanged = (remoteMeta.hash !== baseMeta.hash);
+          if (!remoteChanged) {
+            // 云端未被其他设备修改 -> 遵从本地删除，向云端发送删除指令
+            toRemoteDelete.push(path);
+            delete baseline[path];
+            this.fileHashes.delete(path);
+          } else {
+            // 云端被其他设备更新了 -> 保留云端新内容，拉取到本地
+            toPull.push({ path, meta: remoteMeta });
+          }
+        } else if (localFile && !remoteMeta && !baseMeta) {
+          // 场景 4: 本地纯新增文件 (无基线，云端无) -> 推送
+          const localHash = await this.computeFileHash(localFile);
           if (localHash) {
-            this.fileHashes.set(f.path, localHash);
+            this.fileHashes.set(path, localHash);
           }
-          toPush.push(f);
+          toPush.push(localFile);
+        } else if (!localFile && remoteMeta && !baseMeta) {
+          // 场景 5: 云端纯新增文件 (无基线，本地无) -> 拉取
+          toPull.push({ path, meta: remoteMeta });
+        } else if (localFile && remoteMeta && !baseMeta) {
+          // 场景 6: 两端均存在但无历史基线 (首次绑定/基线重置)
+          const localHash = await this.computeFileHash(localFile);
+          if (localHash && remoteMeta.hash && localHash === remoteMeta.hash) {
+            this.fileHashes.set(path, remoteMeta.hash);
+            baseline[path] = { hash: remoteMeta.hash, mtime: remoteMeta.mtime, size: remoteMeta.size };
+          } else {
+            const localMtime = (localFile.stat && localFile.stat.mtime) ? localFile.stat.mtime : 0;
+            const remoteMtime = (remoteMeta.mtime) ? remoteMeta.mtime : 0;
+            if (remoteMtime > localMtime) {
+              toPull.push({ path, meta: remoteMeta });
+            } else {
+              if (localHash) this.fileHashes.set(path, localHash);
+              toPush.push(localFile);
+            }
+          }
+        } else if (!localFile && !remoteMeta && baseMeta) {
+          // 场景 7: 两端均已删除
+          delete baseline[path];
+          this.fileHashes.delete(path);
         }
       }
 
       const pullCount = toPull.length;
       const pushCount = toPush.length;
+      const localDelCount = toLocalDelete.length;
+      const remoteDelCount = toRemoteDelete.length;
 
-      if (pullCount === 0 && pushCount === 0) {
-        new Notice('✅ 本地笔记与 Nimbus 云端已保持一致');
+      if (pullCount === 0 && pushCount === 0 && localDelCount === 0 && remoteDelCount === 0) {
+        if (!this.settings.syncBaselines) this.settings.syncBaselines = {};
+        this.settings.syncBaselines[vaultId] = baseline;
+        await this.saveSettings();
+        new Notice('✅ 本地笔记与 Nimbus 云端已保持一致 (3-Way 基线校验完成)');
         return;
       }
 
-      new Notice(`⚡ 自动同步开始: 待上传 ${pushCount} 个文件，待下载 ${pullCount} 个文件`);
+      new Notice(`⚡ 3-Way 同步开始: 上传 ${pushCount}，下载 ${pullCount}，本地删除 ${localDelCount}，云端删除 ${remoteDelCount}`);
 
-      // 3. 并发节流执行拉取 (PULL) - 限制并发与批次间隙，防止瞬间打满 WebSocket / I/O
+      // 1. 执行本地删除 (云端已删)
+      for (const delPath of toLocalDelete) {
+        await this.applyRemoteDelete(delPath);
+      }
+
+      // 2. 执行云端删除 (本地已删)
+      for (const delPath of toRemoteDelete) {
+        this.sendWsMessage({ type: 'delete', path: delPath });
+      }
+
+      // 3. 并发节流执行拉取 (PULL)
       const PULL_CONCURRENCY = 6;
       for (let i = 0; i < toPull.length; i += PULL_CONCURRENCY) {
         const batch = toPull.slice(i, i + PULL_CONCURRENCY);
@@ -563,9 +689,14 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         }
       }
 
-      new Notice(`✅ 自动同步完成: 成功处理 ${pushCount} 个上传和 ${pullCount} 个下载任务`);
+      // 同步完成后保存最新基线
+      if (!this.settings.syncBaselines) this.settings.syncBaselines = {};
+      this.settings.syncBaselines[vaultId] = baseline;
+      await this.saveSettings();
+
+      new Notice(`✅ 3-Way 自动同步完成: 成功处理 ${pushCount + pullCount + localDelCount + remoteDelCount} 个变更任务`);
     } catch (err) {
-      console.error('[Nimbus] 自动全量同步异常:', err);
+      console.error('[Nimbus] 3-Way 自动同步异常:', err);
       new Notice(`❌ 自动同步异常: ${err.message}`);
     }
   }
@@ -660,8 +791,14 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         await this.app.vault.createBinary(filePath, buffer);
       }
 
-      if (hash) {
-        this.fileHashes.set(filePath, hash);
+      const calculatedHash = hash || (await computeSha256(buffer));
+      if (calculatedHash) {
+        this.fileHashes.set(filePath, calculatedHash);
+        this.updateBaselineEntry(this.settings.vaultId, filePath, {
+          hash: calculatedHash,
+          mtime: mtime || Date.now(),
+          size: buffer.byteLength
+        });
       }
     } catch (err) {
       console.error('[Nimbus] 写入远程文件失败:', filePath, err);
@@ -701,6 +838,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         await this.app.vault.delete(existing);
       }
       this.fileHashes.delete(filePath);
+      this.updateBaselineEntry(this.settings.vaultId, filePath, null);
     } catch (err) {
       console.error('[Nimbus] 删除本地文件失败:', filePath, err);
     } finally {
@@ -739,6 +877,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         path: file.path
       });
       this.fileHashes.delete(file.path);
+      this.updateBaselineEntry(this.settings.vaultId, file.path, null);
     } else if (file instanceof TFolder) {
       const folderPrefix = file.path ? `${file.path}/` : '';
       for (const [queuedPath, timer] of this.localChangeQueue.entries()) {
@@ -751,6 +890,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         if (knownPath.startsWith(folderPrefix)) {
           this.sendWsMessage({ type: 'delete', path: knownPath });
           this.fileHashes.delete(knownPath);
+          this.updateBaselineEntry(this.settings.vaultId, knownPath, null);
         }
       }
     }
@@ -766,6 +906,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       // Delete old path on server and push new path
       this.sendWsMessage({ type: 'delete', path: oldPath });
       this.fileHashes.delete(oldPath);
+      this.updateBaselineEntry(this.settings.vaultId, oldPath, null);
       await this.pushLocalFile(file);
     } else if (file instanceof TFolder) {
       // 文件夹重命名：同步重命名并推送该目录下所有子文件
@@ -785,6 +926,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           this.sendWsMessage({ type: 'delete', path: oldFilePath });
           const oldHash = this.fileHashes.get(oldFilePath);
           this.fileHashes.delete(oldFilePath);
+          this.updateBaselineEntry(this.settings.vaultId, oldFilePath, null);
           if (oldHash) {
             this.fileHashes.set(f.path, oldHash);
           }
@@ -798,6 +940,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     try {
       const buffer = await this.app.vault.readBinary(file);
       const baseHash = this.fileHashes.get(file.path);
+      const currentHash = await computeSha256(buffer);
       const MAX_WS_INLINE = 2 * 1024 * 1024; // 2MB
 
       // If file exceeds 2MB, stream via HTTP PUT to avoid WebSocket buffer memory pressure
@@ -820,9 +963,14 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
         if (res.ok) {
           const body = await res.json();
-          const returnedHash = body && (body.currentHash || body.hash);
+          const returnedHash = body && (body.currentHash || body.hash || currentHash);
           if (returnedHash) {
             this.fileHashes.set(file.path, returnedHash);
+            this.updateBaselineEntry(this.settings.vaultId, file.path, {
+              hash: returnedHash,
+              mtime: file.stat ? file.stat.mtime : Date.now(),
+              size: buffer.byteLength
+            });
           }
           if (body && body.conflict) {
             new Notice(`⚠️ 检测到并发冲突！已自动创建冲突副本: ${body.conflict}`);
@@ -831,6 +979,15 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           console.warn(`[Nimbus] 大文件 HTTP PUT 推送失败 (${res.status}):`, file.path);
         }
         return;
+      }
+
+      if (currentHash) {
+        this.fileHashes.set(file.path, currentHash);
+        this.updateBaselineEntry(this.settings.vaultId, file.path, {
+          hash: currentHash,
+          mtime: file.stat ? file.stat.mtime : Date.now(),
+          size: buffer.byteLength
+        });
       }
 
       const base64 = arrayBufferToBase64(buffer);
@@ -1039,12 +1196,30 @@ class NimbusSettingTab extends PluginSettingTab {
       // One-click Push All Notes
       new Setting(containerEl)
         .setName('🚀 立即全量双向同步')
-        .setDesc('检查本地所有笔记与附件，自动上传云端缺失文件并下载云端更新')
+        .setDesc('采用 3-Way 状态比对，自动双向同步、下载更新并精确清理已删除文件')
         .addButton(btn => btn
           .setButtonText('立即同步所有本地笔记')
           .setCta()
           .onClick(async () => {
             await this.plugin.fullSyncAllFiles();
+          }));
+
+      // Baseline management
+      const currentVaultId = this.plugin.settings.vaultId || 'default';
+      const baselineCount = Object.keys((this.plugin.settings.syncBaselines && this.plugin.settings.syncBaselines[currentVaultId]) || {}).length;
+      new Setting(containerEl)
+        .setName('📋 同步基线快照 (Sync Baseline)')
+        .setDesc(`当前 Vault 已记录 ${baselineCount} 个文件的同步基线快照（用于识别跨端删除，防止已删文件复活）`)
+        .addButton(btn => btn
+          .setButtonText('重置基线快照')
+          .onClick(async () => {
+            if (!this.plugin.settings.syncBaselines) {
+              this.plugin.settings.syncBaselines = {};
+            }
+            this.plugin.settings.syncBaselines[currentVaultId] = {};
+            await this.plugin.saveSettings();
+            new Notice('✅ 已重置当前 Vault 的同步基线快照');
+            await this.display();
           }));
 
       // Add Create Vault option
