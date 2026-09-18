@@ -1,4 +1,25 @@
 const { Plugin, PluginSettingTab, Setting, Notice, TFile, TFolder, arrayBufferToBase64, base64ToArrayBuffer } = require('obsidian');
+let nodeCrypto = null;
+try {
+  nodeCrypto = require('crypto');
+} catch (_) {}
+
+async function computeSha256(arrayBuffer) {
+  if (nodeCrypto && typeof nodeCrypto.createHash === 'function') {
+    try {
+      return nodeCrypto.createHash('sha256').update(Buffer.from(arrayBuffer)).digest('hex');
+    } catch (_) {}
+  }
+  const cryptoObj = (typeof crypto !== 'undefined' && crypto.subtle) ? crypto : (typeof window !== 'undefined' && window.crypto ? window.crypto : null);
+  if (cryptoObj && cryptoObj.subtle) {
+    try {
+      const hashBuffer = await cryptoObj.subtle.digest('SHA-256', arrayBuffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch (_) {}
+  }
+  return null;
+}
 
 const DEFAULT_SETTINGS = {
   serverUrl: 'http://192.168.50.154:8787',
@@ -79,6 +100,12 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     this.disconnectWebSocket();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.pingTimer) clearInterval(this.pingTimer);
+    if (this.localChangeQueue) {
+      for (const timer of this.localChangeQueue.values()) {
+        clearTimeout(timer);
+      }
+      this.localChangeQueue.clear();
+    }
   }
 
   async loadSettings() {
@@ -357,6 +384,28 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         }
         break;
 
+      case 'batch_file_change':
+        // Handle coalesced or server batch change notifications
+        if (Array.isArray(msg.changes)) {
+          for (const item of msg.changes) {
+            if (!item || !item.path) continue;
+            if (item.action === 'delete') {
+              await this.applyRemoteDelete(item.path);
+            } else {
+              const localHash = this.fileHashes.get(item.path);
+              if (item.hash && localHash === item.hash) {
+                continue;
+              }
+              if (item.size && item.size > 2 * 1024 * 1024) {
+                await this.pullRemoteFileViaHttp(item.path, item.mtime, item.hash);
+              } else {
+                this.sendWsMessage({ type: 'pull', path: item.path });
+              }
+            }
+          }
+        }
+        break;
+
       case 'pull_stream':
         // Server directed large file pull via streaming HTTP
         await this.pullRemoteFileViaHttp(msg.path, msg.mtime, msg.hash);
@@ -368,7 +417,19 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         break;
 
       case 'conflict':
-        new Notice(`⚠️ 检测到并发冲突！已自动创建冲突副本: ${msg.conflictPath}`);
+        new Notice(`⚠️ 检测到并发冲突！已自动创建云端分支副本: ${msg.conflictPath}`);
+        // 1. 自动拉取云端新创建的分支副本保存至本地
+        if (msg.conflictPath) {
+          this.sendWsMessage({ type: 'pull', path: msg.conflictPath });
+        }
+        // 2. 自动拉取云端主文件当前胜出版本同步至本地
+        if (msg.path) {
+          this.sendWsMessage({ type: 'pull', path: msg.path });
+        }
+        break;
+
+      case 'permission_updated':
+        new Notice(`ℹ️ ${msg.message || '您的笔记库权限已更新'}`);
         break;
 
       case 'file':
@@ -397,6 +458,17 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     }
   }
 
+  async computeFileHash(file) {
+    if (!file || !(file instanceof TFile)) return null;
+    try {
+      const buffer = await this.app.vault.readBinary(file);
+      return await computeSha256(buffer);
+    } catch (err) {
+      console.warn('[Nimbus] 计算本地文件哈希失败:', file.path, err);
+      return null;
+    }
+  }
+
   async syncManifest(remoteManifest) {
     new Notice('☁️ Nimbus 正在检查笔记库并自动同步...');
     try {
@@ -406,42 +478,132 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         localFileMap.set(f.path, f);
       }
 
-      let pullCount = 0;
-      let pushCount = 0;
+      const toPull = [];
+      const toPush = [];
 
-      // 1. Check files on server: pull missing or newer files
+      // 1. 比对云端文件：检测缺失拉取、内容哈希比对与时间戳比对
       for (const [remotePath, meta] of Object.entries(remoteManifest)) {
         const localFile = localFileMap.get(remotePath);
         if (!localFile) {
-          // Local doesn't have it -> pull from server
-          this.sendWsMessage({ type: 'pull', path: remotePath });
-          pullCount++;
-        } else if (meta && meta.hash) {
-          // File exists locally, remember server hash
-          this.fileHashes.set(remotePath, meta.hash);
+          // 本地缺失 -> 加入拉取队列
+          toPull.push({ path: remotePath, meta });
+        } else {
+          // 本地存在 -> 计算哈希比对
+          const localHash = await this.computeFileHash(localFile);
+
+          if (meta && meta.hash && localHash) {
+            if (localHash === meta.hash) {
+              // 内容一致
+              this.fileHashes.set(remotePath, meta.hash);
+            } else {
+              // 内容不同：比较最后修改时间确定同步方向
+              const localMtime = (localFile.stat && localFile.stat.mtime) ? localFile.stat.mtime : 0;
+              const remoteMtime = (meta && meta.mtime) ? meta.mtime : 0;
+
+              if (remoteMtime > localMtime) {
+                // 云端版本较新 -> 加入拉取队列
+                toPull.push({ path: remotePath, meta });
+              } else {
+                // 本地版本较新 -> 加入推送队列
+                this.fileHashes.set(remotePath, localHash);
+                toPush.push(localFile);
+              }
+            }
+          } else if (meta && meta.hash) {
+            // 兜底拉取云端
+            toPull.push({ path: remotePath, meta });
+          }
         }
       }
 
-      // 2. Check local files: push all local files that aren't on server yet
+      // 2. 检查本地独有文件：推送到云端
       for (const f of files) {
         if (!remoteManifest[f.path]) {
-          await this.pushLocalFile(f);
-          pushCount++;
+          const localHash = await this.computeFileHash(f);
+          if (localHash) {
+            this.fileHashes.set(f.path, localHash);
+          }
+          toPush.push(f);
         }
       }
 
-      if (pullCount > 0 || pushCount > 0) {
-        new Notice(`⚡ 自动同步进行中: 上传 ${pushCount} 个本地文件，下载 ${pullCount} 个云端文件`);
-      } else {
+      const pullCount = toPull.length;
+      const pushCount = toPush.length;
+
+      if (pullCount === 0 && pushCount === 0) {
         new Notice('✅ 本地笔记与 Nimbus 云端已保持一致');
+        return;
       }
+
+      new Notice(`⚡ 自动同步开始: 待上传 ${pushCount} 个文件，待下载 ${pullCount} 个文件`);
+
+      // 3. 并发节流执行拉取 (PULL) - 限制并发与批次间隙，防止瞬间打满 WebSocket / I/O
+      const PULL_CONCURRENCY = 6;
+      for (let i = 0; i < toPull.length; i += PULL_CONCURRENCY) {
+        const batch = toPull.slice(i, i + PULL_CONCURRENCY);
+        for (const item of batch) {
+          if (item.meta && item.meta.size && item.meta.size > 2 * 1024 * 1024) {
+            await this.pullRemoteFileViaHttp(item.path, item.meta.mtime, item.meta.hash);
+          } else {
+            this.sendWsMessage({ type: 'pull', path: item.path });
+          }
+        }
+        if (i + PULL_CONCURRENCY < toPull.length) {
+          await new Promise((r) => setTimeout(r, 40));
+        }
+      }
+
+      // 4. 并发节流执行推送 (PUSH)
+      const PUSH_CONCURRENCY = 4;
+      for (let i = 0; i < toPush.length; i += PUSH_CONCURRENCY) {
+        const batch = toPush.slice(i, i + PUSH_CONCURRENCY);
+        await Promise.all(batch.map((f) => this.pushLocalFile(f)));
+        if (i + PUSH_CONCURRENCY < toPush.length) {
+          await new Promise((r) => setTimeout(r, 30));
+        }
+      }
+
+      new Notice(`✅ 自动同步完成: 成功处理 ${pushCount} 个上传和 ${pullCount} 个下载任务`);
     } catch (err) {
       console.error('[Nimbus] 自动全量同步异常:', err);
+      new Notice(`❌ 自动同步异常: ${err.message}`);
     }
   }
 
   async fullSyncAllFiles() {
     new Notice('☁️ 开始全量双向同步...');
+    if (!this.settings.token || !this.settings.vaultId) {
+      new Notice('❌ 请先在 Nimbus 设置中完成登录并绑定 Vault');
+      return;
+    }
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.connectWebSocket();
+    }
+
+    try {
+      const baseUrl = this.getCleanServerUrl();
+      const res = await fetch(`${baseUrl}/api/vaults/${encodeURIComponent(this.settings.vaultId)}/manifest`, {
+        headers: {
+          'Authorization': `Bearer ${this.settings.token}`,
+        },
+      });
+
+      if (!res.ok) {
+        throw new Error(`获取云端清单失败 (HTTP ${res.status})`);
+      }
+
+      const data = await res.json();
+      const remoteManifest = data.manifest || {};
+      await this.syncManifest(remoteManifest);
+    } catch (err) {
+      console.error('[Nimbus] 全量双向同步失败:', err);
+      new Notice(`❌ 全量双向同步失败: ${err.message}`);
+    }
+  }
+
+  async forcePushAllLocalFiles() {
+    new Notice('☁️ 开始强制推送本地所有笔记到云端...');
     const files = this.app.vault.getFiles();
     if (!this.settings.token || !this.settings.vaultId) {
       new Notice('❌ 请先在 Nimbus 设置中完成登录并绑定 Vault');
@@ -450,19 +612,22 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       this.connectWebSocket();
-      await new Promise((r) => setTimeout(r, 1200));
+      await new Promise((r) => setTimeout(r, 1000));
     }
 
     let pushed = 0;
-    for (const f of files) {
-      await this.pushLocalFile(f);
-      pushed++;
+    const CONCURRENCY = 4;
+    for (let i = 0; i < files.length; i += CONCURRENCY) {
+      const batch = files.slice(i, i + CONCURRENCY);
+      await Promise.all(batch.map(async (f) => {
+        await this.pushLocalFile(f);
+        pushed++;
+      }));
+      if (i + CONCURRENCY < files.length) {
+        await new Promise((r) => setTimeout(r, 30));
+      }
     }
-    new Notice(`✅ 全量推送完成: 共扫描并推送 ${pushed} 个笔记/附件至云端`);
-  }
-
-  async forcePushAllLocalFiles() {
-    await this.fullSyncAllFiles();
+    new Notice(`✅ 强制推送完成: 共扫描并推送 ${pushed} 个笔记/附件至云端`);
   }
 
   async applyRemoteChange(filePath, base64Content, mtime, hash) {
@@ -546,24 +711,87 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   // --- Local File Changes ---
   async onLocalFileChange(type, file) {
     if (this.isApplyingRemoteChange || !(file instanceof TFile)) return;
-    await this.pushLocalFile(file);
+
+    // 清除该文件之前的未执行防抖计时器
+    if (this.localChangeQueue.has(file.path)) {
+      clearTimeout(this.localChangeQueue.get(file.path));
+    }
+
+    // 新建文件立即或短延时推送，修改文件使用 400ms 防抖避免击穿 WebSocket 与产生多余历史版本
+    const delay = type === 'create' ? 50 : 400;
+    const timer = setTimeout(async () => {
+      this.localChangeQueue.delete(file.path);
+      await this.pushLocalFile(file);
+    }, delay);
+
+    this.localChangeQueue.set(file.path, timer);
   }
 
   async onLocalFileDelete(file) {
-    if (this.isApplyingRemoteChange || !(file instanceof TFile)) return;
-    this.sendWsMessage({
-      type: 'delete',
-      path: file.path
-    });
-    this.fileHashes.delete(file.path);
+    if (this.isApplyingRemoteChange) return;
+    if (file instanceof TFile) {
+      if (this.localChangeQueue.has(file.path)) {
+        clearTimeout(this.localChangeQueue.get(file.path));
+        this.localChangeQueue.delete(file.path);
+      }
+      this.sendWsMessage({
+        type: 'delete',
+        path: file.path
+      });
+      this.fileHashes.delete(file.path);
+    } else if (file instanceof TFolder) {
+      const folderPrefix = file.path ? `${file.path}/` : '';
+      for (const [queuedPath, timer] of this.localChangeQueue.entries()) {
+        if (queuedPath.startsWith(folderPrefix)) {
+          clearTimeout(timer);
+          this.localChangeQueue.delete(queuedPath);
+        }
+      }
+      for (const knownPath of Array.from(this.fileHashes.keys())) {
+        if (knownPath.startsWith(folderPrefix)) {
+          this.sendWsMessage({ type: 'delete', path: knownPath });
+          this.fileHashes.delete(knownPath);
+        }
+      }
+    }
   }
 
   async onLocalFileRename(file, oldPath) {
-    if (this.isApplyingRemoteChange || !(file instanceof TFile)) return;
-    // Delete old path on server and push new path
-    this.sendWsMessage({ type: 'delete', path: oldPath });
-    this.fileHashes.delete(oldPath);
-    await this.pushLocalFile(file);
+    if (this.isApplyingRemoteChange) return;
+    if (file instanceof TFile) {
+      if (this.localChangeQueue.has(oldPath)) {
+        clearTimeout(this.localChangeQueue.get(oldPath));
+        this.localChangeQueue.delete(oldPath);
+      }
+      // Delete old path on server and push new path
+      this.sendWsMessage({ type: 'delete', path: oldPath });
+      this.fileHashes.delete(oldPath);
+      await this.pushLocalFile(file);
+    } else if (file instanceof TFolder) {
+      // 文件夹重命名：同步重命名并推送该目录下所有子文件
+      const oldPrefix = oldPath ? `${oldPath}/` : '';
+      const newPrefix = file.path ? `${file.path}/` : '';
+      for (const [queuedPath, timer] of this.localChangeQueue.entries()) {
+        if (queuedPath.startsWith(oldPrefix)) {
+          clearTimeout(timer);
+          this.localChangeQueue.delete(queuedPath);
+        }
+      }
+      const allFiles = this.app.vault.getFiles();
+      for (const f of allFiles) {
+        if (f.path.startsWith(newPrefix)) {
+          const relativePart = f.path.substring(newPrefix.length);
+          const oldFilePath = oldPrefix + relativePart;
+          this.sendWsMessage({ type: 'delete', path: oldFilePath });
+          const oldHash = this.fileHashes.get(oldFilePath);
+          this.fileHashes.delete(oldFilePath);
+          if (oldHash) {
+            this.fileHashes.set(f.path, oldHash);
+          }
+          await this.pushLocalFile(f);
+        }
+      }
+    }
   }
 
   async pushLocalFile(file) {
@@ -592,8 +820,12 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
         if (res.ok) {
           const body = await res.json();
-          if (body && body.hash) {
-            this.fileHashes.set(file.path, body.hash);
+          const returnedHash = body && (body.currentHash || body.hash);
+          if (returnedHash) {
+            this.fileHashes.set(file.path, returnedHash);
+          }
+          if (body && body.conflict) {
+            new Notice(`⚠️ 检测到并发冲突！已自动创建冲突副本: ${body.conflict}`);
           }
         } else {
           console.warn(`[Nimbus] 大文件 HTTP PUT 推送失败 (${res.status}):`, file.path);

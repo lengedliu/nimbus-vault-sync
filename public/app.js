@@ -1232,6 +1232,28 @@
     }
   }
 
+  function fillAdminCredentials() {
+    const userInp = $('#login-username');
+    const passInp = $('#login-password');
+    if (userInp) userInp.value = 'admin';
+    if (passInp) passInp.value = 'admin123';
+  }
+
+  const quickFillBtn = $('#btn-quick-fill-admin');
+  if (quickFillBtn) {
+    quickFillBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      fillAdminCredentials();
+    });
+  }
+  const defaultHint = $('#login-default-hint');
+  if (defaultHint) {
+    defaultHint.addEventListener('click', (e) => {
+      e.preventDefault();
+      fillAdminCredentials();
+    });
+  }
+
   $('#login-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const serverInput = $('#login-server').value.trim();
@@ -2171,7 +2193,16 @@
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === 'auth_revoked' || msg.type === 'force_logout') {
-            toast('WebSocket 身份凭证已失效或被撤销，请重新登录', 'error');
+            toast(msg.message || 'WebSocket 身份凭证已失效或被撤销，请重新登录', 'error');
+            return;
+          }
+          if (msg.type === 'permission_updated') {
+            toast(msg.message || '笔记库访问权限已变更', 'info');
+            loadVaultList();
+            return;
+          }
+          if (msg.type === 'conflict') {
+            toast(`检测到并发冲突，已创建分支副本: ${msg.conflictPath}`, 'warning');
             return;
           }
           if (msg.cursor) {

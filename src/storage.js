@@ -654,8 +654,21 @@ function writeFile(vaultId, relPath, buffer, { mtime, baseHash } = {}) {
       const conflictRel = `${base}.conflict-${stamp}${ext}`;
       const conflictFull = safeJoin(root, conflictRel);
       fs.writeFileSync(conflictFull, buffer);
+
+      const hash = sha256(buffer);
+      const mtimeVal = mtime || Date.now();
+      updateManifestEntry(vaultId, conflictRel, { size: buffer.length, mtime: mtimeVal, ctime: mtimeVal, hash });
+      invalidateContentCacheEntry(vaultId, conflictRel);
+      deltaSync.recordChange(vaultId, { path: conflictRel, action: 'UPSERT', size: buffer.length, mtime: mtimeVal, hash }).catch(() => {});
+      try {
+        ftsEngine.onFileWrite(vaultId, conflictRel, buffer.toString('utf8'), { size: buffer.length, mtime: mtimeVal, hash });
+      } catch {}
+      try {
+        gitSync.notifyChange(vaultId);
+      } catch {}
+
       // Don't touch the existing (server) version in this case.
-      return { written: false, conflict: conflictRel, currentHash: existingHash };
+      return { written: false, conflict: conflictRel, currentHash: existingHash, conflictHash: hash, conflictSize: buffer.length, conflictMtime: mtimeVal };
     }
 
     snapshotBeforeOverwrite(vaultId, relPath, existingBuf);
@@ -710,7 +723,23 @@ function writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, { mtime
       const conflictRel = `${base}.conflict-${stamp}${ext}`;
       const conflictFull = safeJoin(root, conflictRel);
       moveFile(tempFilePath, conflictFull);
-      return { written: false, conflict: conflictRel, currentHash: existingHash };
+
+      const stat = fs.statSync(conflictFull);
+      const mtimeVal = mtime || Date.now();
+      updateManifestEntry(vaultId, conflictRel, { size: stat.size, mtime: mtimeVal, ctime: mtimeVal, hash: incomingHash });
+      invalidateContentCacheEntry(vaultId, conflictRel);
+      deltaSync.recordChange(vaultId, { path: conflictRel, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash: incomingHash }).catch(() => {});
+      try {
+        if (stat.size <= 2 * 1024 * 1024) {
+          const buf = fs.readFileSync(conflictFull);
+          ftsEngine.onFileWrite(vaultId, conflictRel, buf.toString('utf8'), { size: stat.size, mtime: mtimeVal, hash: incomingHash });
+        }
+      } catch {}
+      try {
+        gitSync.notifyChange(vaultId);
+      } catch {}
+
+      return { written: false, conflict: conflictRel, currentHash: existingHash, conflictHash: incomingHash, conflictSize: stat.size, conflictMtime: mtimeVal };
     }
 
     // 真实覆盖：把旧文件直接拷贝进 history/（不读进内存），再用临时文件替换它。
@@ -975,6 +1004,23 @@ function moveVaultFile(vaultId, oldRelPath, newRelPath) {
   fs.mkdirSync(path.dirname(newFull), { recursive: true });
   fs.renameSync(oldFull, newFull);
   
+  // 更新历史版本索引中的路径，确保重命名后历史版本链路不丢失
+  const idxPath = historyIndexPath(vaultId);
+  try {
+    mutateIndex(idxPath, (entries) => {
+      let changed = false;
+      for (const entry of entries) {
+        if (entry.path === oldRelPath) {
+          entry.path = newRelPath;
+          changed = true;
+        }
+      }
+      return entries;
+    });
+  } catch (e) {
+    console.warn('[Storage] 重命名历史版本索引关联失败:', e.message);
+  }
+
   updateManifestEntry(vaultId, oldRelPath, null);
   invalidateContentCacheEntry(vaultId, oldRelPath);
   deltaSync.recordChange(vaultId, { path: oldRelPath, action: 'DELETE', size: 0, mtime: Date.now() }).catch(() => {});

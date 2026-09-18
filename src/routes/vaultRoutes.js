@@ -174,6 +174,11 @@ router.post('/:vaultId/permissions', asyncHandler(async (req, res) => {
   const member = await vaultMembers.addOrUpdateMember(vaultId, targetUserId, perm);
   const targetUserObj = users.findById(targetUserId);
 
+  const fnsHub = req.app.get('fnsHub');
+  if (fnsHub) {
+    fnsHub.updateUserPermissions(vaultId, targetUserId, perm);
+  }
+
   res.json({
     ok: true,
     member: {
@@ -195,6 +200,12 @@ router.delete('/:vaultId/permissions/:userId', asyncHandler(async (req, res) => 
   if (!requireOwnerAccess(req, res)) return;
 
   await vaultMembers.removeMember(vaultId, userId);
+
+  const fnsHub = req.app.get('fnsHub');
+  if (fnsHub) {
+    fnsHub.updateUserPermissions(vaultId, userId, null);
+  }
+
   res.json({ ok: true });
 }));
 

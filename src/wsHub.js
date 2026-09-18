@@ -448,9 +448,10 @@ class FnsHub {
             path: msg.path,
             conflictPath: result.conflict,
             currentHash: result.currentHash,
+            conflictHash: result.conflictHash,
           });
           // Let other clients know a conflict copy was created.
-          this.broadcastFileChange(vaultId, result.conflict, { currentHash: result.currentHash }, client.userId, true);
+          this.broadcastFileChange(vaultId, result.conflict, { currentHash: result.conflictHash }, client.userId, client.ws);
 
           // Trigger webhook alert
           const v = vaults.getById(vaultId);
@@ -520,6 +521,36 @@ class FnsHub {
         detail: e.message,
       });
       this._send(client.ws, { type: 'error', message: e.message });
+    }
+  }
+
+  /** Update active WebSocket client permissions or disconnect revoked user from vault */
+  updateUserPermissions(vaultId, userId, newPermission) {
+    const room = this.rooms.get(vaultId);
+    if (!room || room.size === 0) return;
+
+    for (const client of Array.from(room)) {
+      if (client.userId === userId) {
+        if (!newPermission) {
+          // Member removed or permission completely revoked
+          this._send(client.ws, {
+            type: 'auth_revoked',
+            message: '您已被移出该笔记库，访问权限已终止',
+          });
+          room.delete(client);
+          try {
+            client.ws.close(4003, 'Permission revoked');
+          } catch {}
+        } else {
+          // Role updated (e.g. read-write -> read-only or vice versa)
+          client.permission = newPermission;
+          this._send(client.ws, {
+            type: 'permission_updated',
+            permission: newPermission,
+            message: `您的笔记库权限已变更为 ${newPermission === 'read-only' ? '只读' : '读写'}`,
+          });
+        }
+      }
     }
   }
 
@@ -619,6 +650,7 @@ class FnsHub {
         path: relPath,
         cursor: deltaSync.getLatestCursor(vaultId),
         size: buf.length,
+        mtime: meta?.mtime || Date.now(),
         hash: result?.currentHash,
         pullRequired: true,
       };
@@ -627,7 +659,7 @@ class FnsHub {
         if (excludeWs && client.ws === excludeWs) continue;
         this._sendRaw(client.ws, json);
       }
-      this._scheduleDebouncedBatchNotification(vaultId, { action: 'update', path: relPath, size: buf.length, hash: result?.currentHash }, fromUserId, excludeWs);
+      this._scheduleDebouncedBatchNotification(vaultId, { action: 'update', path: relPath, size: buf.length, mtime: meta?.mtime || Date.now(), hash: result?.currentHash }, fromUserId, excludeWs);
       return;
     }
 
@@ -637,6 +669,7 @@ class FnsHub {
       cursor: deltaSync.getLatestCursor(vaultId),
       content: buf.toString('base64'),
       size: buf.length,
+      mtime: meta?.mtime || Date.now(),
       hash: result?.currentHash,
     };
     // 只序列化一次，广播给房间里所有客户端复用同一份字符串
@@ -645,7 +678,7 @@ class FnsHub {
       if (excludeWs && client.ws === excludeWs) continue; // don't echo back to the pushing socket
       this._sendRaw(client.ws, json);
     }
-    this._scheduleDebouncedBatchNotification(vaultId, { action: 'update', path: relPath, size: buf.length, hash: result?.currentHash }, fromUserId, excludeWs);
+    this._scheduleDebouncedBatchNotification(vaultId, { action: 'update', path: relPath, size: buf.length, mtime: meta?.mtime || Date.now(), hash: result?.currentHash }, fromUserId, excludeWs);
   }
 
   /** Push file deletion to all connected clients for this vault (except the sender WebSocket if provided). */

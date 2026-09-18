@@ -126,9 +126,11 @@ router.put('/:vaultId/files/*', (req, res) => {
     try {
       const incomingHash = hash.digest('hex');
       const result = storage.writeFileFromPath(req.params.vaultId, relPath, tempPath, incomingHash, { mtime, baseHash });
-      req.app.get('fnsHub').broadcastFileChange(req.params.vaultId, relPath, result, req.user.id);
-
+      
       if (!result.written && result.conflict) {
+        // Broadcast the newly created conflict file to all connected clients
+        req.app.get('fnsHub').broadcastFileChange(req.params.vaultId, result.conflict, { currentHash: result.conflictHash || incomingHash }, req.user.id);
+        
         syncLogger.recordLog({
           vaultId: req.params.vaultId,
           userId: req.user.id,
@@ -143,6 +145,8 @@ router.put('/:vaultId/files/*', (req, res) => {
           detail: `版本冲突，已自动生成冲突副本: ${result.conflict}`,
         });
       } else {
+        req.app.get('fnsHub').broadcastFileChange(req.params.vaultId, relPath, result, req.user.id);
+
         syncLogger.recordLog({
           vaultId: req.params.vaultId,
           userId: req.user.id,
@@ -158,7 +162,10 @@ router.put('/:vaultId/files/*', (req, res) => {
         });
       }
 
-      res.json(result);
+      res.json({
+        ...result,
+        hash: result.currentHash,
+      });
     } catch (e) {
       cleanupTemp();
       syncLogger.recordLog({

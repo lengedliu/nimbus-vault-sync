@@ -20,6 +20,7 @@ function refreshCacheFromJson() {
 async function loadFromDb() {
   if (dbManager.type === 'json') {
     refreshCacheFromJson();
+    await ensureDefaultAdmin();
     return;
   }
   try {
@@ -31,9 +32,42 @@ async function loadFromDb() {
       role: r.role,
       createdAt: r.created_at || r.createdAt,
     }));
+    await ensureDefaultAdmin();
   } catch (err) {
     console.error('[Users] Error loading users from SQL database, falling back to JSON:', err.message);
     refreshCacheFromJson();
+    await ensureDefaultAdmin();
+  }
+}
+
+async function ensureDefaultAdmin() {
+  if (!findByUsername('admin')) {
+    try {
+      const passwordHash = await bcrypt.hash('admin123', 10);
+      const user = {
+        id: uuid(),
+        username: 'admin',
+        passwordHash,
+        role: 'admin',
+        createdAt: new Date().toISOString(),
+      };
+      usersCache.push(user);
+      if (dbManager.type === 'json') {
+        jsonDb.update((data) => {
+          data.users = data.users || [];
+          data.users.push(user);
+          return data;
+        });
+      } else {
+        await dbManager.execute(
+          'INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)',
+          [user.id, user.username, user.passwordHash, user.role, user.createdAt]
+        );
+      }
+      console.log('[Users] 初始管理员账号已创建: 用户名 admin, 默认密码 admin123');
+    } catch (err) {
+      console.error('[Users] 自动初始化 admin 失败:', err.message);
+    }
   }
 }
 
