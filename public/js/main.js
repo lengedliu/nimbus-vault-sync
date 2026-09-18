@@ -15,6 +15,10 @@ import { renderBackupsSubtab } from './views/backupsSubtab.js';
 import { renderGitSubtab } from './views/gitSubtab.js';
 import { renderVaultSyncLogsSubtab } from './views/syncLogsSubtab.js';
 import { renderDashboardPanel, renderKanbanSubView } from './views/kanbanSubtab.js';
+import { renderSettingsPanel } from './views/settingsTab.js';
+import { renderDevicesPanel } from './views/devicesTab.js';
+import { renderWebhooksPanel } from './views/webhooksTab.js';
+import { renderUsersPanel } from './views/usersTab.js';
 
 // Expose on window for backward-compatibility with classic event handlers & i18n
 window.Nimbus = {
@@ -28,6 +32,7 @@ window.Nimbus = {
   closeModal,
   applyTheme,
   applyFontSize,
+  initThemeSwitcher,
   showObsidianConnectModal,
   showMcpModal,
   connectWebSocket,
@@ -46,6 +51,10 @@ window.Nimbus = {
   renderVaultSyncLogsSubtab,
   renderDashboardPanel,
   renderKanbanSubView,
+  renderSettingsPanel,
+  renderDevicesPanel,
+  renderWebhooksPanel,
+  renderUsersPanel,
 };
 
 // Auto-run version check & date updates

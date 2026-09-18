@@ -1,5 +1,41 @@
 [
   {
+    "id": "e7d6cb358f51f5be",
+    "userId": "u_cascade_test",
+    "deviceName": "Cascade Phone",
+    "platform": "ios",
+    "clientIp": "",
+    "userAgent": "",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1X2Nhc2NhZGVfdGVzdCIsInVzZXJuYW1lIjoiY2FzY2FkZV91c2VyIiwiZGV2aWNlSWQiOiJlN2Q2Y2IzNThmNTFmNWJlIiwiZGV2aWNlTmFtZSI6IkNhc2NhZGUgUGhvbmUiLCJ0eXBlIjoiZGV2aWNlIiwianRpIjoiMDVkNzMwMDg4ZGU5N2EzNSIsImlhdCI6MTc4OTczODM1NSwiZXhwIjoxODIxMjc0MzU1fQ.ysU-LaL-UsWahlxXFHD-qKR8dSA8T6MYve9bPuC9sIY",
+    "createdAt": 1789738355976,
+    "lastActiveAt": 1789738355976,
+    "status": "active"
+  },
+  {
+    "id": "f1cb989b38d92611",
+    "userId": "u_test_sec_1",
+    "deviceName": "Test-MacBook",
+    "platform": "desktop",
+    "clientIp": "",
+    "userAgent": "",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1X3Rlc3Rfc2VjXzEiLCJ1c2VybmFtZSI6InRlc3Rfc2VjX3VzZXIiLCJkZXZpY2VJZCI6ImYxY2I5ODliMzhkOTI2MTEiLCJkZXZpY2VOYW1lIjoiVGVzdC1NYWNCb29rIiwidHlwZSI6ImRldmljZSIsImp0aSI6Ijg4ZmUwOTgxZmVlNGZhNjkiLCJpYXQiOjE3ODk3MzgzNTUsImV4cCI6MTc5MjMzMDM1NX0.T6hZwg4JogBxdg62XiZgzevcIz8-QdlqIs60EHkKydk",
+    "createdAt": 1789738355907,
+    "lastActiveAt": 1789738355905,
+    "status": "revoked"
+  },
+  {
+    "id": "23ec0b9a390a1574",
+    "userId": "7d889b43-0b5d-47c5-a10b-f4394e300f86",
+    "deviceName": "Windows PC (默认设备)",
+    "platform": "windows",
+    "clientIp": "2408:8240:1210:b570:71bc:6a8d:df16:c606",
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3ZDg4OWI0My0wYjVkLTQ3YzUtYTEwYi1mNDM5NGUzMDBmODYiLCJ1c2VybmFtZSI6ImFkbWluIiwiZGV2aWNlSWQiOiIyM2VjMGI5YTM5MGExNTc0IiwiZGV2aWNlTmFtZSI6IldpbmRvd3MgUEMgKOm7mOiupOiuvuWkhykiLCJ0eXBlIjoiZGV2aWNlIiwianRpIjoiYTYyYzgwYjA2NDg5MzZhMiIsImlhdCI6MTc4OTczNzg3NSwiZXhwIjoxODIxMjczODc1fQ.xU__qO3_e1-i8qiFTSHF6VfA3y1uRbFdRqjd0dxSv3U",
+    "createdAt": 1789737875332,
+    "lastActiveAt": 1789737875333,
+    "status": "active"
+  },
+  {
     "id": "7b86bd1e380b9f60",
     "userId": "u_cascade_test",
     "deviceName": "Cascade Phone",
@@ -9,7 +45,7 @@
     "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1X2Nhc2NhZGVfdGVzdCIsInVzZXJuYW1lIjoiY2FzY2FkZV91c2VyIiwiZGV2aWNlSWQiOiI3Yjg2YmQxZTM4MGI5ZjYwIiwiZGV2aWNlTmFtZSI6IkNhc2NhZGUgUGhvbmUiLCJ0eXBlIjoiZGV2aWNlIiwianRpIjoiNWNjNDlkODhmMzAzMjFiOCIsImlhdCI6MTc4OTczNzY2OSwiZXhwIjoxODIxMjczNjY5fQ.VOGEHKTOhZuUEwkcnewCzdaBd6r8_b6DsI4vkMriPmA",
     "createdAt": 1789737669730,
     "lastActiveAt": 1789737669730,
-    "status": "active"
+    "status": "revoked"
   },
   {
     "id": "a0d06cc10fc1542a",

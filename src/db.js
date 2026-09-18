@@ -138,9 +138,18 @@ class DatabaseManager {
           resolve();
         });
       });
-      // Enable WAL mode for better concurrency in SQLite
-      await new Promise((resolve) => {
-        this.sqliteDb.run('PRAGMA journal_mode = WAL;', () => resolve());
+      // Enable WAL mode and tune concurrency & I/O cache for SQLite
+      await new Promise((resolve, reject) => {
+        this.sqliteDb.exec(`
+          PRAGMA journal_mode = WAL;
+          PRAGMA synchronous = NORMAL;
+          PRAGMA busy_timeout = 5000;
+          PRAGMA cache_size = -64000;
+          PRAGMA temp_store = MEMORY;
+        `, (err) => {
+          if (err) return reject(err);
+          resolve();
+        });
       });
       await this._createSqliteTables();
     } else if (this.type === 'postgres' || this.type === 'postgresql') {
@@ -265,6 +274,13 @@ class DatabaseManager {
         UNIQUE(vault_id, user_id)
       );
     `);
+    // Performance indexes for fast querying & high concurrency
+    await run(`CREATE INDEX IF NOT EXISTS idx_sync_logs_vault_time ON sync_logs(vault_id, timestamp DESC);`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_sync_logs_user_time ON sync_logs(user_id, timestamp DESC);`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_shares_vault_id ON shares(vault_id);`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_vault_members_user ON vault_members(user_id);`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_vaults_owner ON vaults(owner_id);`);
   }
 
   async _createPostgresTables() {

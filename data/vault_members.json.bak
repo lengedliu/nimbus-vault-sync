@@ -15,18 +15,18 @@
       "createdAt": 1789737572631
     },
     {
-      "id": "5f5f6b27-7d08-4c55-9f3b-a0922410b326",
-      "vaultId": "5aa4de7b-e3b1-4c0a-ad0b-da48c2a239a6",
+      "id": "65e03ad5-a0b6-4ab3-a841-e1e13d7a8960",
+      "vaultId": "e2692505-fd50-41f1-b887-784f6e661dd2",
       "userId": "u_perm_member",
       "permission": "read-write",
-      "createdAt": 1789737669695
+      "createdAt": 1789738355944
     },
     {
-      "id": "c7a6422f-e22b-4e0f-ad30-dc223ced79cf",
+      "id": "ad65e64b-527b-4b61-b213-e982600ae5d2",
       "vaultId": "vlt_cascade_dummy",
       "userId": "u_cascade_test",
       "permission": "read-only",
-      "createdAt": 1789737669732
+      "createdAt": 1789738355978
     }
   ]
 }
