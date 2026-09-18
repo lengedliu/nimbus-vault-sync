@@ -9,7 +9,13 @@ let pg = null;
 let mysql = null;
 
 function getSqlite3() {
-  if (!sqlite3) sqlite3 = require('sqlite3').verbose();
+  if (!sqlite3) {
+    try {
+      sqlite3 = require('sqlite3').verbose();
+    } catch (err) {
+      throw new Error('SQLite driver not available in current environment: ' + err.message);
+    }
+  }
   return sqlite3;
 }
 

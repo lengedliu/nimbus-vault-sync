@@ -9,12 +9,64 @@
   <meta property="og:description" content="High-performance Obsidian sync server with Git auto-backup, Web dashboard, full REST API, and 20 MCP tools">
   <link rel="stylesheet" href="style.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>☁️</text></svg>">
+  <script>
+    (function() {
+      try {
+        var savedTheme = localStorage.getItem('nimbus_theme');
+        if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
+        var savedFontSize = localStorage.getItem('nimbus_font_size') || 'normal';
+        document.documentElement.setAttribute('data-font-size', savedFontSize);
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
 
 <div id="login-view" class="center-screen center-box" style="position:relative;">
   <!-- Login language switcher in the corner -->
   <div class="login-lang-corner">
+    <div class="fontsize-picker-wrap" id="login-fontsize-picker-container">
+      <button type="button" id="login-fontsize-btn" class="lang-menu-btn fontsize-menu-btn" title="字号调节 / Font Size">
+        <span class="fontsize-icon">🔤</span>
+        <span id="login-fontsize-label">标准 (100%)</span>
+        <span style="font-size:10px;opacity:0.7;">▼</span>
+      </button>
+      <div id="login-fontsize-dropdown" class="fontsize-dropdown-menu hidden">
+        <div class="fontsize-dropdown-header">
+          <span class="fontsize-dropdown-title" data-i18n="fontsize.dropdown_title">字号缩放比例</span>
+          <button type="button" id="login-fontsize-reset-btn" class="fontsize-reset-btn" title="恢复默认标准大小" data-i18n="fontsize.reset_btn">恢复默认</button>
+        </div>
+        <button type="button" class="fontsize-opt-item" data-size-val="sm">
+          <div class="fontsize-opt-left">
+            <span class="fontsize-badge" style="font-size: 11px;">A⁻</span>
+            <span data-i18n="fontsize.sm">紧凑小号 (88%)</span>
+          </div>
+          <span class="fontsize-check"></span>
+        </button>
+        <button type="button" class="fontsize-opt-item" data-size-val="normal">
+          <div class="fontsize-opt-left">
+            <span class="fontsize-badge" style="font-size: 13px;">A</span>
+            <span data-i18n="fontsize.normal">标准适中 (100%)</span>
+          </div>
+          <span class="fontsize-check"></span>
+        </button>
+        <button type="button" class="fontsize-opt-item" data-size-val="md">
+          <div class="fontsize-opt-left">
+            <span class="fontsize-badge" style="font-size: 15px;">A⁺</span>
+            <span data-i18n="fontsize.md">舒适中号 (112%)</span>
+          </div>
+          <span class="fontsize-check"></span>
+        </button>
+        <button type="button" class="fontsize-opt-item" data-size-val="lg">
+          <div class="fontsize-opt-left">
+            <span class="fontsize-badge" style="font-size: 17px;">A⁺⁺</span>
+            <span data-i18n="fontsize.lg">清晰大号 (125%)</span>
+          </div>
+          <span class="fontsize-check"></span>
+        </button>
+      </div>
+    </div>
+
     <div class="lang-picker-wrap">
       <button type="button" id="login-lang-btn" class="lang-menu-btn" title="切换语言 / Switch Language">
         <span>🌐</span>
@@ -77,9 +129,6 @@
 
 <div id="app-view" class="app hidden">
   <header class="topbar">
-    <button id="mobile-sidebar-toggle" class="mobile-menu-btn" aria-label="打开侧边导航" title="打开导航">
-      <span class="hamburger-icon">☰</span>
-    </button>
     <div class="brand" id="brand-logo-btn" style="cursor:pointer;" title="返回看板总览">
       <span class="logo">☁️</span>
       <span class="brand-name">Nimbus Vault Sync</span>
@@ -171,6 +220,49 @@
         </div>
       </div>
 
+      <!-- Font Size Switcher Selector -->
+      <div class="fontsize-picker-wrap" id="fontsize-picker-container">
+        <button id="fontsize-menu-btn" class="fontsize-menu-btn" data-i18n-title="topbar.fontsize_title" title="调节界面字号大小">
+          <span class="fontsize-icon">🔤</span>
+          <span id="fontsize-label-name">标准 (100%)</span>
+          <span style="font-size:10px;opacity:0.7;">▼</span>
+        </button>
+        <div id="fontsize-dropdown-menu" class="fontsize-dropdown-menu hidden">
+          <div class="fontsize-dropdown-header">
+            <span class="fontsize-dropdown-title" data-i18n="fontsize.dropdown_title">字号缩放比例</span>
+            <button type="button" id="fontsize-reset-btn" class="fontsize-reset-btn" title="恢复默认标准大小" data-i18n="fontsize.reset_btn">恢复默认</button>
+          </div>
+          <button type="button" class="fontsize-opt-item" data-size-val="sm">
+            <div class="fontsize-opt-left">
+              <span class="fontsize-badge" style="font-size: 11px;">A⁻</span>
+              <span data-i18n="fontsize.sm">紧凑小号 (88%)</span>
+            </div>
+            <span class="fontsize-check"></span>
+          </button>
+          <button type="button" class="fontsize-opt-item" data-size-val="normal">
+            <div class="fontsize-opt-left">
+              <span class="fontsize-badge" style="font-size: 13px;">A</span>
+              <span data-i18n="fontsize.normal">标准适中 (100%)</span>
+            </div>
+            <span class="fontsize-check"></span>
+          </button>
+          <button type="button" class="fontsize-opt-item" data-size-val="md">
+            <div class="fontsize-opt-left">
+              <span class="fontsize-badge" style="font-size: 15px;">A⁺</span>
+              <span data-i18n="fontsize.md">舒适中号 (112%)</span>
+            </div>
+            <span class="fontsize-check"></span>
+          </button>
+          <button type="button" class="fontsize-opt-item" data-size-val="lg">
+            <div class="fontsize-opt-left">
+              <span class="fontsize-badge" style="font-size: 17px;">A⁺⁺</span>
+              <span data-i18n="fontsize.lg">清晰大号 (125%)</span>
+            </div>
+            <span class="fontsize-check"></span>
+          </button>
+        </div>
+      </div>
+
       <span id="who-username" class="user-pill"></span>
       <span id="who-role" class="badge"></span>
       <button id="logout-btn" class="ghost" data-i18n="topbar.logout">退出</button>
@@ -178,7 +270,6 @@
   </header>
 
   <div class="layout">
-    <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
     <nav class="sidebar">
       <div class="sidebar-body">
         <div style="margin-bottom: 14px;">
@@ -190,10 +281,7 @@
 
         <div class="sidebar-header">
           <div class="nav-section-title" data-i18n="sidebar.my_vaults">我的 Vaults</div>
-          <div style="display:flex;align-items:center;gap:6px;">
-            <button id="new-vault-btn" class="btn-icon" data-i18n-title="sidebar.new_vault" title="新建 Vault">+</button>
-            <button id="mobile-sidebar-close" class="mobile-sidebar-close-btn" aria-label="收起侧边栏" data-i18n-title="common.close" title="收起菜单">✕</button>
-          </div>
+          <button id="new-vault-btn" class="btn-icon" data-i18n-title="sidebar.new_vault" title="新建 Vault">+</button>
         </div>
         <ul id="vault-list" class="vault-list"></ul>
 

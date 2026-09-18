@@ -43,16 +43,16 @@
       "createdAt": "2026-09-17T14:56:02.598Z"
     },
     {
-      "id": "0972b071-ab1c-439a-9b32-d1867a0e0e55",
+      "id": "37af6ed8-36e0-4b24-a36e-80426640208a",
       "ownerId": "u_sec_owner",
       "name": "Test/../../Evil..Vault:Name",
-      "createdAt": "2026-09-17T22:30:32.623Z"
+      "createdAt": "2026-09-18T04:52:02.992Z"
     },
     {
-      "id": "c008795c-ba47-478a-9e4a-0f2aa681ddee",
+      "id": "46b6cfb7-2f07-4d9e-acd0-4377573c3612",
       "ownerId": "u_perm_owner",
       "name": "PermTestVault",
-      "createdAt": "2026-09-17T22:30:32.636Z"
+      "createdAt": "2026-09-18T04:52:03.013Z"
     }
   ]
 }

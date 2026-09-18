@@ -673,6 +673,8 @@
       menu.classList.toggle('hidden');
       const langMenu = document.getElementById('lang-dropdown-menu');
       if (langMenu) langMenu.classList.add('hidden');
+      const fontMenu = document.getElementById('fontsize-dropdown-menu');
+      if (fontMenu) fontMenu.classList.add('hidden');
     };
 
     document.addEventListener('click', (e) => {
@@ -704,6 +706,130 @@
 
     applyTheme(localStorage.getItem('nimbus_theme') || 'cyber-blue');
   }
+
+  // --------------------------- UI Font Size Management ----------------------
+  const FONT_SIZES = [
+    { id: 'sm', scale: '88%', fontSize: '14px', badge: 'A⁻', key: 'fontsize.sm', fallback: '紧凑小号 (88%)', descKey: 'fontsize.sm_desc', descFallback: '适合大屏高密度展示，单屏容纳更多文件与日志' },
+    { id: 'normal', scale: '100%', fontSize: '16px', badge: 'A', key: 'fontsize.normal', fallback: '标准适中 (100%)', descKey: 'fontsize.normal_desc', descFallback: '系统默认尺寸，兼顾排版平衡与空间利用率' },
+    { id: 'md', scale: '112%', fontSize: '18px', badge: 'A⁺', key: 'fontsize.md', fallback: '舒适中号 (112%)', descKey: 'fontsize.md_desc', descFallback: '更易阅读的字阶，适合长时间浏览笔记与文档' },
+    { id: 'lg', scale: '125%', fontSize: '20px', badge: 'A⁺⁺', key: 'fontsize.lg', fallback: '清晰大号 (125%)', descKey: 'fontsize.lg_desc', descFallback: '大字体展示，适合远距离查看或视力友好辅助' }
+  ];
+
+  const FONT_SIZE_LABELS = {
+    sm: '紧凑小号 (88%)',
+    normal: '标准适中 (100%)',
+    md: '舒适中号 (112%)',
+    lg: '清晰大号 (125%)'
+  };
+
+  function resolveFontSizeId(id) {
+    if (!id || !['sm', 'normal', 'md', 'lg'].includes(id)) {
+      return 'normal';
+    }
+    return id;
+  }
+
+  function applyFontSize(sizeKey) {
+    const activeId = resolveFontSizeId(sizeKey);
+    document.documentElement.setAttribute('data-font-size', activeId);
+    try {
+      localStorage.setItem('nimbus_font_size', activeId);
+    } catch (e) {}
+    updateFontSizeUI(activeId);
+  }
+
+  function updateFontSizeUI(sizeKey) {
+    const activeId = resolveFontSizeId(sizeKey || localStorage.getItem('nimbus_font_size'));
+    const localizedName = (window.t ? window.t(`fontsize.${activeId}`) : null) || FONT_SIZE_LABELS[activeId];
+    
+    const labelEl = $('#fontsize-label-name');
+    if (labelEl) labelEl.textContent = localizedName;
+
+    const loginLabelEl = $('#login-fontsize-label');
+    if (loginLabelEl) loginLabelEl.textContent = localizedName;
+
+    document.querySelectorAll('.fontsize-opt-item').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.sizeVal === activeId);
+    });
+
+    document.querySelectorAll('.fontsize-card-picker').forEach((card) => {
+      const isSel = card.dataset.val === activeId;
+      card.classList.toggle('selected', isSel);
+      card.style.borderColor = isSel ? 'var(--accent)' : 'var(--border)';
+      card.style.background = isSel ? 'var(--accent-bg)' : 'var(--panel-2)';
+    });
+
+    const previewBox = document.getElementById('settings-fontsize-preview');
+    if (previewBox) {
+      const currentConfig = FONT_SIZES.find((f) => f.id === activeId) || FONT_SIZES[1];
+      const previewScaleBadge = document.getElementById('settings-fontsize-preview-badge');
+      if (previewScaleBadge) previewScaleBadge.textContent = `${currentConfig.scale} (${currentConfig.fontSize})`;
+    }
+  }
+
+  function initFontSizeSwitcher() {
+    const menuBtn = $('#fontsize-menu-btn');
+    const menu = $('#fontsize-dropdown-menu');
+    const loginBtn = $('#login-fontsize-btn');
+    const loginMenu = $('#login-fontsize-dropdown');
+
+    const setupDropdown = (btn, dropdown, isLogin) => {
+      if (!btn || !dropdown) return;
+
+      const resetBtn = dropdown.querySelector('.fontsize-reset-btn');
+      if (resetBtn) {
+        resetBtn.onclick = (e) => {
+          e.stopPropagation();
+          applyFontSize('normal');
+          dropdown.classList.add('hidden');
+          toast(window.t ? window.t('fontsize.reset_toast', '已恢复默认标准字号 (100%)') : '已恢复默认标准字号 (100%)');
+        };
+      }
+
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        dropdown.classList.toggle('hidden');
+        if (!isLogin) {
+          const langMenu = document.getElementById('lang-dropdown-menu');
+          if (langMenu) langMenu.classList.add('hidden');
+          const themeMenu = document.getElementById('theme-dropdown-menu');
+          if (themeMenu) themeMenu.classList.add('hidden');
+        } else {
+          const loginLangMenu = document.getElementById('login-lang-dropdown');
+          if (loginLangMenu) loginLangMenu.classList.add('hidden');
+        }
+      };
+
+      dropdown.querySelectorAll('.fontsize-opt-item').forEach((item) => {
+        item.onclick = (e) => {
+          e.stopPropagation();
+          const val = item.dataset.sizeVal;
+          applyFontSize(val);
+          dropdown.classList.add('hidden');
+          const name = (window.t ? window.t(`fontsize.${val}`) : null) || FONT_SIZE_LABELS[val];
+          toast((window.t ? window.t('fontsize.toast_switched', '已将界面字号调整为：') : '已将界面字号调整为：') + name);
+        };
+      });
+    };
+
+    setupDropdown(menuBtn, menu, false);
+    setupDropdown(loginBtn, loginMenu, true);
+
+    document.addEventListener('click', (e) => {
+      if (menu && !menu.contains(e.target) && e.target !== menuBtn) {
+        menu.classList.add('hidden');
+      }
+      if (loginMenu && !loginMenu.contains(e.target) && e.target !== loginBtn) {
+        loginMenu.classList.add('hidden');
+      }
+    });
+
+    applyFontSize(localStorage.getItem('nimbus_font_size') || 'normal');
+  }
+
+  window.applyFontSize = applyFontSize;
+  window.updateFontSizeUI = updateFontSizeUI;
+  window.initFontSizeSwitcher = initFontSizeSwitcher;
 
   // --------------------------- API helper -----------------------------------
 
@@ -1171,6 +1297,7 @@
     loginView.classList.add('hidden');
     appView.classList.remove('hidden');
     initThemeSwitcher();
+    initFontSizeSwitcher();
     updateDateDisplays();
     $('#who-username').textContent = state.user.username;
     const roleText = state.user.role === 'admin'
@@ -1223,67 +1350,8 @@
 
     setupGlobalSearch();
     setupCollapsibleSections();
-    setupMobileDrawer();
 
     await loadVaults();
-  }
-
-  function closeMobileDrawer() {
-    const sidebar = document.querySelector('.sidebar');
-    const backdrop = document.getElementById('sidebar-backdrop');
-    if (sidebar) sidebar.classList.remove('mobile-drawer-open');
-    if (backdrop) backdrop.classList.remove('active');
-    document.body.classList.remove('mobile-drawer-lock');
-  }
-
-  function toggleMobileDrawer() {
-    const sidebar = document.querySelector('.sidebar');
-    const backdrop = document.getElementById('sidebar-backdrop');
-    if (!sidebar) return;
-    const willOpen = !sidebar.classList.contains('mobile-drawer-open');
-    sidebar.classList.toggle('mobile-drawer-open', willOpen);
-    if (backdrop) backdrop.classList.toggle('active', willOpen);
-    document.body.classList.toggle('mobile-drawer-lock', willOpen);
-  }
-
-  function setupMobileDrawer() {
-    const toggleBtn = $('#mobile-sidebar-toggle');
-    const closeBtn = $('#mobile-sidebar-close');
-    const backdrop = $('#sidebar-backdrop');
-
-    if (toggleBtn) {
-      toggleBtn.onclick = (e) => {
-        e.stopPropagation();
-        toggleMobileDrawer();
-      };
-    }
-    if (closeBtn) {
-      closeBtn.onclick = (e) => {
-        e.stopPropagation();
-        closeMobileDrawer();
-      };
-    }
-    if (backdrop) {
-      backdrop.onclick = () => {
-        closeMobileDrawer();
-      };
-    }
-
-    // Auto-close drawer on narrow screens when any navigation item is clicked
-    document.querySelectorAll('.sidebar .nav-item, .sidebar .tab-btn').forEach((item) => {
-      item.addEventListener('click', () => {
-        if (window.innerWidth <= 768) {
-          closeMobileDrawer();
-        }
-      });
-    });
-
-    // Reset drawer state cleanly if resized to desktop window
-    window.addEventListener('resize', () => {
-      if (window.innerWidth > 768) {
-        closeMobileDrawer();
-      }
-    });
   }
 
   function setupCollapsibleSections() {
@@ -1397,9 +1465,6 @@
   });
 
   function showTab(tab) {
-    if (window.innerWidth <= 768) {
-      closeMobileDrawer();
-    }
     state.activeVaultId = null;
     state.activeTab = tab;
     document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
@@ -2160,9 +2225,6 @@
   }
 
   async function openVault(vaultId, subtab = 'files') {
-    if (window.innerWidth <= 768) {
-      closeMobileDrawer();
-    }
     if (state.activeVaultId !== vaultId) {
       state.treeFoldersInitialized = false;
       state.flatListPage = 1;
@@ -9658,6 +9720,7 @@
       // 5. Account, appearance & password management tab
       const currentTheme = localStorage.getItem('nimbus_theme') || 'default';
       const currentLang = (window.i18n ? window.i18n.currentLang : (localStorage.getItem('nimbus_lang') || 'zh-CN'));
+      const currentFontSize = localStorage.getItem('nimbus_font_size') || 'normal';
       const t = window.t || ((k, def) => def || k);
 
       container.innerHTML = `
@@ -9707,6 +9770,47 @@
                 <div style="font-size:11px;color:var(--muted)">Japanese</div>
               </div>
             </div>
+          </div>
+
+          <!-- UI Font Size & Scale Section -->
+          <div class="settings-card-header">
+            <h3><span>🔤</span> ${t('settings.fontsize_title', '界面字号与排版缩放')}</h3>
+            <p>${t('settings.fontsize_desc', '调节整个管理界面的文字大小与排版比例，支持实时无缝切换并记忆偏好')}</p>
+          </div>
+
+          <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(210px, 1fr));gap:12px;margin-bottom:14px;">
+            ${FONT_SIZES.map((fs) => {
+              const isSel = currentFontSize === fs.id;
+              const localizedName = (window.t ? window.t(fs.key) : null) || fs.fallback;
+              const localizedDesc = (window.t ? window.t(fs.descKey) : null) || fs.descFallback;
+              return `
+                <div class="fontsize-card-picker ${isSel ? 'selected' : ''}" data-val="${fs.id}" style="cursor:pointer;padding:12px;background:${isSel ? 'var(--accent-bg)' : 'var(--panel-2)'};border:1px solid ${isSel ? 'var(--accent)' : 'var(--border)'};border-radius:var(--radius);display:flex;align-items:flex-start;gap:10px;transition:all 0.15s;">
+                  <span class="fontsize-badge" style="font-size:${fs.fontSize};">${fs.badge}</span>
+                  <div style="flex:1;min-width:0;">
+                    <div style="font-weight:600;font-size:13px;display:flex;align-items:center;justify-content:space-between;">
+                      <span>${escapeHtml(localizedName)}</span>
+                      ${isSel ? '<span style="color:var(--accent);font-weight:700;font-size:12px;">✓</span>' : ''}
+                    </div>
+                    <div style="font-size:11px;color:var(--muted);margin-top:2px;line-height:1.4;">${escapeHtml(localizedDesc)}</div>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+
+          <!-- Real-time Font Preview Box in Settings -->
+          <div id="settings-fontsize-preview" style="background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;margin-bottom:28px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+              <span style="font-size:12px;font-weight:700;color:var(--text);display:flex;align-items:center;gap:6px;">
+                <span>👁️</span> <span>${t('fontsize.preview_heading', '实时字号效果预览')}</span>
+              </span>
+              <span id="settings-fontsize-preview-badge" style="font-size:11px;color:var(--accent);background:var(--accent-bg);padding:2px 8px;border-radius:10px;font-weight:600;">
+                ${(FONT_SIZES.find((f) => f.id === currentFontSize) || FONT_SIZES[1]).scale} (${(FONT_SIZES.find((f) => f.id === currentFontSize) || FONT_SIZES[1]).fontSize})
+              </span>
+            </div>
+            <p style="margin:0;color:var(--text-secondary);line-height:1.6;">
+              ${t('fontsize.preview_body', 'Nimbus Vault Sync 采用流式同步与 Git 双重备份机制，确保您的 Obsidian 笔记在全平台毫秒级同步。')}
+            </p>
           </div>
 
           <div class="settings-card-header">
@@ -9808,6 +9912,17 @@
           if (window.i18n) {
             window.i18n.setLanguage(val);
           }
+          renderSettingsPanel('account');
+        });
+      });
+
+      // Bind Font Size Cards in settings
+      container.querySelectorAll('.fontsize-card-picker').forEach((card) => {
+        card.addEventListener('click', () => {
+          const val = card.dataset.val;
+          applyFontSize(val);
+          const name = (window.t ? window.t(`fontsize.${val}`) : null) || FONT_SIZE_LABELS[val];
+          toast((window.t ? window.t('fontsize.toast_switched', '已将界面字号调整为：') : '已将界面字号调整为：') + name);
           renderSettingsPanel('account');
         });
       });
@@ -10559,6 +10674,8 @@
         langMenu.classList.toggle('hidden');
         const themeMenu = $('#theme-dropdown-menu');
         if (themeMenu) themeMenu.classList.add('hidden');
+        const fontMenu = $('#fontsize-dropdown-menu');
+        if (fontMenu) fontMenu.classList.add('hidden');
       };
 
       document.querySelectorAll('#lang-dropdown-menu .lang-opt-item').forEach((item) => {
@@ -10578,6 +10695,8 @@
       loginLangBtn.onclick = (e) => {
         e.stopPropagation();
         loginLangMenu.classList.toggle('hidden');
+        const loginFontMenu = $('#login-fontsize-dropdown');
+        if (loginFontMenu) loginFontMenu.classList.add('hidden');
       };
 
       document.querySelectorAll('#login-lang-dropdown .lang-opt-item').forEach((item) => {
@@ -10603,6 +10722,7 @@
   // Handle global language changes
   window.addEventListener('languageChanged', (e) => {
     updateThemeUI();
+    updateFontSizeUI();
     updateDateDisplays();
     if (state.user) {
       const roleText = state.user.role === 'admin'
@@ -10620,6 +10740,7 @@
   });
 
   initLanguageDropdowns();
+  initFontSizeSwitcher();
   applyTheme();
   updateDateDisplays();
   setInterval(updateDateDisplays, 10000);
