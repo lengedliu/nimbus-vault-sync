@@ -1,5 +1,29 @@
 [
   {
+    "id": "d3e81661630ded9a",
+    "userId": "u_cascade_test",
+    "deviceName": "Cascade Phone",
+    "platform": "ios",
+    "clientIp": "",
+    "userAgent": "",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1X2Nhc2NhZGVfdGVzdCIsInVzZXJuYW1lIjoiY2FzY2FkZV91c2VyIiwiZGV2aWNlSWQiOiJkM2U4MTY2MTYzMGRlZDlhIiwiZGV2aWNlTmFtZSI6IkNhc2NhZGUgUGhvbmUiLCJ0eXBlIjoiZGV2aWNlIiwianRpIjoiNDMzOWMwODZmODVkZTcxMSIsImlhdCI6MTc4OTczNjUyMiwiZXhwIjoxODIxMjcyNTIyfQ.5pQackZoIpXp6LgMtTW5xt-FDIBHsM2ZR_n0_x8bJLI",
+    "createdAt": 1789736522218,
+    "lastActiveAt": 1789736522218,
+    "status": "revoked"
+  },
+  {
+    "id": "d599e59a9a7823e9",
+    "userId": "u_test_sec_1",
+    "deviceName": "Test-MacBook",
+    "platform": "desktop",
+    "clientIp": "",
+    "userAgent": "",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1X3Rlc3Rfc2VjXzEiLCJ1c2VybmFtZSI6InRlc3Rfc2VjX3VzZXIiLCJkZXZpY2VJZCI6ImQ1OTllNTlhOWE3ODIzZTkiLCJkZXZpY2VOYW1lIjoiVGVzdC1NYWNCb29rIiwidHlwZSI6ImRldmljZSIsImp0aSI6ImYxYTNiYmE0YTA3MjA1ZDgiLCJpYXQiOjE3ODk3MzY1MjIsImV4cCI6MTc5MjMyODUyMn0.l_F8CjjM9B8G5n0yQOYpDPOCyxBelDVrmx3-ekvmeqw",
+    "createdAt": 1789736522147,
+    "lastActiveAt": 1789736522145,
+    "status": "revoked"
+  },
+  {
     "id": "b31d129cb5e84276",
     "userId": "u_cascade_test",
     "deviceName": "Cascade Phone",

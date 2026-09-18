@@ -1,60 +1,18 @@
 {
   "members": [
     {
-      "id": "ad89be0c-d8f8-4875-9a12-3d14f2bdf522",
-      "vaultId": "c267ca2f-4bd3-445e-afd4-c2f7b70cfe2d",
+      "id": "ed240091-93f6-4907-8dd0-c03f0ec75d33",
+      "vaultId": "429fc161-15c2-40a1-922c-ba5fdc9585c4",
       "userId": "u_perm_member",
       "permission": "read-write",
-      "createdAt": 1789627335565
+      "createdAt": 1789736522187
     },
     {
-      "id": "cb44f6ea-a7d4-4c5b-b066-33e34cfa6869",
-      "vaultId": "1b581c0c-7c0f-4c43-8d34-49d3ad9fcfab",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789656962599
-    },
-    {
-      "id": "fd93e80e-12ef-486d-afc9-3612b37b5566",
-      "vaultId": "46b6cfb7-2f07-4d9e-acd0-4377573c3612",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789707123013
-    },
-    {
-      "id": "90750e2a-2f6e-4421-bdd6-4f144e27befc",
-      "vaultId": "3885f60c-2caf-4032-9c6a-b3cf1501addd",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789735846500
-    },
-    {
-      "id": "be7abd97-b6a1-438c-906b-818cc96703c1",
-      "vaultId": "3682c86f-4246-4bd2-8d47-cadf631e29d9",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789735962985
-    },
-    {
-      "id": "49be5fa0-c72a-4e2d-86b5-7c77ef944e8c",
-      "vaultId": "236fbce3-7d35-4f94-bdc1-9044fe2d94c5",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789735969680
-    },
-    {
-      "id": "65432883-49e6-4ab4-a230-60291811f861",
-      "vaultId": "40bfb65d-c6dd-4be5-a718-f84162ee51a0",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789736002195
-    },
-    {
-      "id": "b67ac9b4-ac07-456f-926c-5f309497712d",
+      "id": "4f80699b-3f71-4c20-a377-a341c843b86b",
       "vaultId": "vlt_cascade_dummy",
       "userId": "u_cascade_test",
       "permission": "read-only",
-      "createdAt": 1789736002230
+      "createdAt": 1789736522220
     }
   ]
 }
