@@ -19,13 +19,13 @@ function requireAuth(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   const payload = token && verifyToken(token);
-  if (!payload) return res.status(401).json({ error: 'Unauthorized' });
+  if (!payload) return res.status(401).json({ ok: false, error: 'Unauthorized', message: 'Unauthorized', code: 401 });
   const devicesStore = require('./devices');
   if (token && devicesStore.isTokenRevoked(token, payload)) {
-    return res.status(401).json({ error: '此设备令牌已被注销废除或已重新生成失效' });
+    return res.status(401).json({ ok: false, error: '此设备令牌已被注销废除或已重新生成失效', message: '此设备令牌已被注销废除或已重新生成失效', code: 401 });
   }
   const user = users.findById(payload.sub);
-  if (!user) return res.status(401).json({ error: 'Unauthorized' });
+  if (!user) return res.status(401).json({ ok: false, error: 'Unauthorized', message: 'Unauthorized', code: 401 });
   req.user = { id: user.id, username: user.username, role: user.role || 'user' };
   next();
 }
@@ -33,7 +33,7 @@ function requireAuth(req, res, next) {
 /** Must be used after requireAuth. */
 function requireAdmin(req, res, next) {
   if (!req.user || req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Admin access required' });
+    return res.status(403).json({ ok: false, error: 'Admin access required', message: 'Admin access required', code: 403 });
   }
   next();
 }

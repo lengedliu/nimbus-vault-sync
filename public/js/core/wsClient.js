@@ -12,8 +12,9 @@ export function connectWebSocket(vaultId, onDeltaSync) {
 
   if (!state.token || !vaultId) return;
 
+  const cleanToken = (state.token || '').replace(/^Bearer\s+/i, '').trim();
   const serverUrl = state.serverBase.replace(/\/$/, '');
-  const wsUrl = `${serverUrl.replace(/^http/, 'ws')}/ws?vaultId=${vaultId}&token=${state.token}&deviceId=Web-Dashboard`;
+  const wsUrl = `${serverUrl.replace(/^http/, 'ws')}/ws?vaultId=${encodeURIComponent(vaultId)}&token=${encodeURIComponent(cleanToken)}&deviceId=Web-Dashboard`;
 
   try {
     const ws = new WebSocket(wsUrl);
@@ -33,8 +34,8 @@ export function connectWebSocket(vaultId, onDeltaSync) {
               onDeltaSync(vaultId, msg);
             }
           }, 400);
-        } else if (msg.type === 'force_logout') {
-          toast('会话已失效或被远程注销');
+        } else if (msg.type === 'force_logout' || msg.type === 'auth_revoked') {
+          toast('令牌已撤销或会话已失效');
           setTimeout(() => window.location.reload(), 1200);
         }
       } catch {}

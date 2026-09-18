@@ -37,6 +37,7 @@ export async function showObsidianConnectModal(vault, initialToken, initialDevic
       wsUrl: `${wsUrl}?vaultId=${vaultId}&token=${selectedToken}&deviceId=${encodeURIComponent(deviceName)}`,
       vaultId,
       vaultName,
+      token: selectedToken,
       authToken: selectedToken,
       deviceName,
       autoSyncOnStartup: true,

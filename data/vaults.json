@@ -59,6 +59,70 @@
       "ownerId": "u_perm_owner",
       "name": "PermTestVault",
       "createdAt": "2026-09-18T13:32:35.943Z"
+    },
+    {
+      "id": "d433e30b-d2dc-48cd-8b63-297c5400768e",
+      "ownerId": "u_sec_owner",
+      "name": "Test/../../Evil..Vault:Name",
+      "createdAt": "2026-09-18T13:52:21.461Z"
+    },
+    {
+      "id": "b8f4270c-c1a4-42c8-ab0e-ce6b0a9fedbc",
+      "ownerId": "u_perm_owner",
+      "name": "PermTestVault",
+      "createdAt": "2026-09-18T13:52:21.476Z"
+    },
+    {
+      "id": "95e47837-2ece-45dd-995b-54c996d12b40",
+      "ownerId": "u_sec_owner",
+      "name": "Test/../../Evil..Vault:Name",
+      "createdAt": "2026-09-18T13:58:06.874Z"
+    },
+    {
+      "id": "0152ccf9-bb20-406d-a08f-384570f76e5f",
+      "ownerId": "u_perm_owner",
+      "name": "PermTestVault",
+      "createdAt": "2026-09-18T13:58:06.888Z"
+    },
+    {
+      "id": "7cfc8c90-d72a-4cb8-a3ae-2a3aae8e185e",
+      "ownerId": "u_sec_owner",
+      "name": "Test/../../Evil..Vault:Name",
+      "createdAt": "2026-09-18T14:03:53.203Z"
+    },
+    {
+      "id": "87ce581a-b657-4ee9-8a75-3275b790ad74",
+      "ownerId": "u_perm_owner",
+      "name": "PermTestVault",
+      "createdAt": "2026-09-18T14:03:53.217Z"
+    },
+    {
+      "id": "00514ffb-8657-412a-95ef-737046c56403",
+      "ownerId": "WS_Test_Vault_1789740258229",
+      "createdAt": "2026-09-18T14:04:18.230Z"
+    },
+    {
+      "id": "f288e85e-056f-4960-b756-24c0c3664ede",
+      "ownerId": "WS_Test_Vault_1789740279594",
+      "createdAt": "2026-09-18T14:04:39.594Z"
+    },
+    {
+      "id": "2cbeb431-7e94-4aee-be53-3dff33b509aa",
+      "ownerId": "WS_Test_Vault_1789740321896",
+      "name": "1f388183-0601-4411-b8bd-1390985e74a6",
+      "createdAt": "2026-09-18T14:05:21.897Z"
+    },
+    {
+      "id": "0c4e4a2d-8690-4f37-9f61-e6827ee1d543",
+      "ownerId": "u_sec_owner",
+      "name": "Test/../../Evil..Vault:Name",
+      "createdAt": "2026-09-18T14:06:18.848Z"
+    },
+    {
+      "id": "e0771899-0956-4f21-b947-b0adc50c93f7",
+      "ownerId": "u_perm_owner",
+      "name": "PermTestVault",
+      "createdAt": "2026-09-18T14:06:18.862Z"
     }
   ]
 }

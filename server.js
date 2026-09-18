@@ -20,6 +20,7 @@ const deviceRoutes = require('./src/routes/deviceRoutes');
 const docsRoutes = require('./src/routes/docsRoutes');
 const sponsorRoutes = require('./src/routes/sponsorRoutes');
 const dashboardRoutes = require('./src/routes/dashboardRoutes');
+const { apiResponseMiddleware } = require('./src/utils/apiResponse');
 const { getHealthStatus } = require('./src/health');
 const fnsHub = require('./src/wsHub');
 const dbManager = require('./src/db');
@@ -97,6 +98,9 @@ app.use(compression()); // 文本类响应（JSON/HTML/笔记内容）走 gzip�
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// 统一 API 响应契约中间件：对 /api 下所有响应自动规范化输出 (ok, data, code, timestamp, error)
+app.use('/api', apiResponseMiddleware);
+
 // 全局限流：保护同步/搜索这类同步阻塞型接口不被单个来源短时间内打爆。
 // 阈值给得比较宽松，正常的 Obsidian 多设备同步不会碰到；
 // 登录接口另有更严格的专用限流（见 authRoutes.js），这里不重复限制登录。
@@ -105,7 +109,13 @@ const apiLimiter = rateLimit({
   limit: 600,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: '请求过于频繁，请稍后再试' },
+  message: {
+    ok: false,
+    error: '请求过于频繁，请稍后再试',
+    message: '请求过于频繁，请稍后再试',
+    code: 429,
+    status: 429,
+  },
   validate: { xForwardedForHeader: false },
 });
 app.use('/api', apiLimiter);
@@ -132,6 +142,17 @@ app.use('/api/docs', docsRoutes);
 app.use('/api/sponsors', sponsorRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 
+// API 路由 404 兜底：未匹配到的 /api 请求返回标准 JSON 错误，防止泄漏静态 HTML 页面
+app.all('/api/*', (req, res) => {
+  res.status(404).json({
+    ok: false,
+    error: `API 接口未找到: ${req.method} ${req.path}`,
+    message: `API 接口未找到: ${req.method} ${req.path}`,
+    code: 404,
+    status: 404,
+  });
+});
+
 // Public share page
 app.get('/share/:shareId', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'share.html'));
@@ -148,9 +169,16 @@ app.use('/admin', express.static(path.join(__dirname, 'public')));
 app.use((err, req, res, next) => {
   console.error(`[HTTP ${req.method} ${req.originalUrl}] Unhandled error:`, err);
   if (res.headersSent) return next(err);
+  const status = err.status || err.statusCode || 500;
   const isProd = process.env.NODE_ENV === 'production';
-  res.status(err.status || 500).json({
-    error: isProd ? '服务器内部错误' : err.message || '服务器内部错误',
+  const errorMsg = isProd && status >= 500 ? '服务器内部错误' : (err.message || '服务器内部错误');
+  res.status(status).json({
+    ok: false,
+    error: errorMsg,
+    message: errorMsg,
+    code: status,
+    status,
+    ...(err.code && { errorCode: err.code }),
   });
 });
 

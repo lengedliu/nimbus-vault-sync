@@ -5,6 +5,7 @@ const DEFAULT_SETTINGS = {
   username: '',
   password: '',
   token: '',
+  authToken: '',
   vaultId: '',
   vaultName: '',
   deviceId: 'Obsidian Device',
@@ -81,10 +82,36 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const data = (await this.loadData()) || {};
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+
+    // 智能双向对齐 token 与 authToken 引用
+    if (!this.settings.token && this.settings.authToken) {
+      this.settings.token = this.settings.authToken;
+    }
+    if (!this.settings.authToken && this.settings.token) {
+      this.settings.authToken = this.settings.token;
+    }
+
+    // 容错：如果粘贴配置中携带 wsUrl 且包含 token 参数，提取作为令牌兜底
+    if (!this.settings.token && this.settings.wsUrl) {
+      try {
+        const dummyUrl = new URL(this.settings.wsUrl.replace(/^wss?:\/\//i, 'http://'));
+        const extracted = dummyUrl.searchParams.get('token') || dummyUrl.searchParams.get('authToken');
+        if (extracted) {
+          this.settings.token = extracted;
+          this.settings.authToken = extracted;
+        }
+      } catch {}
+    }
   }
 
   async saveSettings() {
+    if (this.settings.token && !this.settings.authToken) {
+      this.settings.authToken = this.settings.token;
+    } else if (this.settings.authToken && !this.settings.token) {
+      this.settings.token = this.settings.authToken;
+    }
     await this.saveData(this.settings);
   }
 
@@ -170,6 +197,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
       const data = await resp.json();
       this.settings.token = data.token;
+      this.settings.authToken = data.token;
       await this.saveSettings();
 
       new Notice('✅ 成功登录到 Nimbus 服务器！');
@@ -240,15 +268,18 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   connectWebSocket() {
     this.disconnectWebSocket();
 
-    if (!this.settings.token || !this.settings.vaultId) {
+    const rawToken = (this.settings.token || this.settings.authToken || '').trim();
+    if (!rawToken || !this.settings.vaultId) {
       this.updateStatusBar('idle', '☁️ Nimbus: 未配置');
       return;
     }
 
+    const cleanToken = rawToken.replace(/^Bearer\s+/i, '').trim();
+
     const baseUrl = this.getCleanServerUrl();
     const wsProto = baseUrl.startsWith('https:') ? 'wss:' : 'ws:';
     const host = baseUrl.replace(/^https?:\/\//i, '');
-    const wsUrl = `${wsProto}//${host}/ws?token=${encodeURIComponent(this.settings.token)}&vaultId=${encodeURIComponent(this.settings.vaultId)}&deviceId=${encodeURIComponent(this.settings.deviceId)}`;
+    const wsUrl = `${wsProto}//${host}/ws?token=${encodeURIComponent(cleanToken)}&vaultId=${encodeURIComponent(this.settings.vaultId)}&deviceId=${encodeURIComponent(this.settings.deviceId)}`;
 
     try {
       this.ws = new WebSocket(wsUrl);
@@ -276,8 +307,12 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       };
 
       this.ws.onclose = (e) => {
-        this.updateStatusBar('idle', '☁️ Nimbus: 连接已断开');
         if (this.pingTimer) clearInterval(this.pingTimer);
+        if (e && (e.code === 4001 || e.code === 4003)) {
+          this.updateStatusBar('error', '☁️ Nimbus: 令牌已失效');
+          return;
+        }
+        this.updateStatusBar('idle', '☁️ Nimbus: 连接已断开');
         // Auto reconnect
         if (this.settings.autoSync) {
           if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
@@ -348,6 +383,12 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         break;
 
       case 'pong':
+        break;
+
+      case 'auth_revoked':
+        new Notice(`❌ 令牌凭据已撤销: ${msg.message || '请重新配置设备令牌'}`);
+        this.updateStatusBar('error', '☁️ Nimbus: 令牌已撤销');
+        this.disconnectWebSocket();
         break;
 
       case 'error':
@@ -665,9 +706,11 @@ class NimbusSettingTab extends PluginSettingTab {
         .addText(text => {
           text.inputEl.type = 'password';
           text.setPlaceholder('粘贴 eyJhbGciOi... 令牌')
-            .setValue(this.plugin.settings.token || '')
+            .setValue(this.plugin.settings.token || this.plugin.settings.authToken || '')
             .onChange(async (val) => {
-              this.plugin.settings.token = val.trim();
+              const clean = val.trim().replace(/^Bearer\s+/i, '').trim();
+              this.plugin.settings.token = clean;
+              this.plugin.settings.authToken = clean;
               await this.plugin.saveSettings();
             });
         });

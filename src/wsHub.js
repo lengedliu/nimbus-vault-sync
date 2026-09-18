@@ -83,6 +83,9 @@ class FnsHub {
         }
       }
     }, 30000);
+    if (this.heartbeatInterval && this.heartbeatInterval.unref) {
+      this.heartbeatInterval.unref();
+    }
 
     httpServer.on('upgrade', (req, socket, head) => {
       const { pathname, query } = url.parse(req.url, true);
@@ -90,10 +93,33 @@ class FnsHub {
         socket.destroy();
         return;
       }
-      const payload = query.token && verifyToken(query.token);
+
+      // Robust token extraction: supports query.token, query.authToken, query.access_token,
+      // Authorization header (Bearer), and Sec-WebSocket-Protocol
+      let rawToken = query.token || query.authToken || query.access_token || '';
+      if (!rawToken && req.headers) {
+        const authHeader = req.headers.authorization || req.headers.Authorization || '';
+        if (authHeader) {
+          rawToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+        } else if (req.headers['sec-websocket-protocol']) {
+          const protocols = String(req.headers['sec-websocket-protocol']).split(',').map((s) => s.trim());
+          for (const p of protocols) {
+            if (p.startsWith('Bearer ')) {
+              rawToken = p.slice(7);
+              break;
+            } else if (p.length > 20 && p.includes('.')) {
+              rawToken = p;
+              break;
+            }
+          }
+        }
+      }
+
+      const token = typeof rawToken === 'string' ? rawToken.replace(/^Bearer\s+/i, '').trim() : null;
+      const payload = token && verifyToken(token);
       const devicesStore = require('./devices');
-      if (query.token && devicesStore.isTokenRevoked(query.token, payload)) {
-        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      if (token && devicesStore.isTokenRevoked(token, payload)) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
         socket.destroy();
         return;
       }
@@ -106,7 +132,7 @@ class FnsHub {
         const permissions = require('./permissions');
         permissions.assertReadAccess(user, vaultId);
       } catch {
-        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
         socket.destroy();
         return;
       }
@@ -117,7 +143,7 @@ class FnsHub {
       const deviceName = payload?.deviceName || payload?.label || query.deviceName || 'Obsidian Client';
 
       this.wss.handleUpgrade(req, socket, head, (ws) => {
-        this._onConnection(ws, user, vaultId, { deviceId, deviceName, token: query.token, tokenPayload: payload }, permission);
+        this._onConnection(ws, user, vaultId, { deviceId, deviceName, token, tokenPayload: payload }, permission);
       });
     });
   }
@@ -182,10 +208,12 @@ class FnsHub {
    */
   disconnectToken(token, reason = 'token_revoked') {
     if (!token) return 0;
+    const cleanTarget = String(token).replace(/^Bearer\s+/i, '').trim();
     let count = 0;
     for (const [vaultId, room] of this.rooms.entries()) {
       for (const client of Array.from(room)) {
-        if (client.token === token) {
+        const clientToken = client.token ? String(client.token).replace(/^Bearer\s+/i, '').trim() : null;
+        if (clientToken === cleanTarget) {
           try {
             this._send(client.ws, {
               type: 'auth_revoked',
@@ -689,6 +717,26 @@ class FnsHub {
           this._sendRaw(client.ws, json);
         }
       }
+    }
+  }
+
+  close() {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+    if (this.wss) {
+      try {
+        this.wss.close();
+      } catch {}
+    }
+    for (const room of this.rooms.values()) {
+      for (const client of room) {
+        try {
+          client.ws.close();
+        } catch {}
+      }
+      room.clear();
     }
   }
 }

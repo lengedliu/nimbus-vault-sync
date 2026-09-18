@@ -2159,16 +2159,21 @@
     if (!state.token || !vaultId) return;
 
     try {
+      const cleanToken = (state.token || '').replace(/^Bearer\s+/i, '').trim();
       const loc = window.location;
       const wsProto = loc.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsHost = state.serverBase ? state.serverBase.replace(/^https?:\/\//i, '').replace(/\/$/, '') : loc.host;
-      const wsUrl = `${wsProto}//${wsHost}/ws?vaultId=${encodeURIComponent(vaultId)}&token=${encodeURIComponent(state.token)}&deviceName=Web+Client`;
+      const wsUrl = `${wsProto}//${wsHost}/ws?vaultId=${encodeURIComponent(vaultId)}&token=${encodeURIComponent(cleanToken)}&deviceName=Web+Client`;
       const ws = new WebSocket(wsUrl);
       state.wsClient = ws;
 
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
+          if (msg.type === 'auth_revoked' || msg.type === 'force_logout') {
+            toast('WebSocket 身份凭证已失效或被撤销，请重新登录', 'error');
+            return;
+          }
           if (msg.cursor) {
             state.vaultCursor = Math.max(state.vaultCursor || 0, msg.cursor);
           }
@@ -2210,7 +2215,10 @@
       };
 
       ws.onerror = () => {};
-      ws.onclose = () => {
+      ws.onclose = (event) => {
+        if (event && (event.code === 4001 || event.code === 4003)) {
+          return;
+        }
         if (state.activeVaultId === vaultId) {
           // Reconnect with backoff and try delta sync
           setTimeout(() => {
@@ -6780,6 +6788,7 @@
       wsUrl: `${wsUrl}?vaultId=${vaultId}&token=${token}&deviceId=${encodeURIComponent(deviceName)}`,
       vaultId,
       vaultName,
+      token,
       authToken: token,
       deviceName,
       autoSyncOnStartup: true,
@@ -8513,6 +8522,7 @@
           serverUrl,
           wsUrl: `${wsUrl}?vaultId=${selectedVaultId}&token=${rawToken}&deviceId=${encodeURIComponent(deviceName)}`,
           vaultId: selectedVaultId,
+          token: rawToken,
           authToken: rawToken,
           deviceName,
           autoSyncOnStartup: true,
@@ -9390,6 +9400,7 @@
               serverUrl,
               wsUrl: `${wsUrl}?vaultId=${currentVault.id}&token=${targetToken.token || ''}&deviceId=${encodeURIComponent(devName)}`,
               vaultId: currentVault.id,
+              token: targetToken.token || '',
               authToken: targetToken.token || '',
               deviceName: devName,
               autoSyncOnStartup: true,

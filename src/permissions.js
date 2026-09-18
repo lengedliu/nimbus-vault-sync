@@ -65,7 +65,7 @@ function requireReadAccess(req, res, vaultId = req.params.vaultId) {
     assertReadAccess(req.user, vaultId);
     return true;
   } catch (err) {
-    res.status(404).json({ error: err.message });
+    res.status(404).json({ ok: false, error: err.message, message: err.message, code: 404 });
     return false;
   }
 }
@@ -75,7 +75,7 @@ function requireWriteAccess(req, res, vaultId = req.params.vaultId) {
     assertWriteAccess(req.user, vaultId);
     return true;
   } catch (err) {
-    res.status(403).json({ error: err.message });
+    res.status(403).json({ ok: false, error: err.message, message: err.message, code: 403 });
     return false;
   }
 }
@@ -85,7 +85,7 @@ function requireOwnerAccess(req, res, vaultId = req.params.vaultId) {
     assertOwnerAccess(req.user, vaultId);
     return true;
   } catch (err) {
-    res.status(403).json({ error: err.message });
+    res.status(403).json({ ok: false, error: err.message, message: err.message, code: 403 });
     return false;
   }
 }

@@ -1,0 +1,18 @@
+{
+  "users": [
+    {
+      "id": "f1f3c8de-7627-4de7-b0c9-499d2c9ad0be",
+      "username": "wstest_1789740258229",
+      "passwordHash": "$2a$10$fymyX5bY4dOtLslAa1iFL.8jaclkyWpMPg/lzhRBTDNyZO252mViq",
+      "role": "admin",
+      "createdAt": "2026-09-18T14:04:18.344Z"
+    },
+    {
+      "id": "86f939a8-c301-4aad-9b9a-a4a311767bba",
+      "username": "wstest_1789740279594",
+      "passwordHash": "$2a$10$VL./Ni/Y7pjXM.KRKtqTmOKTiE51UInmNsVQG1KK.naY50XsDrHB6",
+      "role": "user",
+      "createdAt": "2026-09-18T14:04:39.706Z"
+    }
+  ]
+}
