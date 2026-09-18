@@ -1,5 +1,6 @@
 // --------------------------- Dynamic Themes & Font Size & Date Helpers ---------------------------
 import { $, $$, escapeHtml } from './state.js';
+import { toast } from './dialogs.js';
 
 export const THEMES = [
   // 🌙 Dark Geek Themes (7)
@@ -412,3 +413,223 @@ export function updateFontSizeUI(sizeKey) {
   const loginLabelEl = $('#login-fontsize-label');
   if (loginLabelEl) loginLabelEl.textContent = localizedName;
 }
+
+// 🎨 Visual Theme Gallery Modal
+export function openThemeSelectorModal() {
+  const currentThemeId = resolveThemeId(localStorage.getItem('nimbus_theme'));
+  let activeFilter = 'all'; // 'all', 'dark', 'light'
+
+  function renderModalContent() {
+    const filteredThemes = THEMES.filter((th) => {
+      if (activeFilter === 'dark') return !th.isLight;
+      if (activeFilter === 'light') return th.isLight;
+      return true;
+    });
+
+    return `
+      <div class="theme-gallery-modal">
+        <div class="theme-gallery-header">
+          <div class="theme-gallery-title-group">
+            <h3>🎨 ${window.t ? window.t('theme.gallery_title', '主题画廊与视觉风格') : '主题画廊与视觉风格'}</h3>
+            <p class="theme-gallery-subtitle">${window.t ? window.t('theme.gallery_subtitle', '参考 Tinglan 音乐发烧级双色调配色体系，提供 13 款匠心打造的暗夜极客与日间清爽主题') : '参考 Tinglan 音乐发烧级双色调配色体系，提供 13 款匠心打造的暗夜极客与日间清爽主题'}</p>
+          </div>
+          <button class="btn btn-icon btn-close-modal" id="btn-close-theme-modal" title="关闭" style="background:transparent;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:4px 8px;">✕</button>
+        </div>
+
+        <div class="theme-filter-nav">
+          <button class="theme-filter-pill ${activeFilter === 'all' ? 'active' : ''}" data-filter="all">${window.t ? window.t('theme.tab_all', '全部风格 (13)') : '全部风格 (13)'}</button>
+          <button class="theme-filter-pill ${activeFilter === 'dark' ? 'active' : ''}" data-filter="dark">${window.t ? window.t('theme.tab_dark', '🌙 暗夜深色 (7)') : '🌙 暗夜深色 (7)'}</button>
+          <button class="theme-filter-pill ${activeFilter === 'light' ? 'active' : ''}" data-filter="light">${window.t ? window.t('theme.tab_light', '☀️ 日间清爽 (6)') : '☀️ 日间清爽 (6)'}</button>
+        </div>
+
+        <div class="theme-gallery-body">
+          <div class="theme-cards-grid">
+            ${filteredThemes
+              .map((th) => {
+                const isActive = th.id === currentThemeId;
+                const localizedName = (window.t ? window.t(`theme.${th.id}`) : null) || th.name;
+                return `
+                  <div class="theme-card-box ${isActive ? 'active' : ''}" data-theme-id="${th.id}">
+                    <div class="theme-card-box-header">
+                      <div class="theme-card-box-title">
+                        <span class="theme-card-box-dot" style="background-color:${th.primaryColor};box-shadow:0 0 8px ${th.primaryColor};"></span>
+                        <span>${escapeHtml(localizedName)}</span>
+                      </div>
+                      <span class="theme-badge ${isActive ? 'active-badge' : 'type-badge'}">
+                        ${isActive ? (window.t ? window.t('theme.active_badge', '使用中 ✓') : '使用中 ✓') : th.isLight ? 'Light' : 'Dark'}
+                      </span>
+                    </div>
+
+                    <div class="theme-card-desc">${escapeHtml(th.subtitle)}</div>
+
+                    <div class="theme-preview-simulation" style="background:${th.bgColor};border:1px solid ${th.cardBorder};border-radius:6px;padding:8px 10px;margin:8px 0;display:flex;flex-direction:column;gap:6px;">
+                      <div class="theme-sim-row" style="display:flex;justify-content:space-between;align-items:center;">
+                        <span style="display:inline-flex;align-items:center;gap:4px;color:${th.textTitle};font-weight:600;font-size:11px;">
+                          📓 Vault 同步
+                        </span>
+                        <span class="theme-sim-badge" style="font-size:10px;padding:1px 6px;border-radius:4px;color:${th.primaryColor};background:rgba(${th.primaryRgb},0.15);border:1px solid ${th.cardBorder};">
+                          AES-256
+                        </span>
+                      </div>
+                      <div class="theme-sim-bar" style="height:4px;width:100%;border-radius:2px;background:${th.cardSubtle};overflow:hidden;">
+                        <div class="theme-sim-progress" style="height:100%;width:76%;background:${th.primaryColor};border-radius:2px;"></div>
+                      </div>
+                    </div>
+
+                    <div class="theme-card-footer">
+                      <div class="theme-palette-swatches">
+                        <span class="theme-swatch-circle" style="background:${th.primaryColor}" title="Primary: ${th.primaryColor}"></span>
+                        <span class="theme-swatch-circle" style="background:${th.secondaryColor}" title="Secondary: ${th.secondaryColor}"></span>
+                        <span class="theme-swatch-circle" style="background:${th.bgColor}" title="Canvas: ${th.bgColor}"></span>
+                        <span style="font-size:11px;color:var(--muted);margin-left:4px;font-family:monospace;">${th.primaryColor}</span>
+                      </div>
+                      <button class="theme-apply-action-btn" style="color:${th.primaryColor};background:transparent;border:none;font-size:12px;font-weight:600;cursor:pointer;">
+                        ${isActive ? (window.t ? window.t('theme.applied', '当前生效') : '当前生效') : (window.t ? window.t('theme.apply_btn', '点击应用 →') : '点击应用 →')}
+                      </button>
+                    </div>
+                  </div>
+                `;
+              })
+              .join('')}
+          </div>
+        </div>
+
+        <div class="theme-gallery-footer">
+          <div class="theme-gallery-footer-info">
+            <span>✨</span>
+            <span>点击任意卡片即可无刷新全局热切换，系统会自动记忆您的偏好设置</span>
+          </div>
+          <button class="btn btn-primary" id="btn-theme-modal-done" style="padding:6px 20px;">
+            ${window.t ? window.t('theme.close_modal', '完成并关闭') : '完成并关闭'}
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  const backdrop = $('#modal-backdrop');
+  const container = $('#modal-container');
+  if (!backdrop || !container) return;
+
+  container.innerHTML = renderModalContent();
+  backdrop.classList.remove('hidden');
+
+  function bindModalEvents() {
+    container.querySelectorAll('.theme-filter-pill').forEach((pill) => {
+      pill.onclick = () => {
+        activeFilter = pill.dataset.filter;
+        container.innerHTML = renderModalContent();
+        bindModalEvents();
+      };
+    });
+
+    const closeBtn = container.querySelector('#btn-close-theme-modal');
+    const doneBtn = container.querySelector('#btn-theme-modal-done');
+    const closeModal = () => {
+      backdrop.classList.add('hidden');
+      container.innerHTML = '';
+    };
+    if (closeBtn) closeBtn.onclick = closeModal;
+    if (doneBtn) doneBtn.onclick = closeModal;
+
+    container.querySelectorAll('.theme-card-box').forEach((card) => {
+      card.onclick = () => {
+        const selectedId = card.dataset.themeId;
+        applyTheme(selectedId);
+        toast(`已成功应用「${(window.t ? window.t('theme.' + selectedId) : null) || selectedId}」主题`);
+        container.innerHTML = renderModalContent();
+        bindModalEvents();
+      };
+    });
+  }
+
+  bindModalEvents();
+}
+
+export function initThemeSwitcher() {
+  const menuBtn = $('#theme-menu-btn');
+  const menu = $('#theme-dropdown-menu');
+  if (!menuBtn || !menu) return;
+
+  const darkThemes = THEMES.filter((t) => !t.isLight);
+  const lightThemes = THEMES.filter((t) => t.isLight);
+  const currentTheme = resolveThemeId(localStorage.getItem('nimbus_theme'));
+
+  menu.innerHTML = `
+    <div class="theme-dropdown-header" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--panel-2);">
+      <span style="font-size:11.5px;font-weight:700;color:var(--text);">视觉风格 (${THEMES.length}款)</span>
+      <button id="topbar-open-gallery-btn" class="theme-dropdown-gallery-btn" style="padding:2px 8px;font-size:11px;border-radius:12px;background:var(--accent-bg);color:var(--accent);border:1px solid var(--accent);cursor:pointer;">🎨 画廊展厅</button>
+    </div>
+
+    <div style="padding:4px 0;max-height:380px;overflow-y:auto;">
+      <div style="padding:4px 12px;font-size:10.5px;font-weight:700;color:var(--muted);text-transform:uppercase;">🌙 暗夜极客深色</div>
+      ${darkThemes
+        .map((th) => {
+          const isActive = th.id === currentTheme;
+          const localizedName = (window.t ? window.t(`theme.${th.id}`) : null) || th.name;
+          return `
+            <button class="theme-opt-item ${isActive ? 'active' : ''}" data-theme-val="${th.id}" style="display:flex;align-items:center;gap:8px;width:100%;padding:6px 12px;background:transparent;border:none;cursor:pointer;color:var(--text);font-size:12px;text-align:left;">
+              <span class="dot" style="width:10px;height:10px;border-radius:50%;background:${th.primaryColor};box-shadow:0 0 6px ${th.primaryColor};flex-shrink:0;"></span>
+              <span style="flex:1;">${escapeHtml(localizedName)}</span>
+              ${isActive ? '<span style="color:var(--accent);font-size:11px;">✓</span>' : ''}
+            </button>
+          `;
+        })
+        .join('')}
+
+      <div style="padding:6px 12px 4px 12px;font-size:10.5px;font-weight:700;color:var(--muted);text-transform:uppercase;border-top:1px solid var(--border);margin-top:4px;">☀️ 日间清爽明亮</div>
+      ${lightThemes
+        .map((th) => {
+          const isActive = th.id === currentTheme;
+          const localizedName = (window.t ? window.t(`theme.${th.id}`) : null) || th.name;
+          return `
+            <button class="theme-opt-item ${isActive ? 'active' : ''}" data-theme-val="${th.id}" style="display:flex;align-items:center;gap:8px;width:100%;padding:6px 12px;background:transparent;border:none;cursor:pointer;color:var(--text);font-size:12px;text-align:left;">
+              <span class="dot" style="width:10px;height:10px;border-radius:50%;background:${th.primaryColor};flex-shrink:0;"></span>
+              <span style="flex:1;">${escapeHtml(localizedName)}</span>
+              ${isActive ? '<span style="color:var(--accent);font-size:11px;">✓</span>' : ''}
+            </button>
+          `;
+        })
+        .join('')}
+    </div>
+  `;
+
+  menuBtn.onclick = (e) => {
+    e.stopPropagation();
+    menu.classList.toggle('hidden');
+    const langMenu = document.getElementById('lang-dropdown-menu');
+    if (langMenu) langMenu.classList.add('hidden');
+    const fontMenu = document.getElementById('fontsize-dropdown-menu');
+    if (fontMenu) fontMenu.classList.add('hidden');
+  };
+
+  document.addEventListener('click', (e) => {
+    if (!menu.contains(e.target) && e.target !== menuBtn) {
+      menu.classList.add('hidden');
+    }
+  });
+
+  const galleryBtn = menu.querySelector('#topbar-open-gallery-btn');
+  if (galleryBtn) {
+    galleryBtn.onclick = (e) => {
+      e.stopPropagation();
+      menu.classList.add('hidden');
+      openThemeSelectorModal();
+    };
+  }
+
+  menu.querySelectorAll('.theme-opt-item').forEach((item) => {
+    item.onclick = (e) => {
+      e.stopPropagation();
+      const val = item.dataset.themeVal;
+      applyTheme(val);
+      menu.classList.add('hidden');
+      const name = (window.t ? window.t(`theme.${val}`) : null) || THEME_LABELS[val];
+      toast(`已切换至「${name}」风格`);
+      initThemeSwitcher();
+    };
+  });
+
+  applyTheme(localStorage.getItem('nimbus_theme') || 'cyber-blue');
+}
+

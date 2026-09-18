@@ -86,3 +86,5 @@ export function escapeHtml(str) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
 }
+
+export { formatCurrentDate } from './themes.js';
