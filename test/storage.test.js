@@ -125,3 +125,44 @@ test('getManifest: .git 目录不应该出现在 manifest 里', () => {
   const gitPaths = Object.keys(manifest).filter((p) => p.startsWith('.git/'));
   assert.deepEqual(gitPaths, [], '.git 目录下的文件不应该出现在 manifest 里');
 });
+
+test('Trash: 批量恢复 (restoreBatchTrash) 与全部恢复 (restoreAllTrash) 功能验证', () => {
+  storage.writeFile(VAULT_ID, 'batch-1.md', Buffer.from('content 1'));
+  storage.writeFile(VAULT_ID, 'batch-2.md', Buffer.from('content 2'));
+  storage.writeFile(VAULT_ID, 'batch-3.md', Buffer.from('content 3'));
+
+  storage.deleteFile(VAULT_ID, 'batch-1.md');
+  storage.deleteFile(VAULT_ID, 'batch-2.md');
+  storage.deleteFile(VAULT_ID, 'batch-3.md');
+
+  const trashList = storage.listTrash(VAULT_ID);
+  assert.ok(trashList.length >= 3);
+
+  const t1 = trashList.find((t) => t.path === 'batch-1.md');
+  const t2 = trashList.find((t) => t.path === 'batch-2.md');
+  const t3 = trashList.find((t) => t.path === 'batch-3.md');
+  assert.ok(t1 && t2 && t3);
+
+  // 测试批量恢复部分文件 (batch-1 和 batch-2)
+  const batchRes = storage.restoreBatchTrash(VAULT_ID, [t1.id, t2.id]);
+  assert.equal(batchRes.restoredCount, 2);
+  assert.ok(batchRes.restoredPaths.includes('batch-1.md'));
+  assert.ok(batchRes.restoredPaths.includes('batch-2.md'));
+
+  assert.equal(storage.readFile(VAULT_ID, 'batch-1.md').toString('utf8'), 'content 1');
+  assert.equal(storage.readFile(VAULT_ID, 'batch-2.md').toString('utf8'), 'content 2');
+  assert.equal(storage.readFile(VAULT_ID, 'batch-3.md'), null);
+
+  // 此时回收站中应该只剩下 batch-3.md
+  const remainingTrash = storage.listTrash(VAULT_ID);
+  assert.ok(remainingTrash.some((t) => t.path === 'batch-3.md'));
+
+  // 测试全部恢复 (restoreAllTrash)
+  const allRes = storage.restoreAllTrash(VAULT_ID);
+  assert.ok(allRes.restoredCount >= 1);
+  assert.ok(allRes.restoredPaths.includes('batch-3.md'));
+  assert.equal(storage.readFile(VAULT_ID, 'batch-3.md').toString('utf8'), 'content 3');
+
+  // 回收站应已清空
+  assert.equal(storage.listTrash(VAULT_ID).length, 0);
+});

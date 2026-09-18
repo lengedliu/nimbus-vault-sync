@@ -556,45 +556,90 @@ function listTrash(vaultId) {
 
 /** Restore a trashed file back to its original path (overwrites anything currently there). */
 function restoreFromTrash(vaultId, trashId) {
+  const result = restoreBatchTrash(vaultId, [trashId]);
+  return result.restoredPaths.length > 0 ? result.restoredPaths[0] : null;
+}
+
+/** Restore multiple trashed files back to their original paths in batch. */
+function restoreBatchTrash(vaultId, trashIds) {
+  if (!Array.isArray(trashIds) || trashIds.length === 0) {
+    return { restoredCount: 0, restoredPaths: [] };
+  }
+  const idSet = new Set(trashIds);
   const idxPath = trashIndexPath(vaultId);
   const entries = loadIndex(idxPath);
-  const entry = entries.find((e) => e.id === trashId);
-  if (!entry) return null;
+  const targetEntries = entries.filter((e) => idSet.has(e.id));
+  if (targetEntries.length === 0) {
+    return { restoredCount: 0, restoredPaths: [] };
+  }
 
-  const trashFull = path.join(trashDir(vaultId), trashId);
-  if (!fs.existsSync(trashFull)) return null;
-  const buffer = fs.readFileSync(trashFull);
-
-  const destFull = safeJoin(vaultFilesRoot(vaultId), entry.path);
-  fs.mkdirSync(path.dirname(destFull), { recursive: true });
-  fs.writeFileSync(destFull, buffer);
-
-  fs.unlinkSync(trashFull);
-  mutateIndex(idxPath, (current) => current.filter((e) => e.id !== trashId));
-  const hash = sha256(buffer);
+  const restoredPaths = [];
+  const successfullyRestoredIds = new Set();
   const now = Date.now();
-  updateManifestEntry(vaultId, entry.path, { size: buffer.length, mtime: now, ctime: now, hash });
-  invalidateContentCacheEntry(vaultId, entry.path);
-  deltaSync.recordChange(vaultId, { path: entry.path, action: 'UPSERT', size: buffer.length, mtime: now, hash }).catch(() => {});
-  try {
-    ftsEngine.onFileWrite(vaultId, entry.path, buffer.toString('utf8'), { size: buffer.length, mtime: now, hash });
-  } catch {}
-  try {
-    gitSync.notifyChange(vaultId);
-  } catch {}
-  return entry.path;
+
+  for (const entry of targetEntries) {
+    const trashFull = path.join(trashDir(vaultId), entry.id);
+    if (!fs.existsSync(trashFull)) continue;
+    try {
+      const buffer = fs.readFileSync(trashFull);
+      const destFull = safeJoin(vaultFilesRoot(vaultId), entry.path);
+      fs.mkdirSync(path.dirname(destFull), { recursive: true });
+      fs.writeFileSync(destFull, buffer);
+      try { fs.unlinkSync(trashFull); } catch {}
+      successfullyRestoredIds.add(entry.id);
+      restoredPaths.push(entry.path);
+
+      const hash = sha256(buffer);
+      updateManifestEntry(vaultId, entry.path, { size: buffer.length, mtime: now, ctime: now, hash });
+      invalidateContentCacheEntry(vaultId, entry.path);
+      deltaSync.recordChange(vaultId, { path: entry.path, action: 'UPSERT', size: buffer.length, mtime: now, hash }).catch(() => {});
+      try {
+        ftsEngine.onFileWrite(vaultId, entry.path, buffer.toString('utf8'), { size: buffer.length, mtime: now, hash });
+      } catch {}
+    } catch (err) {
+      console.error(`[Trash] Failed to restore "${entry.path}":`, err);
+    }
+  }
+
+  if (successfullyRestoredIds.size > 0) {
+    mutateIndex(idxPath, (current) => current.filter((e) => !successfullyRestoredIds.has(e.id)));
+    try {
+      gitSync.notifyChange(vaultId);
+    } catch {}
+  }
+
+  return { restoredCount: restoredPaths.length, restoredPaths };
+}
+
+/** Restore all items in trash. */
+function restoreAllTrash(vaultId) {
+  const idxPath = trashIndexPath(vaultId);
+  const entries = loadIndex(idxPath);
+  const allIds = entries.map((e) => e.id);
+  return restoreBatchTrash(vaultId, allIds);
 }
 
 /** Permanently delete a trashed item (no way back after this). */
 function purgeTrash(vaultId, trashId) {
+  const res = purgeBatchTrash(vaultId, [trashId]);
+  return res.purgedCount > 0;
+}
+
+/** Purge selected items in trash. */
+function purgeBatchTrash(vaultId, trashIds) {
+  if (!Array.isArray(trashIds) || trashIds.length === 0) {
+    return { purgedCount: 0 };
+  }
+  const idSet = new Set(trashIds);
   const idxPath = trashIndexPath(vaultId);
   const entries = loadIndex(idxPath);
-  const entry = entries.find((e) => e.id === trashId);
-  if (!entry) return false;
-  const f = path.join(trashDir(vaultId), trashId);
-  if (fs.existsSync(f)) try { fs.unlinkSync(f); } catch {}
-  mutateIndex(idxPath, (current) => current.filter((e) => e.id !== trashId));
-  return true;
+  const targetEntries = entries.filter((e) => idSet.has(e.id));
+  for (const entry of targetEntries) {
+    const f = path.join(trashDir(vaultId), entry.id);
+    if (fs.existsSync(f)) try { fs.unlinkSync(f); } catch {}
+  }
+  mutateIndex(idxPath, (current) => current.filter((e) => !idSet.has(e.id)));
+  return { purgedCount: targetEntries.length };
 }
 
 /** Purge all items in trash. */
@@ -1123,7 +1168,10 @@ module.exports = {
   listTrash,
   readTrashVersion,
   restoreFromTrash,
+  restoreBatchTrash,
+  restoreAllTrash,
   purgeTrash,
+  purgeBatchTrash,
   purgeAllTrash,
   searchVault,
   getVaultStats,

@@ -4045,15 +4045,69 @@
     const res = await api(`/api/vaults/${vaultId}/trash`);
     const { trash } = await res.json();
 
+    const selectedIds = new Set();
+
     container.innerHTML = `
-      <div class="panel-header">
-        <h3 style="margin:0;font-size:16px;">🗑️ 回收站</h3>
-        ${trash.length > 0 ? `<button class="danger" id="purge-all-trash-btn">清空回收站 (${trash.length})</button>` : ''}
+      <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <h3 style="margin:0;font-size:16px;">🗑️ 回收站</h3>
+          ${trash.length > 0 ? `<span class="badge" style="background:var(--card-border, rgba(255,255,255,0.1));color:var(--text-muted, #94a3b8);font-size:12px;padding:2px 8px;border-radius:12px;">${trash.length} 个已删除文件</span>` : ''}
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          ${trash.length > 0 ? `
+            <button class="btn-primary" id="restore-all-trash-btn" style="display:inline-flex;align-items:center;gap:4px;">
+              <span>♻️</span>
+              <span>恢复全部 (${trash.length})</span>
+            </button>
+            <button class="danger" id="purge-all-trash-btn" style="display:inline-flex;align-items:center;gap:4px;">
+              <span>🗑️</span>
+              <span>清空回收站</span>
+            </button>
+          ` : ''}
+        </div>
+      </div>
+      <div id="trash-batch-toolbar" style="display:none;background:var(--card-hover, rgba(59,130,246,0.08));border:1px solid var(--accent, #3b82f6);border-radius:6px;padding:8px 14px;margin-bottom:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-weight:600;color:var(--accent, #3b82f6);">✓</span>
+          <span id="trash-selected-count-label" style="font-size:13.5px;font-weight:500;">已选择 0 项</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button class="btn-primary" id="restore-selected-trash-btn" style="font-size:12.5px;padding:5px 12px;">
+            <span>♻️</span>
+            <span>恢复所选</span>
+          </button>
+          <button class="danger" id="purge-selected-trash-btn" style="font-size:12.5px;padding:5px 12px;">
+            <span>🗑️</span>
+            <span>彻底删除所选</span>
+          </button>
+          <button class="secondary" id="clear-selected-trash-btn" style="font-size:12.5px;padding:5px 10px;">
+            <span>取消选择</span>
+          </button>
+        </div>
       </div>
       <div id="trash-table-wrap"></div>
     `;
 
     if (trash.length > 0) {
+      container.querySelector('#restore-all-trash-btn').onclick = async () => {
+        const ok = await showConfirm({
+          title: '恢复全部文件确认',
+          message: `确定将回收站中的所有文件（共 ${trash.length} 个）全部恢复到笔记库中吗？`,
+          confirmText: '恢复全部',
+          type: 'primary',
+          icon: '♻️',
+        });
+        if (!ok) return;
+        try {
+          const r = await api(`/api/vaults/${vaultId}/trash/restore-all`, { method: 'POST' });
+          const data = await r.json();
+          toast(`已成功恢复 ${data.restoredCount || trash.length} 个文件`);
+          renderTrashSubtab(vaultId, container);
+        } catch (err) {
+          toast('恢复全部失败: ' + (err.message || '未知错误'));
+        }
+      };
+
       container.querySelector('#purge-all-trash-btn').onclick = async () => {
         const ok = await showConfirm({
           title: '清空回收站确认',
@@ -4072,14 +4126,103 @@
     const wrap = container.querySelector('#trash-table-wrap');
     if (trash.length === 0) {
       wrap.innerHTML = '<div class="empty-state">回收站是空的</div>';
+      translate(container);
       return;
     }
+
+    const batchToolbar = container.querySelector('#trash-batch-toolbar');
+    const selectedCountLabel = container.querySelector('#trash-selected-count-label');
+    const restoreSelectedBtn = container.querySelector('#restore-selected-trash-btn');
+    const purgeSelectedBtn = container.querySelector('#purge-selected-trash-btn');
+    const clearSelectedBtn = container.querySelector('#clear-selected-trash-btn');
+
+    function updateBatchSelectionUI() {
+      const count = selectedIds.size;
+      if (count > 0) {
+        batchToolbar.style.display = 'flex';
+        selectedCountLabel.textContent = `已选择 ${count} 项`;
+        restoreSelectedBtn.innerHTML = `<span>♻️</span> <span>恢复所选 (${count})</span>`;
+        purgeSelectedBtn.innerHTML = `<span>🗑️</span> <span>彻底删除所选 (${count})</span>`;
+      } else {
+        batchToolbar.style.display = 'none';
+      }
+
+      const selectAllCheckbox = container.querySelector('#trash-select-all');
+      if (selectAllCheckbox) {
+        selectAllCheckbox.checked = count === trash.length && trash.length > 0;
+        selectAllCheckbox.indeterminate = count > 0 && count < trash.length;
+      }
+
+      container.querySelectorAll('.trash-item-select').forEach((cb) => {
+        cb.checked = selectedIds.has(cb.dataset.id);
+        const row = cb.closest('tr');
+        if (row) {
+          row.classList.toggle('selected-row', cb.checked);
+        }
+      });
+    }
+
+    restoreSelectedBtn.onclick = async () => {
+      if (selectedIds.size === 0) return;
+      const count = selectedIds.size;
+      const ok = await showConfirm({
+        title: '批量恢复文件确认',
+        message: `确定恢复选中的 ${count} 个文件到笔记库中吗？`,
+        confirmText: `恢复选中的 ${count} 个文件`,
+        type: 'primary',
+        icon: '♻️',
+      });
+      if (!ok) return;
+      try {
+        const r = await api(`/api/vaults/${vaultId}/trash/restore-batch`, {
+          method: 'POST',
+          body: JSON.stringify({ ids: Array.from(selectedIds) }),
+        });
+        const data = await r.json();
+        toast(`已成功恢复 ${data.restoredCount || count} 个文件`);
+        renderTrashSubtab(vaultId, container);
+      } catch (err) {
+        toast('批量恢复失败: ' + (err.message || '未知错误'));
+      }
+    };
+
+    purgeSelectedBtn.onclick = async () => {
+      if (selectedIds.size === 0) return;
+      const count = selectedIds.size;
+      const ok = await showConfirm({
+        title: '批量彻底删除确认',
+        message: `确定彻底删除选中的 ${count} 个文件吗？此操作无法撤销。`,
+        confirmText: `彻底删除 (${count})`,
+        type: 'danger',
+        icon: '🗑️',
+      });
+      if (!ok) return;
+      try {
+        const r = await api(`/api/vaults/${vaultId}/trash/purge-batch`, {
+          method: 'POST',
+          body: JSON.stringify({ ids: Array.from(selectedIds) }),
+        });
+        const data = await r.json();
+        toast(`已彻底删除 ${data.purgedCount || count} 个文件`);
+        renderTrashSubtab(vaultId, container);
+      } catch (err) {
+        toast('彻底删除失败: ' + (err.message || '未知错误'));
+      }
+    };
+
+    clearSelectedBtn.onclick = () => {
+      selectedIds.clear();
+      updateBatchSelectionUI();
+    };
 
     const table = document.createElement('table');
     table.className = 'data-table';
     table.innerHTML = `
       <thead>
         <tr>
+          <th style="width:38px;text-align:center;">
+            <input type="checkbox" id="trash-select-all" title="全选 / 取消全选" style="cursor:pointer;" />
+          </th>
           <th>原始路径</th>
           <th>删除时间</th>
           <th>大小</th>
@@ -4088,20 +4231,44 @@
       </thead>
       <tbody></tbody>
     `;
+
+    const selectAllCb = table.querySelector('#trash-select-all');
+    selectAllCb.onchange = (e) => {
+      if (e.target.checked) {
+        trash.forEach((t) => selectedIds.add(t.id));
+      } else {
+        selectedIds.clear();
+      }
+      updateBatchSelectionUI();
+    };
+
     const tbody = table.querySelector('tbody');
 
     for (const t of trash) {
       const tr = document.createElement('tr');
       tr.innerHTML = `
-        <td><b>${escapeHtml(t.path)}</b></td>
+        <td style="width:38px;text-align:center;">
+          <input type="checkbox" class="trash-item-select" data-id="${t.id}" style="cursor:pointer;" />
+        </td>
+        <td><b style="word-break:break-all;">${escapeHtml(t.path)}</b></td>
         <td class="meta">${new Date(t.deletedAt).toLocaleString()}</td>
         <td class="meta">${formatBytes(t.size)}</td>
-        <td class="actions">
+        <td class="actions" style="white-space:nowrap;">
           <button class="secondary" id="preview-trash-${t.id}">预览</button>
           <button class="btn-primary" id="restore-trash-${t.id}">恢复</button>
           <button class="danger" id="purge-trash-${t.id}">彻底删除</button>
         </td>
       `;
+
+      const itemCb = tr.querySelector('.trash-item-select');
+      itemCb.onchange = (e) => {
+        if (e.target.checked) {
+          selectedIds.add(t.id);
+        } else {
+          selectedIds.delete(t.id);
+        }
+        updateBatchSelectionUI();
+      };
 
       tr.querySelector(`#preview-trash-${t.id}`).onclick = async () => {
         try {
