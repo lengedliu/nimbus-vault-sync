@@ -5201,6 +5201,278 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
   background: var(--accent-bg) !important;
 }
 
+/* ==========================================================================
+   Mobile & Responsive Navigation System (Drawer + Topbar + Touch UX)
+   ========================================================================== */
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sidebar-toggle-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.sidebar-toggle-btn:hover {
+  background: var(--panel-3);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 998;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar-backdrop.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* 📱 Responsive Rules for Tablet & Mobile (max-width: 768px) */
+@media (max-width: 768px) {
+  body.sidebar-open {
+    overflow: hidden;
+  }
+
+  .sidebar-toggle-btn {
+    display: inline-flex;
+  }
+
+  .topbar {
+    padding: 8px 12px;
+    height: 52px;
+    gap: 8px;
+  }
+
+  .brand-name {
+    font-size: 14.5px;
+    max-width: 130px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .brand-badge {
+    display: none;
+  }
+
+  .topbar-center {
+    gap: 6px;
+  }
+
+  #topbar-date-display {
+    display: none !important;
+  }
+
+  .topbar-search-btn {
+    padding: 6px 9px;
+    min-width: 34px;
+    gap: 0;
+  }
+
+  .topbar-search-btn .search-placeholder,
+  .topbar-search-btn .shortcut-kbd {
+    display: none;
+  }
+
+  .sync-indicator {
+    padding: 4px 6px;
+    border-radius: 12px;
+  }
+
+  .sync-indicator .status-text {
+    display: none;
+  }
+
+  .who {
+    gap: 6px;
+    font-size: 12px;
+  }
+
+  #lang-label-name,
+  #theme-label-name,
+  #fontsize-label-name {
+    display: none;
+  }
+
+  .lang-menu-btn,
+  .theme-menu-btn,
+  .fontsize-menu-btn {
+    padding: 5px 8px;
+    font-size: 12px;
+    gap: 2px;
+  }
+
+  #who-role {
+    display: none;
+  }
+
+  #who-username {
+    max-width: 60px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+  }
+
+  #logout-btn {
+    padding: 4px 8px;
+    font-size: 11.5px;
+  }
+
+  /* Off-canvas sidebar */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 290px;
+    max-width: 84vw;
+    z-index: 999;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    box-shadow: 4px 0 30px rgba(0, 0, 0, 0.5);
+    transform: translateX(-100%);
+    transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  /* Main panel full width */
+  .main {
+    padding: 14px 12px;
+    width: 100%;
+    min-width: 0;
+  }
+
+  /* Subtabs bar responsive scroll */
+  .subtabs-bar {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 4px;
+    scrollbar-width: none;
+  }
+
+  .subtabs-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .subtab-btn {
+    white-space: nowrap;
+    padding: 7px 11px;
+    font-size: 12.5px;
+    flex-shrink: 0;
+  }
+
+  /* Vault header */
+  .vault-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .vault-title {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .vault-actions {
+    width: 100%;
+    justify-content: flex-start;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
+  /* Modal container responsive */
+  .modal-container {
+    width: 94vw !important;
+    max-width: 94vw !important;
+    margin: 10px auto;
+    padding: 16px 14px !important;
+    max-height: 92vh;
+    overflow-y: auto;
+  }
+
+  /* Form and grid elements */
+  .stats-grid,
+  .dashboard-overview-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .card {
+    padding: 20px 16px;
+  }
+
+  .login-card {
+    padding: 24px 18px;
+    max-width: 92vw;
+  }
+
+  .login-lang-corner {
+    top: 10px;
+    right: 10px;
+  }
+
+  /* File table & list touch-friendly wrap */
+  .file-table-wrap,
+  .table-responsive {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .file-table th,
+  .file-table td {
+    padding: 8px 10px;
+    font-size: 12.5px;
+  }
+}
+
+/* 📱 Super Compact for Narrow Phones (max-width: 420px) */
+@media (max-width: 420px) {
+  .brand-name {
+    display: none;
+  }
+  
+  .topbar {
+    padding: 6px 10px;
+  }
+
+  .topbar-center {
+    display: none;
+  }
+
+  .who {
+    margin-left: auto;
+  }
+}
+
+
 
 
 

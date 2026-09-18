@@ -1372,8 +1372,60 @@
 
     setupGlobalSearch();
     setupCollapsibleSections();
+    initMobileNavigation();
 
     await loadVaults();
+  }
+
+  function closeMobileSidebar() {
+    const sidebar = $('#sidebar') || $('.sidebar');
+    const backdrop = $('#sidebar-backdrop');
+    if (sidebar) sidebar.classList.remove('open');
+    if (backdrop) backdrop.classList.remove('active');
+    document.body.classList.remove('sidebar-open');
+  }
+
+  function toggleMobileSidebar() {
+    const sidebar = $('#sidebar') || $('.sidebar');
+    const backdrop = $('#sidebar-backdrop');
+    if (!sidebar) return;
+    const isOpen = sidebar.classList.toggle('open');
+    if (backdrop) backdrop.classList.toggle('active', isOpen);
+    document.body.classList.toggle('sidebar-open', isOpen);
+  }
+
+  function initMobileNavigation() {
+    const toggleBtn = $('#sidebar-toggle-btn');
+    const backdrop = $('#sidebar-backdrop');
+
+    if (toggleBtn) {
+      toggleBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleMobileSidebar();
+      });
+    }
+
+    if (backdrop) {
+      backdrop.addEventListener('click', () => {
+        closeMobileSidebar();
+      });
+    }
+
+    // Close mobile sidebar on Escape key
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeMobileSidebar();
+      }
+    });
+
+    // On mobile screens, automatically close sidebar drawer when nav items are clicked
+    document.querySelectorAll('.tab-btn, .nav-item, #new-vault-btn, .sidebar-github-link').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (window.innerWidth <= 768) {
+          closeMobileSidebar();
+        }
+      });
+    });
   }
 
   function setupCollapsibleSections() {
@@ -1487,6 +1539,9 @@
   });
 
   function showTab(tab) {
+    if (window.innerWidth <= 768) {
+      closeMobileSidebar();
+    }
     state.activeVaultId = null;
     state.activeTab = tab;
     document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
@@ -2264,6 +2319,9 @@
   }
 
   async function openVault(vaultId, subtab = 'files') {
+    if (window.innerWidth <= 768) {
+      closeMobileSidebar();
+    }
     if (state.activeVaultId !== vaultId) {
       state.treeFoldersInitialized = false;
       state.flatListPage = 1;

@@ -133,10 +133,19 @@
 
 <div id="app-view" class="app hidden">
   <header class="topbar">
-    <div class="brand" id="brand-logo-btn" style="cursor:pointer;" title="返回看板总览">
-      <span class="logo">☁️</span>
-      <span class="brand-name">Nimbus Vault Sync</span>
-      <span class="brand-badge">Fast Sync</span>
+    <div class="topbar-left">
+      <button type="button" id="sidebar-toggle-btn" class="sidebar-toggle-btn" aria-label="Toggle Navigation" title="切换导航菜单">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      </button>
+      <div class="brand" id="brand-logo-btn" style="cursor:pointer;" title="返回看板总览">
+        <span class="logo">☁️</span>
+        <span class="brand-name">Nimbus Vault Sync</span>
+        <span class="brand-badge">Fast Sync</span>
+      </div>
     </div>
     <div class="topbar-center">
       <div id="topbar-date-display" class="topbar-date-display" data-i18n-title="topbar.date_title" title="当前系统日期">
@@ -274,7 +283,8 @@
   </header>
 
   <div class="layout">
-    <nav class="sidebar">
+    <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
+    <nav class="sidebar" id="sidebar">
       <div class="sidebar-body">
         <div style="margin-bottom: 14px;">
           <button class="nav-item tab-btn" id="global-dashboard-btn" data-tab="dashboard" style="width:100%;font-weight:600;display:flex;align-items:center;gap:8px;padding:9px 12px;border-radius:var(--radius);background:var(--accent-bg);color:var(--accent);border:1px solid rgba(88,166,255,0.25);cursor:pointer;">
