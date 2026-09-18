@@ -47,11 +47,26 @@ class FnsHub {
   init(httpServer) {
     this.wss = new WebSocketServer({ noServer: true });
 
-    // Setup 30s heartbeat interval to detect stale/dead connections and prevent mobile zombie sockets
+    // Setup 30s heartbeat interval to detect stale/dead connections and kick revoked tokens
     if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
     this.heartbeatInterval = setInterval(() => {
+      const devicesStore = require('./devices');
       for (const [vaultId, room] of this.rooms.entries()) {
         for (const client of Array.from(room)) {
+          // Check if token was revoked during active session
+          if (client.token && devicesStore.isTokenRevoked(client.token, client.tokenPayload)) {
+            try {
+              this._send(client.ws, {
+                type: 'auth_revoked',
+                reason: 'token_revoked',
+                message: 'Authorization has been revoked or expired.',
+              });
+              client.ws.close(4001, 'Token revoked');
+            } catch {}
+            room.delete(client);
+            continue;
+          }
+
           if (client.isAlive === false) {
             try {
               client.ws.terminate();
@@ -102,7 +117,7 @@ class FnsHub {
       const deviceName = payload?.deviceName || payload?.label || query.deviceName || 'Obsidian Client';
 
       this.wss.handleUpgrade(req, socket, head, (ws) => {
-        this._onConnection(ws, user, vaultId, { deviceId, deviceName }, permission);
+        this._onConnection(ws, user, vaultId, { deviceId, deviceName, token: query.token, tokenPayload: payload }, permission);
       });
     });
   }
@@ -110,6 +125,81 @@ class FnsHub {
   _room(vaultId) {
     if (!this.rooms.has(vaultId)) this.rooms.set(vaultId, new Set());
     return this.rooms.get(vaultId);
+  }
+
+  /**
+   * Kick out any active WebSocket sessions belonging to a specific device ID
+   */
+  disconnectDevice(deviceId, reason = 'device_revoked') {
+    if (!deviceId) return 0;
+    let count = 0;
+    for (const [vaultId, room] of this.rooms.entries()) {
+      for (const client of Array.from(room)) {
+        if (client.deviceId === deviceId) {
+          try {
+            this._send(client.ws, {
+              type: 'auth_revoked',
+              reason,
+              message: 'This device authorization has been revoked.',
+            });
+            client.ws.close(4001, 'Device revoked');
+          } catch {}
+          room.delete(client);
+          count++;
+        }
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Kick out all active WebSocket sessions for a specific user ID (e.g. on password change or account disable)
+   */
+  disconnectUser(userId, reason = 'user_revoked') {
+    if (!userId) return 0;
+    let count = 0;
+    for (const [vaultId, room] of this.rooms.entries()) {
+      for (const client of Array.from(room)) {
+        if (client.userId === userId) {
+          try {
+            this._send(client.ws, {
+              type: 'auth_revoked',
+              reason,
+              message: 'Your account credentials have been changed or revoked. Please log in again.',
+            });
+            client.ws.close(4001, 'User revoked');
+          } catch {}
+          room.delete(client);
+          count++;
+        }
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Kick out all sessions using a revoked JWT token
+   */
+  disconnectToken(token, reason = 'token_revoked') {
+    if (!token) return 0;
+    let count = 0;
+    for (const [vaultId, room] of this.rooms.entries()) {
+      for (const client of Array.from(room)) {
+        if (client.token === token) {
+          try {
+            this._send(client.ws, {
+              type: 'auth_revoked',
+              reason,
+              message: 'The token used for this connection was revoked.',
+            });
+            client.ws.close(4001, 'Token revoked');
+          } catch {}
+          room.delete(client);
+          count++;
+        }
+      }
+    }
+    return count;
   }
 
   _logActivity(vaultId, item) {
@@ -141,7 +231,21 @@ class FnsHub {
   _onConnection(ws, user, vaultId, deviceMeta, permission = 'read-write') {
     const deviceId = typeof deviceMeta === 'object' && deviceMeta ? deviceMeta.deviceId : 'device-' + user.id.slice(0, 6);
     const deviceName = typeof deviceMeta === 'object' && deviceMeta ? deviceMeta.deviceName : (deviceMeta || 'Obsidian Client');
-    const client = { ws, userId: user.id, username: user.username, deviceId, deviceName, permission, connectedAt: Date.now(), isAlive: true };
+    const token = typeof deviceMeta === 'object' && deviceMeta ? deviceMeta.token : null;
+    const tokenPayload = typeof deviceMeta === 'object' && deviceMeta ? deviceMeta.tokenPayload : null;
+
+    const client = {
+      ws,
+      userId: user.id,
+      username: user.username,
+      deviceId,
+      deviceName,
+      token,
+      tokenPayload,
+      permission,
+      connectedAt: Date.now(),
+      isAlive: true,
+    };
     this._room(vaultId).add(client);
 
     try {

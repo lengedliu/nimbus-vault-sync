@@ -30,6 +30,22 @@ function createArchiver(format, options = {}) {
  */
 
 const MAX_HISTORY_VERSIONS_PER_PATH = 20;
+const MAX_VAULT_TOTAL_HISTORY = 500;
+const MAX_HISTORY_AGE_MS = 90 * 24 * 60 * 60 * 1000; // 90 days retention
+
+const NOISE_FILE_REGEXES = [
+  /^\.DS_Store$/i,
+  /^\._/i,
+  /^Thumbs\.db$/i,
+  /^desktop\.ini$/i,
+  /^\.Trash/i,
+  /^\.Trashes/i,
+];
+
+function isNoiseFile(name) {
+  if (!name) return false;
+  return NOISE_FILE_REGEXES.some((re) => re.test(name));
+}
 
 /** Prevent path traversal: resolve relPath against root and ensure it stays inside root. */
 function safeJoin(root, relPath) {
@@ -159,7 +175,8 @@ async function walkAsync(dir, base, out = []) {
   try {
     const entries = await fs.promises.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.isDirectory() && entry.name === '.git') continue;
+      if (entry.isDirectory() && (entry.name === '.git' || isNoiseFile(entry.name))) continue;
+      if (entry.isFile() && isNoiseFile(entry.name)) continue;
       const full = path.join(dir, entry.name);
       const rel = path.relative(base, full).split(path.sep).join('/');
       if (entry.isDirectory()) {
@@ -180,7 +197,8 @@ function walk(dir, base, out = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     // .git 是 Git 仓库自己的内部数据（可能包含写入了凭据的 .git/config），
     // 不是用户的笔记内容，绝不能把它当成普通 vault 文件列出来。
-    if (entry.isDirectory() && entry.name === '.git') continue;
+    if (entry.isDirectory() && (entry.name === '.git' || isNoiseFile(entry.name))) continue;
+    if (entry.isFile() && isNoiseFile(entry.name)) continue;
     const full = path.join(dir, entry.name);
     const rel = path.relative(base, full).split(path.sep).join('/');
     if (entry.isDirectory()) {
@@ -417,6 +435,7 @@ function snapshotBeforeOverwrite(vaultId, relPath, oldBuffer) {
 
     // Cap history per path so it can't grow unbounded.
     const forThisPath = entries.filter((e) => e.path === relPath).sort((a, b) => a.savedAt - b.savedAt);
+    let remaining = entries;
     if (forThisPath.length > MAX_HISTORY_VERSIONS_PER_PATH) {
       const toDrop = forThisPath.slice(0, forThisPath.length - MAX_HISTORY_VERSIONS_PER_PATH);
       const dropIds = new Set(toDrop.map((e) => e.id));
@@ -424,9 +443,59 @@ function snapshotBeforeOverwrite(vaultId, relPath, oldBuffer) {
         const f = path.join(historyDir(vaultId), e.id);
         if (fs.existsSync(f)) try { fs.unlinkSync(f); } catch {}
       }
-      return entries.filter((e) => !dropIds.has(e.id));
+      remaining = remaining.filter((e) => !dropIds.has(e.id));
     }
-    return entries;
+
+    // Global vault history cap & age expiration
+    const now = Date.now();
+    const cutoff = now - MAX_HISTORY_AGE_MS;
+    if (remaining.length > MAX_VAULT_TOTAL_HISTORY) {
+      // Sort oldest first and drop excess
+      remaining.sort((a, b) => a.savedAt - b.savedAt);
+      const excess = remaining.slice(0, remaining.length - MAX_VAULT_TOTAL_HISTORY);
+      const dropIds = new Set(excess.map((e) => e.id));
+      for (const e of excess) {
+        const f = path.join(historyDir(vaultId), e.id);
+        if (fs.existsSync(f)) try { fs.unlinkSync(f); } catch {}
+      }
+      remaining = remaining.filter((e) => !dropIds.has(e.id));
+    }
+
+    return remaining;
+  });
+}
+
+/**
+ * Prune obsolete history versions based on retention policy
+ */
+function pruneVaultHistory(vaultId, { maxAgeMs = MAX_HISTORY_AGE_MS, maxTotal = MAX_VAULT_TOTAL_HISTORY } = {}) {
+  const idxPath = historyIndexPath(vaultId);
+  return mutateIndex(idxPath, (entries) => {
+    const now = Date.now();
+    const cutoff = now - maxAgeMs;
+    const kept = [];
+    const dropped = [];
+
+    for (const e of entries) {
+      if (e.savedAt < cutoff) {
+        dropped.push(e);
+      } else {
+        kept.push(e);
+      }
+    }
+
+    if (kept.length > maxTotal) {
+      kept.sort((a, b) => a.savedAt - b.savedAt);
+      const excess = kept.splice(0, kept.length - maxTotal);
+      dropped.push(...excess);
+    }
+
+    for (const e of dropped) {
+      const f = path.join(historyDir(vaultId), e.id);
+      if (fs.existsSync(f)) try { fs.unlinkSync(f); } catch {}
+    }
+
+    return kept;
   });
 }
 
@@ -1020,4 +1089,6 @@ module.exports = {
   yieldToEventLoop,
   SEARCHABLE_EXT_RE,
   SEARCH_YIELD_BATCH_SIZE,
+  isNoiseFile,
+  pruneVaultHistory,
 };

@@ -9,7 +9,7 @@
     "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1X2Nhc2NhZGVfdGVzdCIsInVzZXJuYW1lIjoiY2FzY2FkZV91c2VyIiwiZGV2aWNlSWQiOiJiMzFkMTI5Y2I1ZTg0Mjc2IiwiZGV2aWNlTmFtZSI6IkNhc2NhZGUgUGhvbmUiLCJ0eXBlIjoiZGV2aWNlIiwianRpIjoiNWEzZjE5OWMxNTE4NmVkOSIsImlhdCI6MTc4OTczNjAwMiwiZXhwIjoxODIxMjcyMDAyfQ.H33I6z1nYZVgJU8FfnhzoD1pn2zU4C1Y7Pt9q9lXhPY",
     "createdAt": 1789736002229,
     "lastActiveAt": 1789736002229,
-    "status": "revoked"
+    "status": "active"
   },
   {
     "id": "124c65aebdd88df8",

@@ -93,6 +93,12 @@ async function updatePassword(userId, newPassword) {
   const passwordHash = await bcrypt.hash(newPassword, 10);
   user.passwordHash = passwordHash;
 
+  // Disconnect any active real-time sync sessions for this user so they must re-authenticate
+  try {
+    const wsHub = require('./wsHub');
+    wsHub.disconnectUser(userId, 'password_changed');
+  } catch {}
+
   if (dbManager.type === 'json') {
     jsonDb.update((data) => {
       data.users = (data.users || []).map((u) => (u.id === userId ? { ...u, passwordHash } : u));
@@ -114,8 +120,13 @@ async function updateUser(userId, { password, role }) {
     user.role = role;
   }
 
-  if (password && password.trim()) {
+  const passwordChanged = !!(password && password.trim());
+  if (passwordChanged) {
     user.passwordHash = await bcrypt.hash(password, 10);
+    try {
+      const wsHub = require('./wsHub');
+      wsHub.disconnectUser(userId, 'password_changed_by_admin');
+    } catch {}
   }
 
   if (dbManager.type === 'json') {

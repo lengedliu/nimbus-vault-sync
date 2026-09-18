@@ -187,6 +187,10 @@ function regenerateDeviceToken(id, user, expiresInDays = 365, isAdmin = false) {
 
   if (oldToken) {
     addRevokedToken(oldToken);
+    try {
+      const wsHub = require('./wsHub');
+      wsHub.disconnectToken(oldToken, 'token_regenerated');
+    } catch {}
   }
 
   if (updatedRecord) {
@@ -248,6 +252,10 @@ function extendDeviceToken(id, user, extendDays = 365, isAdmin = false) {
 
   if (oldToken && updatedRecord && oldToken !== updatedRecord.token) {
     addRevokedToken(oldToken);
+    try {
+      const wsHub = require('./wsHub');
+      wsHub.disconnectToken(oldToken, 'token_extended_rotated');
+    } catch {}
   }
 
   if (updatedRecord) {
@@ -286,6 +294,12 @@ function revokeDevice(id, userId, isAdmin = false) {
     addRevokedToken(revokedToken);
   }
 
+  try {
+    const wsHub = require('./wsHub');
+    wsHub.disconnectDevice(id, 'device_revoked');
+    if (revokedToken) wsHub.disconnectToken(revokedToken, 'token_revoked');
+  } catch {}
+
   if (found) {
     if (dbManager.type === 'json') {
       jsonDb.update((list) =>
@@ -311,6 +325,11 @@ function revokeAllForUser(userId) {
       addRevokedToken(d.token);
     }
   }
+
+  try {
+    const wsHub = require('./wsHub');
+    wsHub.disconnectUser(userId, 'all_devices_revoked');
+  } catch {}
 
   devicesCache = devicesCache.map((d) => (d.userId === userId ? { ...d, status: 'revoked' } : d));
 

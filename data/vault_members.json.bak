@@ -48,6 +48,13 @@
       "userId": "u_perm_member",
       "permission": "read-write",
       "createdAt": 1789736002195
+    },
+    {
+      "id": "b67ac9b4-ac07-456f-926c-5f309497712d",
+      "vaultId": "vlt_cascade_dummy",
+      "userId": "u_cascade_test",
+      "permission": "read-only",
+      "createdAt": 1789736002230
     }
   ]
 }

@@ -95,12 +95,6 @@
       "ownerId": "u_sec_owner",
       "name": "Test/../../Evil..Vault:Name",
       "createdAt": "2026-09-18T12:53:22.172Z"
-    },
-    {
-      "id": "40bfb65d-c6dd-4be5-a718-f84162ee51a0",
-      "ownerId": "u_perm_owner",
-      "name": "PermTestVault",
-      "createdAt": "2026-09-18T12:53:22.194Z"
     }
   ]
 }
