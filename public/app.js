@@ -4038,6 +4038,29 @@
     translate(container);
   }
 
+  function showOperationLoadingModal({ title, text, detailText }) {
+    showModal(`
+      <div class="modal-header" style="justify-content:center;border-bottom:1px solid var(--border, rgba(255,255,255,0.1));padding-bottom:12px;">
+        <h3 style="margin:0;font-size:16px;font-weight:600;display:flex;align-items:center;gap:6px;">${escapeHtml(title)}</h3>
+      </div>
+      <div class="modal-body" style="text-align:center;padding:28px 20px;">
+        <style>
+          @keyframes nimbusSpin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+          }
+        </style>
+        <div style="display:inline-block;width:42px;height:42px;border:3.5px solid var(--border-light, rgba(255,255,255,0.15));border-top-color:var(--accent, #3b82f6);border-radius:50%;animation:nimbusSpin 0.8s linear infinite;margin-bottom:18px;"></div>
+        <div style="font-size:15px;font-weight:600;margin-bottom:8px;color:var(--text, #f8fafc);">
+          ${escapeHtml(text || '正在处理中，请稍候...')}
+        </div>
+        <div style="font-size:12.5px;color:var(--muted, #94a3b8);line-height:1.6;max-width:380px;margin:0 auto;">
+          ${escapeHtml(detailText || '数量较多时处理可能需要数秒时间，在此期间请勿刷新或关闭页面。')}
+        </div>
+      </div>
+    `);
+  }
+
   // --------------------------- Subtab: Trash ---------------------------------
 
   async function renderTrashSubtab(vaultId, container) {
@@ -4090,36 +4113,60 @@
 
     if (trash.length > 0) {
       container.querySelector('#restore-all-trash-btn').onclick = async () => {
+        const count = trash.length;
         const ok = await showConfirm({
           title: '恢复全部文件确认',
-          message: `确定将回收站中的所有文件（共 ${trash.length} 个）全部恢复到笔记库中吗？`,
+          message: `确定将回收站中的所有文件（共 ${count} 个）全部恢复到笔记库中吗？`,
           confirmText: '恢复全部',
           type: 'primary',
           icon: '♻️',
         });
         if (!ok) return;
+
+        showOperationLoadingModal({
+          title: '♻️ 正在恢复全部笔记',
+          text: `正在将回收站中的 ${count} 篇笔记恢复回笔记库...`,
+          detailText: '系统正在解包恢复文件、重构目录结构并更新同步索引，请稍候。批量恢复完成后会自动刷新。',
+        });
+
         try {
           const r = await api(`/api/vaults/${vaultId}/trash/restore-all`, { method: 'POST' });
           const data = await r.json();
-          toast(`已成功恢复 ${data.restoredCount || trash.length} 个文件`);
+          closeModal();
+          toast(`已成功恢复 ${data.restoredCount || count} 个文件`);
           renderTrashSubtab(vaultId, container);
         } catch (err) {
-          toast('恢复全部失败: ' + (err.message || '未知错误'));
+          closeModal();
+          toast('恢复全部失败: ' + (err.message || '未知错误'), 'error');
         }
       };
 
       container.querySelector('#purge-all-trash-btn').onclick = async () => {
+        const count = trash.length;
         const ok = await showConfirm({
           title: '清空回收站确认',
-          message: `确定彻底清空回收站中的所有文件（共 ${trash.length} 个）吗？此操作无法撤销。`,
+          message: `确定彻底清空回收站中的所有文件（共 ${count} 个）吗？此操作无法撤销。`,
           confirmText: '彻底清空',
           type: 'danger',
           icon: '🗑️',
         });
         if (!ok) return;
-        await api(`/api/vaults/${vaultId}/trash/purge-all`, { method: 'POST' });
-        toast('回收站已清空');
-        renderTrashSubtab(vaultId, container);
+
+        showOperationLoadingModal({
+          title: '🗑️ 正在彻底清空回收站',
+          text: `正在彻底删除回收站中的 ${count} 个历史文件...`,
+          detailText: '正在彻底粉碎磁盘缓存并整理存储空间，请稍候。',
+        });
+
+        try {
+          await api(`/api/vaults/${vaultId}/trash/purge-all`, { method: 'POST' });
+          closeModal();
+          toast('回收站已清空');
+          renderTrashSubtab(vaultId, container);
+        } catch (err) {
+          closeModal();
+          toast('清空回收站失败: ' + (err.message || '未知错误'), 'error');
+        }
       };
     }
 
@@ -4173,16 +4220,25 @@
         icon: '♻️',
       });
       if (!ok) return;
+
+      showOperationLoadingModal({
+        title: '♻️ 正在批量恢复笔记',
+        text: `正在恢复选中的 ${count} 篇笔记...`,
+        detailText: '正在恢复文件实体并同步更新全文检索与变动清单，请稍候...',
+      });
+
       try {
         const r = await api(`/api/vaults/${vaultId}/trash/restore-batch`, {
           method: 'POST',
           body: JSON.stringify({ ids: Array.from(selectedIds) }),
         });
         const data = await r.json();
+        closeModal();
         toast(`已成功恢复 ${data.restoredCount || count} 个文件`);
         renderTrashSubtab(vaultId, container);
       } catch (err) {
-        toast('批量恢复失败: ' + (err.message || '未知错误'));
+        closeModal();
+        toast('批量恢复失败: ' + (err.message || '未知错误'), 'error');
       }
     };
 
@@ -4197,16 +4253,25 @@
         icon: '🗑️',
       });
       if (!ok) return;
+
+      showOperationLoadingModal({
+        title: '🗑️ 正在彻底删除文件',
+        text: `正在彻底删除选中的 ${count} 个文件...`,
+        detailText: '正在清理文件缓存与日志记录，请稍候...',
+      });
+
       try {
         const r = await api(`/api/vaults/${vaultId}/trash/purge-batch`, {
           method: 'POST',
           body: JSON.stringify({ ids: Array.from(selectedIds) }),
         });
         const data = await r.json();
+        closeModal();
         toast(`已彻底删除 ${data.purgedCount || count} 个文件`);
         renderTrashSubtab(vaultId, container);
       } catch (err) {
-        toast('彻底删除失败: ' + (err.message || '未知错误'));
+        closeModal();
+        toast('彻底删除失败: ' + (err.message || '未知错误'), 'error');
       }
     };
 
@@ -4280,13 +4345,23 @@
         }
       };
 
-      tr.querySelector(`#restore-trash-${t.id}`).onclick = async () => {
-        await api(`/api/vaults/${vaultId}/trash/${t.id}/restore`, { method: 'POST' });
-        toast(`已恢复 "${t.path}"`);
-        openVault(vaultId, 'trash');
+      const restoreSingleBtn = tr.querySelector(`#restore-trash-${t.id}`);
+      restoreSingleBtn.onclick = async () => {
+        restoreSingleBtn.disabled = true;
+        restoreSingleBtn.textContent = '恢复中...';
+        try {
+          await api(`/api/vaults/${vaultId}/trash/${t.id}/restore`, { method: 'POST' });
+          toast(`已恢复 "${t.path}"`);
+          renderTrashSubtab(vaultId, container);
+        } catch (err) {
+          toast('恢复失败: ' + (err.message || '未知错误'), 'error');
+          restoreSingleBtn.disabled = false;
+          restoreSingleBtn.textContent = '恢复';
+        }
       };
 
-      tr.querySelector(`#purge-trash-${t.id}`).onclick = async () => {
+      const purgeSingleBtn = tr.querySelector(`#purge-trash-${t.id}`);
+      purgeSingleBtn.onclick = async () => {
         const ok = await showConfirm({
           title: '彻底删除文件确认',
           message: `确定彻底删除回收站中的「${t.path}」吗？此操作无法撤销。`,
@@ -4295,8 +4370,16 @@
           icon: '🗑️',
         });
         if (!ok) return;
-        await api(`/api/vaults/${vaultId}/trash/${t.id}`, { method: 'DELETE' });
-        renderTrashSubtab(vaultId, container);
+        purgeSingleBtn.disabled = true;
+        purgeSingleBtn.textContent = '删除中...';
+        try {
+          await api(`/api/vaults/${vaultId}/trash/${t.id}`, { method: 'DELETE' });
+          renderTrashSubtab(vaultId, container);
+        } catch (err) {
+          toast('删除失败: ' + (err.message || '未知错误'), 'error');
+          purgeSingleBtn.disabled = false;
+          purgeSingleBtn.textContent = '彻底删除';
+        }
       };
 
       tbody.appendChild(tr);
