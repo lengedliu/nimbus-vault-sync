@@ -10,16 +10,19 @@ export async function renderTrashSubtab(vaultId, container, { showFilePreviewMod
     const { trash = [] } = await res.json();
 
     container.innerHTML = `
-      <div class="panel-header">
+      <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;">
         <div style="display:flex;align-items:center;gap:8px;">
-          <h3 style="margin:0;font-size:16px;">🗑️ 回收站</h3>
+          <h3 style="margin:0;font-size:16px;display:flex;align-items:center;gap:6px;">
+            <span>🗑️</span>
+            <span>回收站</span>
+          </h3>
           ${trash.length > 0 ? `<span class="badge" style="font-size:12px;padding:2px 8px;border-radius:10px;background:var(--panel-3);color:var(--muted);">${trash.length}</span>` : ''}
         </div>
         ${
           trash.length > 0
-            ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                <button class="btn-primary" id="restore-all-trash-btn">♻️ 恢复全部 (${trash.length})</button>
-                <button class="danger" id="purge-all-trash-btn">清空回收站 (${trash.length})</button>
+            ? `<div style="display:flex;align-items:center;gap:8px;margin-left:auto;">
+                <button class="btn-primary" id="restore-all-trash-btn" style="padding:6px 14px;font-size:12.5px;display:inline-flex;align-items:center;gap:6px;">♻️ 恢复全部 (${trash.length})</button>
+                <button class="danger" id="purge-all-trash-btn" style="padding:6px 14px;font-size:12.5px;">清空回收站 (${trash.length})</button>
               </div>`
             : ''
         }
