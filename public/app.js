@@ -7780,10 +7780,10 @@
             </div>
 
             <div class="voc-footer">
-              <div>
-                <span>版本历史: ${v.stats.historyCount || 0}</span>
-                <span style="margin:0 6px;opacity:0.4;">|</span>
-                <span>回收站: ${v.stats.trashCount || 0}</span>
+              <div class="voc-meta">
+                <span class="voc-meta-item">版本历史: <span class="voc-meta-num">${v.stats.historyCount || 0}</span></span>
+                <span class="voc-meta-sep">|</span>
+                <span class="voc-meta-item">回收站: <span class="voc-meta-num">${v.stats.trashCount || 0}</span></span>
               </div>
               <div class="voc-actions">
                 <button class="secondary voc-kanban-btn" data-id="${escapeHtml(v.id)}" style="padding:4px 9px;font-size:12px;">📋 看板</button>

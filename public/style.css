@@ -4359,7 +4359,7 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
   flex-direction: column;
   gap: 24px;
   padding: 8px 4px 32px 4px;
-  max-width: 1360px;
+  max-width: 1680px;
   margin: 0 auto;
 }
 
@@ -4541,7 +4541,7 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
 
 .vault-cards-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
   gap: 16px;
 }
 
@@ -4549,10 +4549,10 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 18px 20px;
+  padding: 16px 18px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 13px;
   transition: all 0.2s ease;
   cursor: pointer;
 }
@@ -4621,15 +4621,66 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
   font-size: 12px;
   color: var(--muted);
-  padding-top: 4px;
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  flex-wrap: nowrap;
+}
+
+.voc-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  min-width: 0;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.voc-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.voc-meta-num {
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.voc-meta-sep {
+  margin: 0 1px;
+  opacity: 0.35;
 }
 
 .voc-actions {
   display: flex;
   gap: 6px;
+  flex-shrink: 0;
+}
+
+.voc-actions button {
+  white-space: nowrap;
+}
+
+@media (max-width: 480px) {
+  .vault-cards-grid {
+    grid-template-columns: 1fr;
+  }
+  .voc-footer {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .voc-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
 }
 
 /* Two-column layout in dashboard */
