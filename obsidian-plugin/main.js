@@ -1,4 +1,4 @@
-const { Plugin, PluginSettingTab, Setting, Notice, TFile, TFolder, arrayBufferToBase64, base64ToArrayBuffer } = require('obsidian');
+const { Plugin, PluginSettingTab, Setting, Notice, TFile, TFolder, Platform, arrayBufferToBase64, base64ToArrayBuffer } = require('obsidian');
 let nodeCrypto = null;
 try {
   nodeCrypto = require('crypto');
@@ -47,6 +47,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
     this.localChangeQueue = new Map();
     this.isApplyingRemoteChange = false;
+    this.isVaultReady = false;
     this.fileHashes = new Map();
     this.reconnectTimer = null;
     this.pingTimer = null;
@@ -88,21 +89,45 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     // Setting Tab
     this.addSettingTab(new NimbusSettingTab(this.app, this));
 
-    // Vault Event Listeners
+    // Vault Event Listeners (protected by isVaultReady)
     this.registerEvent(this.app.vault.on('modify', (file) => this.onLocalFileChange('modify', file)));
     this.registerEvent(this.app.vault.on('create', (file) => this.onLocalFileChange('create', file)));
     this.registerEvent(this.app.vault.on('delete', (file) => this.onLocalFileDelete(file)));
     this.registerEvent(this.app.vault.on('rename', (file, oldPath) => this.onLocalFileRename(file, oldPath)));
 
-    // Auto connect or auto-bind on startup
-    if (this.settings.autoSync && this.settings.token) {
-      if (this.settings.vaultId) {
-        this.connectWebSocket();
-      } else {
-        this.autoMatchOrCreateVault().then(() => {
-          if (this.settings.vaultId) this.connectWebSocket();
-        });
+    // 🛡️ 等待 Obsidian 工作区与本地文件系统完全索引就绪 (尤其防止移动端冷启动文件列表为空)
+    this.app.workspace.onLayoutReady(async () => {
+      await this.ensureVaultReady();
+      this.isVaultReady = true;
+
+      // Auto connect or auto-bind on startup
+      if (this.settings.autoSync && this.settings.token) {
+        if (this.settings.vaultId) {
+          this.connectWebSocket();
+        } else {
+          this.autoMatchOrCreateVault().then(() => {
+            if (this.settings.vaultId) this.connectWebSocket();
+          });
+        }
       }
+    });
+  }
+
+  async ensureVaultReady() {
+    // 移动端沙盒文件扫描速度较慢，给足稳定探测时间
+    const isMobile = Platform ? Platform.isMobile : false;
+    const maxWaitTime = isMobile ? 3500 : 800;
+    const startTime = Date.now();
+    let lastCount = this.app.vault.getFiles().length;
+
+    while (Date.now() - startTime < maxWaitTime) {
+      await new Promise((r) => setTimeout(r, isMobile ? 400 : 150));
+      const currentCount = this.app.vault.getFiles().length;
+      if (currentCount > 0 && currentCount === lastCount) {
+        // 文件数量稳定且大于 0，说明扫描完成
+        break;
+      }
+      lastCount = currentCount;
     }
   }
 
@@ -525,11 +550,47 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     new Notice('☁️ Nimbus 正在检查笔记库并自动同步 (3-Way Diff)...');
     try {
       const vaultId = this.settings.vaultId || 'default';
-      const baseline = { ...this.getVaultBaseline(vaultId) };
+      let baseline = { ...this.getVaultBaseline(vaultId) };
       const files = this.app.vault.getFiles();
       const localFileMap = new Map();
       for (const f of files) {
         localFileMap.set(f.path, f);
+      }
+
+      const remoteEntries = Object.entries(remoteManifest || {});
+      const remoteCount = remoteEntries.length;
+      const localCount = localFileMap.size;
+
+      // =========================================================================
+      // 🛡️ 防御机制 1: 本地空库 / 新设备换机自愈 (Fresh Vault / New Device Auto-Heal)
+      // 若本地为 0 个文件而云端有笔记，这 100% 是新设备安装或配置迁移，绝非用户主动删库！
+      // 彻底清空任何历史/拷贝带来的幽灵基线 (Phantom Baseline)，禁止产生任何删除，转为全量初始拉取！
+      // =========================================================================
+      if (localCount === 0 && remoteCount > 0) {
+        console.warn(`[Nimbus] 检测到本地库为空 (0 个文件)，而云端有 ${remoteCount} 个文件。判定为新设备/初次拉取，自动重置基线并全量拉取！`);
+        new Notice(`🌱 首次同步 / 换机恢复：正在从云端拉取全部 ${remoteCount} 篇笔记...`);
+
+        // 重置该库基线，防止误用 PC 端复制过来的 baseline
+        if (!this.settings.syncBaselines) this.settings.syncBaselines = {};
+        this.settings.syncBaselines[vaultId] = {};
+        await this.saveSettings();
+
+        const toPull = remoteEntries.map(([p, meta]) => ({ path: p, meta }));
+        const PULL_CONCURRENCY = 6;
+        for (let i = 0; i < toPull.length; i += PULL_CONCURRENCY) {
+          const batch = toPull.slice(i, i + PULL_CONCURRENCY);
+          for (const item of batch) {
+            if (item.meta && item.meta.size && item.meta.size > 2 * 1024 * 1024) {
+              await this.pullRemoteFileViaHttp(item.path, item.meta.mtime, item.meta.hash);
+            } else {
+              this.sendWsMessage({ type: 'pull', path: item.path });
+            }
+          }
+          if (i + PULL_CONCURRENCY < toPull.length) {
+            await new Promise((r) => setTimeout(r, 40));
+          }
+        }
+        return;
       }
 
       const allPaths = new Set([
@@ -638,6 +699,24 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         }
       }
 
+      // =========================================================================
+      // 🛡️ 防御机制 2: 批量删除安全熔断阀 (Safety Circuit Breaker)
+      // 若单次尝试删除超过安全阈值（例如 > 5 篇且占总比 > 35%），自动强制拦截！
+      // =========================================================================
+      const remoteDelThreshold = Math.max(5, Math.floor(remoteCount * 0.35));
+      if (toRemoteDelete.length > remoteDelThreshold) {
+        console.error(`[Nimbus 安全熔断] 拦截异常大批量云端删除！尝试删除: ${toRemoteDelete.length} 篇，云端总数: ${remoteCount}`);
+        new Notice(`⚠️ [Nimbus 安全熔断] 拦截到单次尝试删除 ${toRemoteDelete.length} 篇云端笔记！\n已自动暂停云端删除以防意外清空。若确需批量删除，请在控制台操作。`, 10000);
+        toRemoteDelete.length = 0; // 清空删除任务
+      }
+
+      const localDelThreshold = Math.max(5, Math.floor(localCount * 0.35));
+      if (toLocalDelete.length > localDelThreshold) {
+        console.error(`[Nimbus 安全熔断] 拦截异常大批量本地删除！尝试删除: ${toLocalDelete.length} 篇，本地总数: ${localCount}`);
+        new Notice(`⚠️ [Nimbus 安全熔断] 拦截到单次尝试删除本地 ${toLocalDelete.length} 篇笔记！\n已自动暂停本地删除以防数据丢失。`, 10000);
+        toLocalDelete.length = 0; // 清空本地删除任务
+      }
+
       const pullCount = toPull.length;
       const pushCount = toPush.length;
       const localDelCount = toLocalDelete.length;
@@ -689,9 +768,16 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         }
       }
 
-      // 同步完成后保存最新基线
+      // 🛡️ 防御机制 3: 仅固化本地已经存在且内容确认的文件基线，未完成拉取的由落盘事件更新
+      const sanitizedBaseline = {};
+      for (const [p, bInfo] of Object.entries(baseline)) {
+        if (localFileMap.has(p)) {
+          sanitizedBaseline[p] = bInfo;
+        }
+      }
+
       if (!this.settings.syncBaselines) this.settings.syncBaselines = {};
-      this.settings.syncBaselines[vaultId] = baseline;
+      this.settings.syncBaselines[vaultId] = sanitizedBaseline;
       await this.saveSettings();
 
       new Notice(`✅ 3-Way 自动同步完成: 成功处理 ${pushCount + pullCount + localDelCount + remoteDelCount} 个变更任务`);
@@ -848,7 +934,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
   // --- Local File Changes ---
   async onLocalFileChange(type, file) {
-    if (this.isApplyingRemoteChange || !(file instanceof TFile)) return;
+    if (!this.isVaultReady || this.isApplyingRemoteChange || !(file instanceof TFile)) return;
 
     // 清除该文件之前的未执行防抖计时器
     if (this.localChangeQueue.has(file.path)) {
@@ -866,7 +952,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   }
 
   async onLocalFileDelete(file) {
-    if (this.isApplyingRemoteChange) return;
+    if (!this.isVaultReady || this.isApplyingRemoteChange) return;
     if (file instanceof TFile) {
       if (this.localChangeQueue.has(file.path)) {
         clearTimeout(this.localChangeQueue.get(file.path));
@@ -886,18 +972,28 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           this.localChangeQueue.delete(queuedPath);
         }
       }
+      const matchedPaths = [];
       for (const knownPath of Array.from(this.fileHashes.keys())) {
         if (knownPath.startsWith(folderPrefix)) {
-          this.sendWsMessage({ type: 'delete', path: knownPath });
-          this.fileHashes.delete(knownPath);
-          this.updateBaselineEntry(this.settings.vaultId, knownPath, null);
+          matchedPaths.push(knownPath);
         }
+      }
+      // 🛡️ 文件夹级批量删除安全熔断保护
+      if (matchedPaths.length > 10 && matchedPaths.length >= Math.max(1, this.fileHashes.size * 0.4)) {
+        console.warn(`[Nimbus 安全熔断] 拦截异常文件夹批量删除: ${file.path}, 涉及文件: ${matchedPaths.length}`);
+        new Notice(`⚠️ [Nimbus 安全熔断] 检测到删除文件夹包含 ${matchedPaths.length} 篇笔记（超安全阈值），已阻止向云端同步清空！`, 8000);
+        return;
+      }
+      for (const knownPath of matchedPaths) {
+        this.sendWsMessage({ type: 'delete', path: knownPath });
+        this.fileHashes.delete(knownPath);
+        this.updateBaselineEntry(this.settings.vaultId, knownPath, null);
       }
     }
   }
 
   async onLocalFileRename(file, oldPath) {
-    if (this.isApplyingRemoteChange) return;
+    if (!this.isVaultReady || this.isApplyingRemoteChange) return;
     if (file instanceof TFile) {
       if (this.localChangeQueue.has(oldPath)) {
         clearTimeout(this.localChangeQueue.get(oldPath));

@@ -591,21 +591,34 @@ async function restoreBatchTrash(vaultId, trashIds) {
         if (!fs.existsSync(trashFull)) return;
         try {
           const buffer = await fs.promises.readFile(trashFull);
-          const destFull = safeJoin(vFilesRoot, entry.path);
+          let targetRelPath = entry.path;
+          let destFull = safeJoin(vFilesRoot, targetRelPath);
+
+          // 🛡️ 目标同名文件冲突保护：若目标已存在且哈希不同，自动生成副本以防覆盖
+          if (fs.existsSync(destFull)) {
+            const existingBuf = await fs.promises.readFile(destFull);
+            if (sha256(existingBuf) !== sha256(buffer)) {
+              const ext = path.extname(entry.path);
+              const baseName = entry.path.slice(0, entry.path.length - ext.length);
+              targetRelPath = `${baseName} (已恢复)${ext}`;
+              destFull = safeJoin(vFilesRoot, targetRelPath);
+            }
+          }
+
           await fs.promises.mkdir(path.dirname(destFull), { recursive: true });
           await fs.promises.writeFile(destFull, buffer);
           try { await fs.promises.unlink(trashFull); } catch {}
 
           successfullyRestoredIds.add(entry.id);
-          restoredPaths.push(entry.path);
+          restoredPaths.push(targetRelPath);
 
           const hash = sha256(buffer);
           const meta = { size: buffer.length, mtime: now, ctime: now, hash };
-          updateManifestEntry(vaultId, entry.path, meta);
-          invalidateContentCacheEntry(vaultId, entry.path);
+          updateManifestEntry(vaultId, targetRelPath, meta);
+          invalidateContentCacheEntry(vaultId, targetRelPath);
 
           deltaChanges.push({
-            path: entry.path,
+            path: targetRelPath,
             action: 'UPSERT',
             size: buffer.length,
             mtime: now,
@@ -613,7 +626,7 @@ async function restoreBatchTrash(vaultId, trashIds) {
           });
 
           try {
-            ftsEngine.onFileWrite(vaultId, entry.path, buffer.toString('utf8'), meta);
+            ftsEngine.onFileWrite(vaultId, targetRelPath, buffer.toString('utf8'), meta);
           } catch {}
         } catch (err) {
           console.error(`[Trash] Failed to restore "${entry.path}":`, err);
