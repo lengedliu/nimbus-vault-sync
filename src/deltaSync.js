@@ -127,6 +127,85 @@ class DeltaSyncService {
     return cursor;
   }
 
+  async recordBatchChanges(vaultId, items) {
+    if (!Array.isArray(items) || items.length === 0) return [];
+    if (!this.vaultState.has(vaultId)) {
+      await this.initVault(vaultId);
+    }
+    const st = this.vaultState.get(vaultId);
+    const createdAt = Date.now();
+    const changeItems = [];
+
+    for (const item of items) {
+      st.latestCursor += 1;
+      const changeItem = {
+        cursor: st.latestCursor,
+        path: item.path,
+        action: item.action || 'UPSERT',
+        size: item.size || 0,
+        mtime: item.mtime || createdAt,
+        hash: item.hash || '',
+        createdAt,
+      };
+      st.ring.push(changeItem);
+      changeItems.push(changeItem);
+    }
+
+    if (st.ring.length > MAX_MEMORY_CHANGES_PER_VAULT) {
+      st.ring.splice(0, st.ring.length - MAX_MEMORY_CHANGES_PER_VAULT);
+    }
+
+    this._persistBatchChanges(vaultId, changeItems).catch((err) => {
+      console.error('[DeltaSync] Persist batch error:', err.message);
+    });
+
+    return changeItems;
+  }
+
+  async _persistBatchChanges(vaultId, changeItems) {
+    if (dbManager.type === 'sqlite' && dbManager.sqliteDb) {
+      return new Promise((resolve, reject) => {
+        const db = dbManager.sqliteDb;
+        db.serialize(() => {
+          db.run('BEGIN TRANSACTION');
+          const stmt = db.prepare(
+            `INSERT INTO vault_changes (vault_id, cursor, path, action, size, mtime, hash, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          );
+          for (const change of changeItems) {
+            stmt.run([
+              vaultId,
+              change.cursor,
+              change.path,
+              change.action,
+              change.size,
+              change.mtime,
+              change.hash,
+              change.createdAt,
+            ]);
+          }
+          stmt.finalize();
+          db.run('COMMIT', (err) => {
+            if (err) return reject(err);
+            resolve();
+          });
+        });
+      });
+    } else {
+      const store = this._getJsonStore(vaultId);
+      store.update((data) => {
+        const maxCursor = changeItems[changeItems.length - 1].cursor;
+        data.latestCursor = Math.max(data.latestCursor || 0, maxCursor);
+        if (!Array.isArray(data.changes)) data.changes = [];
+        data.changes.push(...changeItems);
+        if (data.changes.length > 2000) {
+          data.changes = data.changes.slice(-2000);
+        }
+        return data;
+      });
+    }
+  }
+
   async _persistChange(vaultId, change) {
     if (dbManager.type === 'sqlite' && dbManager.sqliteDb) {
       return new Promise((resolve, reject) => {

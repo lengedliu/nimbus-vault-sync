@@ -681,6 +681,37 @@ class FnsHub {
     this._scheduleDebouncedBatchNotification(vaultId, { action: 'update', path: relPath, size: buf.length, mtime: meta?.mtime || Date.now(), hash: result?.currentHash }, fromUserId, excludeWs);
   }
 
+  /** Push batch file changes to all connected clients for this vault efficiently. */
+  broadcastBatchFileChange(vaultId, relPaths, fromUserId, excludeWs = null) {
+    if (!Array.isArray(relPaths) || relPaths.length === 0) return;
+    this._logActivity(vaultId, { type: 'batch_change', count: relPaths.length, userId: fromUserId });
+    const room = this.rooms.get(vaultId);
+    if (!room || room.size === 0) return;
+
+    if (relPaths.length <= 10) {
+      const manifest = storage.getManifest(vaultId);
+      for (const p of relPaths) {
+        const meta = manifest ? manifest[p] : null;
+        this.broadcastFileChange(vaultId, p, { currentHash: meta?.hash }, fromUserId, excludeWs);
+      }
+      return;
+    }
+
+    // For large batch changes (> 10 files), broadcast a lightweight summary event to prevent socket overflow
+    const payload = {
+      type: 'batch_change',
+      vaultId,
+      count: relPaths.length,
+      cursor: deltaSync.getLatestCursor(vaultId),
+      pullRequired: true,
+    };
+    const json = JSON.stringify(payload);
+    for (const client of room) {
+      if (excludeWs && (client.ws === excludeWs || client.userId === excludeWs)) continue;
+      this._sendRaw(client.ws, json);
+    }
+  }
+
   /** Push file deletion to all connected clients for this vault (except the sender WebSocket if provided). */
   broadcastFileDelete(vaultId, relPath, fromUserId, excludeWs = null) {
     this._logActivity(vaultId, { type: 'delete', path: relPath, userId: fromUserId });

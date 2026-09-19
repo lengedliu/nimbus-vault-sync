@@ -59,83 +59,89 @@ router.get('/:vaultId/trash/:trashId', (req, res) => {
   res.send(result.buffer);
 });
 
-router.post('/:vaultId/trash/:trashId/restore', (req, res) => {
-  if (!requireWriteAccess(req, res)) return;
-  const { vaultId, trashId } = req.params;
-  const restoredPath = storage.restoreFromTrash(vaultId, trashId);
-  if (!restoredPath) return res.status(404).json({ error: 'Trash item not found' });
+router.post(
+  '/:vaultId/trash/:trashId/restore',
+  asyncHandler(async (req, res) => {
+    if (!requireWriteAccess(req, res)) return;
+    const { vaultId, trashId } = req.params;
+    const restoredPath = await storage.restoreFromTrash(vaultId, trashId);
+    if (!restoredPath) return res.status(404).json({ error: 'Trash item not found' });
 
-  const hub = req.app.get('fnsHub');
-  if (hub) {
-    const manifest = storage.getManifest(vaultId);
-    const meta = manifest[restoredPath];
-    if (meta) {
-      hub.broadcastFileChange(vaultId, restoredPath, { currentHash: meta.hash }, req.user.id, true);
-    }
-  }
-  res.json({ restored: restoredPath });
-});
-
-router.post('/:vaultId/trash/restore-all', (req, res) => {
-  if (!requireWriteAccess(req, res)) return;
-  const { vaultId } = req.params;
-  const result = storage.restoreAllTrash(vaultId);
-  const hub = req.app.get('fnsHub');
-  if (hub && result.restoredPaths.length > 0) {
-    const manifest = storage.getManifest(vaultId);
-    for (const p of result.restoredPaths) {
-      const meta = manifest[p];
+    const hub = req.app.get('fnsHub');
+    if (hub) {
+      const manifest = await storage.getManifestAsync(vaultId);
+      const meta = manifest ? manifest[restoredPath] : null;
       if (meta) {
-        hub.broadcastFileChange(vaultId, p, { currentHash: meta.hash }, req.user.id, true);
+        hub.broadcastFileChange(vaultId, restoredPath, { currentHash: meta.hash }, req.user.id, true);
       }
     }
-  }
-  res.json(result);
-});
+    res.json({ restored: restoredPath });
+  })
+);
 
-router.post('/:vaultId/trash/restore-batch', (req, res) => {
-  if (!requireWriteAccess(req, res)) return;
-  const { vaultId } = req.params;
-  const ids = req.body?.ids || req.body?.trashIds || [];
-  if (!Array.isArray(ids) || ids.length === 0) {
-    return res.status(400).json({ error: '请提供要恢复的笔记条目 ID 列表 (ids)' });
-  }
-  const result = storage.restoreBatchTrash(vaultId, ids);
-  const hub = req.app.get('fnsHub');
-  if (hub && result.restoredPaths.length > 0) {
-    const manifest = storage.getManifest(vaultId);
-    for (const p of result.restoredPaths) {
-      const meta = manifest[p];
-      if (meta) {
-        hub.broadcastFileChange(vaultId, p, { currentHash: meta.hash }, req.user.id, true);
-      }
+router.post(
+  '/:vaultId/trash/restore-all',
+  asyncHandler(async (req, res) => {
+    if (!requireWriteAccess(req, res)) return;
+    const { vaultId } = req.params;
+    const result = await storage.restoreAllTrash(vaultId);
+    const hub = req.app.get('fnsHub');
+    if (hub && result.restoredPaths.length > 0) {
+      hub.broadcastBatchFileChange(vaultId, result.restoredPaths, req.user.id, true);
     }
-  }
-  res.json(result);
-});
+    res.json(result);
+  })
+);
 
-router.post('/:vaultId/trash/purge-batch', (req, res) => {
-  if (!requireWriteAccess(req, res)) return;
-  const { vaultId } = req.params;
-  const ids = req.body?.ids || req.body?.trashIds || [];
-  if (!Array.isArray(ids) || ids.length === 0) {
-    return res.status(400).json({ error: '请提供要彻底删除的条目 ID 列表 (ids)' });
-  }
-  const result = storage.purgeBatchTrash(vaultId, ids);
-  res.json(result);
-});
+router.post(
+  '/:vaultId/trash/restore-batch',
+  asyncHandler(async (req, res) => {
+    if (!requireWriteAccess(req, res)) return;
+    const { vaultId } = req.params;
+    const ids = req.body?.ids || req.body?.trashIds || [];
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: '请提供要恢复的笔记条目 ID 列表 (ids)' });
+    }
+    const result = await storage.restoreBatchTrash(vaultId, ids);
+    const hub = req.app.get('fnsHub');
+    if (hub && result.restoredPaths.length > 0) {
+      hub.broadcastBatchFileChange(vaultId, result.restoredPaths, req.user.id, true);
+    }
+    res.json(result);
+  })
+);
 
-router.delete('/:vaultId/trash/:trashId', (req, res) => {
-  if (!requireWriteAccess(req, res)) return;
-  const ok = storage.purgeTrash(req.params.vaultId, req.params.trashId);
-  res.json({ purged: ok });
-});
+router.post(
+  '/:vaultId/trash/purge-batch',
+  asyncHandler(async (req, res) => {
+    if (!requireWriteAccess(req, res)) return;
+    const { vaultId } = req.params;
+    const ids = req.body?.ids || req.body?.trashIds || [];
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: '请提供要彻底删除的条目 ID 列表 (ids)' });
+    }
+    const result = await storage.purgeBatchTrash(vaultId, ids);
+    res.json(result);
+  })
+);
 
-router.post('/:vaultId/trash/purge-all', (req, res) => {
-  if (!requireWriteAccess(req, res)) return;
-  const count = storage.purgeAllTrash(req.params.vaultId);
-  res.json({ purgedCount: count });
-});
+router.delete(
+  '/:vaultId/trash/:trashId',
+  asyncHandler(async (req, res) => {
+    if (!requireWriteAccess(req, res)) return;
+    const ok = await storage.purgeTrash(req.params.vaultId, req.params.trashId);
+    res.json({ purged: ok });
+  })
+);
+
+router.post(
+  '/:vaultId/trash/purge-all',
+  asyncHandler(async (req, res) => {
+    if (!requireWriteAccess(req, res)) return;
+    const count = await storage.purgeAllTrash(req.params.vaultId);
+    res.json({ purgedCount: count });
+  })
+);
 
 // ---------------------------------- stats & activity -----------------------------
 

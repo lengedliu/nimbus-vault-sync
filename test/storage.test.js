@@ -126,7 +126,7 @@ test('getManifest: .git 目录不应该出现在 manifest 里', () => {
   assert.deepEqual(gitPaths, [], '.git 目录下的文件不应该出现在 manifest 里');
 });
 
-test('Trash: 批量恢复 (restoreBatchTrash) 与全部恢复 (restoreAllTrash) 功能验证', () => {
+test('Trash: 批量恢复 (restoreBatchTrash) 与全部恢复 (restoreAllTrash) 功能验证', async () => {
   storage.writeFile(VAULT_ID, 'batch-1.md', Buffer.from('content 1'));
   storage.writeFile(VAULT_ID, 'batch-2.md', Buffer.from('content 2'));
   storage.writeFile(VAULT_ID, 'batch-3.md', Buffer.from('content 3'));
@@ -144,7 +144,7 @@ test('Trash: 批量恢复 (restoreBatchTrash) 与全部恢复 (restoreAllTrash) 
   assert.ok(t1 && t2 && t3);
 
   // 测试批量恢复部分文件 (batch-1 和 batch-2)
-  const batchRes = storage.restoreBatchTrash(VAULT_ID, [t1.id, t2.id]);
+  const batchRes = await storage.restoreBatchTrash(VAULT_ID, [t1.id, t2.id]);
   assert.equal(batchRes.restoredCount, 2);
   assert.ok(batchRes.restoredPaths.includes('batch-1.md'));
   assert.ok(batchRes.restoredPaths.includes('batch-2.md'));
@@ -158,7 +158,7 @@ test('Trash: 批量恢复 (restoreBatchTrash) 与全部恢复 (restoreAllTrash) 
   assert.ok(remainingTrash.some((t) => t.path === 'batch-3.md'));
 
   // 测试全部恢复 (restoreAllTrash)
-  const allRes = storage.restoreAllTrash(VAULT_ID);
+  const allRes = await storage.restoreAllTrash(VAULT_ID);
   assert.ok(allRes.restoredCount >= 1);
   assert.ok(allRes.restoredPaths.includes('batch-3.md'));
   assert.equal(storage.readFile(VAULT_ID, 'batch-3.md').toString('utf8'), 'content 3');
