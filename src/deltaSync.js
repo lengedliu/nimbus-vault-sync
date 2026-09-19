@@ -11,6 +11,7 @@ class DeltaSyncService {
     // vaultId -> { latestCursor: number, ring: Array<{ cursor, path, action, size, mtime, hash, createdAt }> }
     this.vaultState = new Map();
     this.jsonStores = new Map();
+    this.initPromises = new Map();
   }
 
   _getJsonStore(vaultId) {
@@ -25,69 +26,81 @@ class DeltaSyncService {
 
   async initVault(vaultId) {
     if (this.vaultState.has(vaultId)) return;
-
-    let latestCursor = 0;
-    const ring = [];
-
-    if (dbManager.type === 'sqlite' && dbManager.sqliteDb) {
-      try {
-        await new Promise((resolve) => {
-          dbManager.sqliteDb.run(`
-            CREATE TABLE IF NOT EXISTS vault_changes (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              vault_id TEXT NOT NULL,
-              cursor INTEGER NOT NULL,
-              path TEXT NOT NULL,
-              action TEXT NOT NULL,
-              size INTEGER,
-              mtime INTEGER,
-              hash TEXT,
-              created_at INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_vault_changes_cursor ON vault_changes(vault_id, cursor);
-          `, () => resolve());
-        });
-
-        const row = await new Promise((resolve) => {
-          dbManager.sqliteDb.get(
-            'SELECT MAX(cursor) as maxCursor FROM vault_changes WHERE vault_id = ?',
-            [vaultId],
-            (err, r) => resolve(r)
-          );
-        });
-        if (row && row.maxCursor) {
-          latestCursor = row.maxCursor;
-        }
-
-        const rows = await new Promise((resolve) => {
-          dbManager.sqliteDb.all(
-            'SELECT cursor, path, action, size, mtime, hash, created_at as createdAt FROM vault_changes WHERE vault_id = ? ORDER BY cursor DESC LIMIT 500',
-            [vaultId],
-            (err, r) => resolve(r || [])
-          );
-        });
-        if (rows && rows.length > 0) {
-          rows.reverse().forEach((r) => ring.push(r));
-        }
-      } catch (err) {
-        console.error('[DeltaSync] SQLite init error for vault', vaultId, err.message);
-      }
-    } else {
-      // JSON store fallback
-      try {
-        const store = this._getJsonStore(vaultId);
-        const data = store.read();
-        latestCursor = data.latestCursor || 0;
-        if (Array.isArray(data.changes)) {
-          const recent = data.changes.slice(-500);
-          recent.forEach((c) => ring.push(c));
-        }
-      } catch (err) {
-        console.error('[DeltaSync] JsonDb init error for vault', vaultId, err.message);
-      }
+    if (this.initPromises.has(vaultId)) {
+      return this.initPromises.get(vaultId);
     }
 
-    this.vaultState.set(vaultId, { latestCursor, ring });
+    const initPromise = (async () => {
+      let latestCursor = 0;
+      const ring = [];
+
+      if (dbManager.type === 'sqlite' && dbManager.sqliteDb) {
+        try {
+          await new Promise((resolve) => {
+            dbManager.sqliteDb.run(`
+              CREATE TABLE IF NOT EXISTS vault_changes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vault_id TEXT NOT NULL,
+                cursor INTEGER NOT NULL,
+                path TEXT NOT NULL,
+                action TEXT NOT NULL,
+                size INTEGER,
+                mtime INTEGER,
+                hash TEXT,
+                created_at INTEGER NOT NULL
+              );
+              CREATE INDEX IF NOT EXISTS idx_vault_changes_cursor ON vault_changes(vault_id, cursor);
+            `, () => resolve());
+          });
+
+          const row = await new Promise((resolve) => {
+            dbManager.sqliteDb.get(
+              'SELECT MAX(cursor) as maxCursor FROM vault_changes WHERE vault_id = ?',
+              [vaultId],
+              (err, r) => resolve(r)
+            );
+          });
+          if (row && row.maxCursor) {
+            latestCursor = row.maxCursor;
+          }
+
+          const rows = await new Promise((resolve) => {
+            dbManager.sqliteDb.all(
+              'SELECT cursor, path, action, size, mtime, hash, created_at as createdAt FROM vault_changes WHERE vault_id = ? ORDER BY cursor DESC LIMIT 500',
+              [vaultId],
+              (err, r) => resolve(r || [])
+            );
+          });
+          if (rows && rows.length > 0) {
+            rows.reverse().forEach((r) => ring.push(r));
+          }
+        } catch (err) {
+          console.error('[DeltaSync] SQLite init error for vault', vaultId, err.message);
+        }
+      } else {
+        // JSON store fallback
+        try {
+          const store = this._getJsonStore(vaultId);
+          const data = store.read();
+          latestCursor = data.latestCursor || 0;
+          if (Array.isArray(data.changes)) {
+            const recent = data.changes.slice(-500);
+            recent.forEach((c) => ring.push(c));
+          }
+        } catch (err) {
+          console.error('[DeltaSync] JsonDb init error for vault', vaultId, err.message);
+        }
+      }
+
+      this.vaultState.set(vaultId, { latestCursor, ring });
+    })();
+
+    this.initPromises.set(vaultId, initPromise);
+    try {
+      await initPromise;
+    } finally {
+      this.initPromises.delete(vaultId);
+    }
   }
 
   getLatestCursor(vaultId) {
@@ -244,7 +257,7 @@ class DeltaSyncService {
 
   /**
    * Query changes since cursor.
-   * If since is 0 or older than retained history, caller should fall back to full snapshot.
+   * If since is <= 0 or older than retained history, caller should fall back to full snapshot.
    */
   async getChanges(vaultId, sinceCursor = 0, limit = 500) {
     if (!this.vaultState.has(vaultId)) {
@@ -254,9 +267,29 @@ class DeltaSyncService {
     const since = parseInt(sinceCursor || '0', 10);
     const maxLimit = Math.min(Math.max(parseInt(limit || '500', 10), 1), 1000);
 
+    // 1. 首次同步判定：当 since <= 0 或非有效正整数时，表示客户端从未同步过或已重置，必须强制下发全量快照 (fullSyncRequired)
+    if (Number.isNaN(since) || since <= 0) {
+      return {
+        fullSyncRequired: true,
+        cursor: st.latestCursor,
+        reason: 'FIRST_SYNC_FULL_SNAPSHOT_REQUIRED',
+      };
+    }
+
+    // 2. 客户端游标超前服务端：可能发生于服务端重置或测试数据回滚，必须触发全量重同步
+    if (since > st.latestCursor) {
+      return {
+        fullSyncRequired: true,
+        cursor: st.latestCursor,
+        reason: 'CURSOR_AHEAD_OF_SERVER',
+      };
+    }
+
+    // 3. 游标完全吻合最新状态：客户端已是最新，无新变更
     if (since === st.latestCursor) {
       return {
         cursor: st.latestCursor,
+        latestCursor: st.latestCursor,
         hasMore: false,
         changesCount: 0,
         updates: [],
@@ -264,10 +297,8 @@ class DeltaSyncService {
       };
     }
 
-    // Check if since is in memory ring
-    const oldestMemoryCursor = st.ring.length > 0 ? st.ring[0].cursor : st.latestCursor + 1;
-
-    if (since >= oldestMemoryCursor - 1) {
+    // 4. 检查内存环形缓冲区 (Memory Ring) 是否连续覆盖了 since 之后的所有变更
+    if (st.ring.length > 0 && since >= st.ring[0].cursor - 1) {
       const matched = st.ring.filter((c) => c.cursor > since);
       const sliced = matched.slice(0, maxLimit);
       const hasMore = matched.length > maxLimit;
@@ -301,7 +332,8 @@ class DeltaSyncService {
       };
     }
 
-    // If SQLite, try querying DB
+    // 5. 内存环已溢出或未命中，尝试从持久化存储检索
+    // 5.1 SQLite 持久化查询
     if (dbManager.type === 'sqlite' && dbManager.sqliteDb) {
       try {
         const rows = await new Promise((resolve, reject) => {
@@ -316,7 +348,8 @@ class DeltaSyncService {
           );
         });
 
-        if (rows.length > 0) {
+        // 仅当查到记录且最旧一条游标紧随 since (无历史断层 gap) 时才允许增量返回
+        if (rows.length > 0 && rows[0].cursor <= since + 1) {
           const hasMore = rows.length > maxLimit;
           const sliced = rows.slice(0, maxLimit);
           const nextCursor = sliced[sliced.length - 1].cursor;
@@ -350,13 +383,55 @@ class DeltaSyncService {
       } catch (err) {
         console.error('[DeltaSync] DB Query error:', err.message);
       }
+    } else {
+      // 5.2 JSON Store 持久化查询 (单机轻量部署)
+      try {
+        const store = this._getJsonStore(vaultId);
+        const data = store.read();
+        if (Array.isArray(data.changes) && data.changes.length > 0) {
+          const matched = data.changes.filter((c) => c.cursor > since);
+          if (matched.length > 0 && matched[0].cursor <= since + 1) {
+            const hasMore = matched.length > maxLimit;
+            const sliced = matched.slice(0, maxLimit);
+            const nextCursor = sliced[sliced.length - 1].cursor;
+
+            const updates = [];
+            const deletes = [];
+            for (const item of sliced) {
+              if (item.action === 'DELETE') {
+                deletes.push({ path: item.path, cursor: item.cursor, timestamp: item.createdAt });
+              } else {
+                updates.push({
+                  path: item.path,
+                  size: item.size,
+                  mtime: item.mtime,
+                  hash: item.hash,
+                  cursor: item.cursor,
+                  timestamp: item.createdAt,
+                });
+              }
+            }
+
+            return {
+              cursor: nextCursor,
+              latestCursor: st.latestCursor,
+              hasMore,
+              changesCount: sliced.length,
+              updates,
+              deletes,
+            };
+          }
+        }
+      } catch (err) {
+        console.error('[DeltaSync] JsonDb Query error:', err.message);
+      }
     }
 
-    // Since is too old or not found -> signal full snapshot required
+    // 6. 游标超出可追溯范围或历史已被清理 -> 必须下发全量快照
     return {
       fullSyncRequired: true,
       cursor: st.latestCursor,
-      reason: 'CURSOR_OUT_OF_BOUNDS_OR_FIRST_SYNC',
+      reason: 'CURSOR_OUT_OF_BOUNDS_OR_PURGED',
     };
   }
 }

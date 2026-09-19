@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { requireAuth } = require('../auth');
 const storage = require('../storage');
 const syncLogger = require('../syncLogger');
+const syncRules = require('../syncRules');
 const webhooks = require('../webhooks');
 const { requireReadAccess, requireWriteAccess } = require('../permissions');
 
@@ -22,6 +23,7 @@ router.get('/:vaultId/files/*', (req, res) => {
   try {
     relPath = decodeURIComponent(relPath);
   } catch (e) {}
+  relPath = relPath.replace(/\\/g, '/');
 
   let fileInfo;
   try {
@@ -62,11 +64,35 @@ router.put('/:vaultId/files/*', (req, res) => {
   try {
     relPath = decodeURIComponent(relPath);
   } catch (e) {}
+  relPath = relPath.replace(/\\/g, '/');
 
+  const vaultId = req.params.vaultId;
   const mtime = req.headers['x-mtime'] ? parseInt(req.headers['x-mtime'], 10) : undefined;
   const baseHash = req.headers['x-base-hash'] || undefined;
   const deviceName = req.headers['x-device-name'] || 'REST / Web Client';
   const declaredLength = req.headers['content-length'] ? parseInt(req.headers['content-length'], 10) : null;
+
+  // 校验同步黑名单/忽略规则：防止黑名单规则被 REST 上传接口绕过
+  if (syncRules.isPathIgnored(vaultId, relPath)) {
+    syncLogger.recordLog({
+      vaultId,
+      userId: req.user.id,
+      username: req.user.username,
+      deviceName,
+      clientIp: req.ip || req.connection.remoteAddress,
+      action: 'ignore',
+      path: relPath,
+      status: 'ignored',
+      detail: '命中同步黑名单/忽略规则，已拦截',
+    });
+    return res.status(200).json({
+      written: false,
+      ignored: true,
+      conflict: null,
+      message: '文件命中该笔记库的同步黑名单或忽略规则，已跳过写入',
+      path: relPath,
+    });
+  }
 
   if (declaredLength && declaredLength > MAX_UPLOAD_BYTES) {
     return res.status(413).json({ error: `文件超过单次上传上限（${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB）` });
@@ -74,7 +100,7 @@ router.put('/:vaultId/files/*', (req, res) => {
 
   let tempPath;
   try {
-    tempPath = storage.createUploadTempPath(req.params.vaultId);
+    tempPath = storage.createUploadTempPath(vaultId);
   } catch (e) {
     return res.status(500).json({ error: `无法创建临时文件: ${e.message}` });
   }
@@ -108,7 +134,7 @@ router.put('/:vaultId/files/*', (req, res) => {
       const status = aborted ? 413 : 400;
       const message = err.message || '上传失败';
       syncLogger.recordLog({
-        vaultId: req.params.vaultId,
+        vaultId,
         userId: req.user.id,
         username: req.user.username,
         deviceName,
@@ -125,14 +151,14 @@ router.put('/:vaultId/files/*', (req, res) => {
 
     try {
       const incomingHash = hash.digest('hex');
-      const result = storage.writeFileFromPath(req.params.vaultId, relPath, tempPath, incomingHash, { mtime, baseHash });
+      const result = storage.writeFileFromPath(vaultId, relPath, tempPath, incomingHash, { mtime, baseHash });
       
       if (!result.written && result.conflict) {
         // Broadcast the newly created conflict file to all connected clients
-        req.app.get('fnsHub').broadcastFileChange(req.params.vaultId, result.conflict, { currentHash: result.conflictHash || incomingHash }, req.user.id);
+        req.app.get('fnsHub').broadcastFileChange(vaultId, result.conflict, { currentHash: result.conflictHash || incomingHash }, req.user.id);
         
         syncLogger.recordLog({
-          vaultId: req.params.vaultId,
+          vaultId,
           userId: req.user.id,
           username: req.user.username,
           deviceName,
@@ -145,10 +171,10 @@ router.put('/:vaultId/files/*', (req, res) => {
           detail: `版本冲突，已自动生成冲突副本: ${result.conflict}`,
         });
       } else {
-        req.app.get('fnsHub').broadcastFileChange(req.params.vaultId, relPath, result, req.user.id);
+        req.app.get('fnsHub').broadcastFileChange(vaultId, relPath, result, req.user.id);
 
         syncLogger.recordLog({
-          vaultId: req.params.vaultId,
+          vaultId,
           userId: req.user.id,
           username: req.user.username,
           deviceName,
@@ -169,7 +195,7 @@ router.put('/:vaultId/files/*', (req, res) => {
     } catch (e) {
       cleanupTemp();
       syncLogger.recordLog({
-        vaultId: req.params.vaultId,
+        vaultId,
         userId: req.user.id,
         username: req.user.username,
         deviceName,
@@ -192,13 +218,16 @@ router.delete('/:vaultId/files/*', (req, res) => {
   try {
     relPath = decodeURIComponent(relPath);
   } catch (e) {}
+  relPath = relPath.replace(/\\/g, '/');
+
+  const vaultId = req.params.vaultId;
   const deviceName = req.headers['x-device-name'] || 'REST / Web Client';
-  const ok = storage.deleteFile(req.params.vaultId, relPath);
-  req.app.get('fnsHub').broadcastFileDelete(req.params.vaultId, relPath, req.user.id);
+  const ok = storage.deleteFile(vaultId, relPath);
+  req.app.get('fnsHub').broadcastFileDelete(vaultId, relPath, req.user.id);
 
   if (ok) {
     webhooks.trigger('file.deleted', {
-      vaultId: req.params.vaultId,
+      vaultId,
       path: relPath,
       userId: req.user.id,
       username: req.user.username,
@@ -206,7 +235,7 @@ router.delete('/:vaultId/files/*', (req, res) => {
   }
 
   syncLogger.recordLog({
-    vaultId: req.params.vaultId,
+    vaultId,
     userId: req.user.id,
     username: req.user.username,
     deviceName,
@@ -235,8 +264,9 @@ router.post('/:vaultId/batch/delete', express.json(), (req, res) => {
   const deletedChanges = [];
   let successCount = 0;
 
-  for (const relPath of paths) {
-    if (!relPath || typeof relPath !== 'string') continue;
+  for (const rawPath of paths) {
+    if (!rawPath || typeof rawPath !== 'string') continue;
+    const relPath = rawPath.replace(/\\/g, '/');
     const ok = storage.deleteFile(vaultId, relPath);
     if (ok) {
       successCount++;
@@ -284,17 +314,23 @@ router.post('/:vaultId/batch/move', express.json(), (req, res) => {
 
   const { vaultId } = req.params;
   const fnsHub = req.app.get('fnsHub');
-  const targetDir = (targetFolder || '').trim().replace(/^\/+|\/+$/g, '');
+  const targetDir = (targetFolder || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
   const results = [];
   const batchChanges = [];
   let successCount = 0;
 
-  for (const relPath of paths) {
-    if (!relPath || typeof relPath !== 'string') continue;
+  for (const rawPath of paths) {
+    if (!rawPath || typeof rawPath !== 'string') continue;
+    const relPath = rawPath.replace(/\\/g, '/');
     const filename = relPath.split('/').pop();
     const newRelPath = targetDir ? `${targetDir}/${filename}` : filename;
     if (newRelPath === relPath) {
       results.push({ path: relPath, newPath: newRelPath, success: true, unchanged: true });
+      continue;
+    }
+
+    if (syncRules.isPathIgnored(vaultId, newRelPath)) {
+      results.push({ path: relPath, newPath: newRelPath, success: false, error: '目标路径命中黑名单忽略规则' });
       continue;
     }
 

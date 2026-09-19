@@ -803,17 +803,29 @@ function writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, { mtime
   const manifest = getManifest(vaultId);
   const existingMeta = manifest[relPath];
 
-  if (existingMeta && fs.existsSync(full)) {
-    const existingHash = existingMeta.hash;
+  if (fs.existsSync(full)) {
+    const existingStat = fs.statSync(full);
+    let existingHash = null;
 
-    if (existingHash === incomingHash) {
+    if (existingMeta && existingMeta.size === existingStat.size && existingMeta.hash) {
+      existingHash = existingMeta.hash;
+    } else {
+      try {
+        const existingBuf = fs.readFileSync(full);
+        existingHash = sha256(existingBuf);
+      } catch {
+        existingHash = null;
+      }
+    }
+
+    if (existingHash && existingHash === incomingHash) {
       // 内容没有实际变化，丢弃临时文件，只在需要时touch一下 mtime。
       try { fs.unlinkSync(tempFilePath); } catch {}
       if (mtime) touchMtime(full, mtime);
-      return { written: true, conflict: null, currentHash: incomingHash };
+      return { written: true, conflict: null, currentHash: incomingHash, identical: true };
     }
 
-    if (baseHash && existingHash !== baseHash) {
+    if (baseHash && existingHash && existingHash !== baseHash) {
       // 服务器上的版本在这期间被别的设备改过——生成冲突副本，不动现有文件。
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       const ext = path.extname(relPath);
@@ -841,7 +853,7 @@ function writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, { mtime
     }
 
     // 真实覆盖：把旧文件直接拷贝进 history/（不读进内存），再用临时文件替换它。
-    snapshotBeforeOverwriteFromFile(vaultId, relPath, full, existingMeta.size);
+    snapshotBeforeOverwriteFromFile(vaultId, relPath, full, existingStat.size);
   }
 
   moveFile(tempFilePath, full);

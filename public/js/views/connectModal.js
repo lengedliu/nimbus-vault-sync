@@ -13,8 +13,9 @@ export async function showObsidianConnectModal(vault, initialToken, initialDevic
   let userTokens = [];
   try {
     const res = await api('/api/devices');
-    if (res && res.devices) {
-      userTokens = res.devices.map((d) => ({
+    const data = await res.json();
+    if (data && data.devices) {
+      userTokens = data.devices.map((d) => ({
         id: d.id,
         label: d.deviceName || d.name || 'Obsidian Client',
         token: d.token,
@@ -180,8 +181,9 @@ export async function showMcpModal(defaultVaultName) {
   let toolsData = [];
   try {
     const res = await api('/api/mcp/tools');
-    if (res && res.tools) {
-      toolsData = res.tools;
+    const data = await res.json();
+    if (data && data.tools) {
+      toolsData = data.tools;
     }
   } catch {
     toolsData = [];

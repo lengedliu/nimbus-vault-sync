@@ -117,14 +117,14 @@ async function resolveConflict(vaultId, { conflictPath, resolution, customConten
   let resolvedBuffer = null;
 
   if (resolution === 'keep-current') {
-    // Keep server current version -> simply delete conflict copy
-    if (fs.existsSync(fullConflict)) fs.unlinkSync(fullConflict);
+    // Keep server current version -> safely delete conflict copy with deltaSync & trash tracking
+    storage.deleteFile(vaultId, conflictPath);
   } else if (resolution === 'keep-conflict') {
     // Keep conflict version -> overwrite base with conflict file, delete conflict file
     const buf = fs.readFileSync(fullConflict);
     resolvedBuffer = buf;
     storage.writeFile(vaultId, basePath, buf, { mtime: Date.now() });
-    if (fs.existsSync(fullConflict)) fs.unlinkSync(fullConflict);
+    storage.deleteFile(vaultId, conflictPath);
   } else if (resolution === 'merge-both') {
     // Merge both with conflict markers
     const baseBuf = fs.existsSync(fullBase) ? fs.readFileSync(fullBase) : Buffer.from('');
@@ -132,12 +132,12 @@ async function resolveConflict(vaultId, { conflictPath, resolution, customConten
     const combined = `<<<<<<< [当前版本 (服务端)]\n${baseBuf.toString('utf8')}\n=======\n${conflictBuf.toString('utf8')}\n>>>>>>> [冲突版本 (客户端)]\n`;
     resolvedBuffer = Buffer.from(combined, 'utf8');
     storage.writeFile(vaultId, basePath, resolvedBuffer, { mtime: Date.now() });
-    if (fs.existsSync(fullConflict)) fs.unlinkSync(fullConflict);
+    storage.deleteFile(vaultId, conflictPath);
   } else if (resolution === 'custom') {
     if (typeof customContent !== 'string') throw new Error('缺少自定义合并内容');
     resolvedBuffer = Buffer.from(customContent, 'utf8');
     storage.writeFile(vaultId, basePath, resolvedBuffer, { mtime: Date.now() });
-    if (fs.existsSync(fullConflict)) fs.unlinkSync(fullConflict);
+    storage.deleteFile(vaultId, conflictPath);
   } else {
     throw new Error('未知的冲突解决策略 (可选: keep-current, keep-conflict, merge-both, custom)');
   }
@@ -147,10 +147,12 @@ async function resolveConflict(vaultId, { conflictPath, resolution, customConten
 
   // Broadcast resolved changes to all connected clients
   if (fnsHub) {
-    const manifest = storage.getManifest(vaultId);
-    const meta = manifest[basePath];
-    if (meta) {
-      fnsHub.broadcastFileChange(vaultId, basePath, { currentHash: meta.hash }, userId);
+    if (resolution !== 'keep-current') {
+      const manifest = storage.getManifest(vaultId);
+      const meta = manifest ? manifest[basePath] : null;
+      if (meta) {
+        fnsHub.broadcastFileChange(vaultId, basePath, { currentHash: meta.hash }, userId);
+      }
     }
     // Also broadcast deletion of the conflict file to clean up clients
     fnsHub.broadcastFileDelete(vaultId, conflictPath, userId);

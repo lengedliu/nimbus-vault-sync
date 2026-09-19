@@ -544,6 +544,7 @@ function notifyChange(vaultId) {
       console.error(`[GitSync] Auto-push error for vault ${vaultId}:`, err.message);
     }
   }, delayMs);
+  if (timer && timer.unref) timer.unref();
 
   debounceTimers.set(vaultId, timer);
 }

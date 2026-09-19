@@ -8,9 +8,12 @@ const DEFAULT_RULES = {
     '.obsidian/workspace.json',
     '.obsidian/workspace-mobile.json',
     '**/*.tmp',
+    '**/*.swp',
     '**/.DS_Store',
     '**/Thumbs.db',
+    '**/desktop.ini',
     '**/.git/**',
+    '**/node_modules/**',
   ],
   maxFileSizeMb: 100,
   syncAttachments: true,
@@ -98,24 +101,42 @@ function saveRules(vaultId, rules) {
 }
 
 function matchPattern(relPath, pattern) {
-  const normPath = relPath.replace(/\\/g, '/');
-  const normPat = pattern.trim().replace(/\\/g, '/');
+  const normPath = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  let normPat = String(pattern || '').trim().replace(/\\/g, '/').replace(/^\/+/, '');
   if (!normPat) return false;
 
+  // Simple direct exact match
+  if (normPath === normPat) return true;
+
+  // If pattern does not contain slash and is like *.ext, it should match anywhere in hierarchy
+  if (!normPat.includes('/') && normPat.startsWith('*.')) {
+    const ext = normPat.slice(1);
+    if (normPath.endsWith(ext) || normPath.endsWith(ext.toLowerCase()) || normPath.endsWith(ext.toUpperCase())) return true;
+  }
+
+  // Handle leading **/
+  let p = normPat;
+  let prefix = '^';
+  if (p.startsWith('**/')) {
+    prefix = '^(?:.*/)?';
+    p = p.slice(3);
+  }
+
   const regexStr =
-    '^' +
-    normPat
+    prefix +
+    p
       .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*\*\//g, '(?:.*/)?')
       .replace(/\*\*/g, '.*')
       .replace(/(?<!\.)\*/g, '[^/]*')
       .replace(/\?/g, '.') +
     '$';
 
   try {
-    const reg = new RegExp(regexStr);
+    const reg = new RegExp(regexStr, 'i');
     return reg.test(normPath);
   } catch {
-    return normPath.includes(normPat);
+    return normPath.toLowerCase().includes(normPat.toLowerCase());
   }
 }
 

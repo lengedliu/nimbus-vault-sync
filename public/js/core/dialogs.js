@@ -332,3 +332,26 @@ export function closeModal() {
     modalContainer.className = 'modal-container';
   }
 }
+
+export function showOperationLoadingModal({ title, text, detailText }) {
+  showModal(`
+    <div class="modal-header" style="justify-content:center;border-bottom:1px solid var(--border, rgba(255,255,255,0.1));padding-bottom:12px;">
+      <h3 style="margin:0;font-size:16px;font-weight:600;display:flex;align-items:center;gap:6px;">${escapeHtml(title)}</h3>
+    </div>
+    <div class="modal-body" style="text-align:center;padding:28px 20px;">
+      <style>
+        @keyframes nimbusSpin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+      </style>
+      <div style="display:inline-block;width:42px;height:42px;border:3.5px solid var(--border-light, rgba(255,255,255,0.15));border-top-color:var(--accent, #3b82f6);border-radius:50%;animation:nimbusSpin 0.8s linear infinite;margin-bottom:18px;"></div>
+      <div style="font-size:15px;font-weight:600;margin-bottom:8px;color:var(--text, #f8fafc);">
+        ${escapeHtml(text || '正在处理中，请稍候...')}
+      </div>
+      <div style="font-size:12.5px;color:var(--muted, #94a3b8);line-height:1.6;max-width:380px;margin:0 auto;">
+        ${escapeHtml(detailText || '数量较多时处理可能需要数秒时间，在此期间请勿刷新或关闭页面。')}
+      </div>
+    </div>
+  `);
+}

@@ -87,4 +87,9 @@ export function escapeHtml(str) {
     .replace(/'/g, '&#039;');
 }
 
+export function encodeURIComponentPath(p) {
+  if (!p) return '';
+  return String(p).split('/').map(encodeURIComponent).join('/');
+}
+
 export { formatCurrentDate } from './themes.js';

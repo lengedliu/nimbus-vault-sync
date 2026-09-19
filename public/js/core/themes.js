@@ -412,6 +412,67 @@ export function updateFontSizeUI(sizeKey) {
   if (labelEl) labelEl.textContent = localizedName;
   const loginLabelEl = $('#login-fontsize-label');
   if (loginLabelEl) loginLabelEl.textContent = localizedName;
+
+  $$('.fontsize-opt-item').forEach((item) => {
+    item.classList.toggle('active', item.dataset.sizeVal === activeId);
+  });
+}
+
+export function initFontSizeSwitcher() {
+  const setupSwitcher = (btnId, menuId, resetBtnId) => {
+    const btn = document.getElementById(btnId);
+    const menu = document.getElementById(menuId);
+    if (!btn || !menu) return;
+
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      menu.classList.toggle('hidden');
+      const themeMenu = document.getElementById('theme-dropdown-menu');
+      if (themeMenu) themeMenu.classList.add('hidden');
+      const langMenu = document.getElementById('lang-dropdown-menu');
+      if (langMenu) langMenu.classList.add('hidden');
+      const loginLangMenu = document.getElementById('login-lang-dropdown');
+      if (loginLangMenu) loginLangMenu.classList.add('hidden');
+    };
+
+    const resetBtn = document.getElementById(resetBtnId);
+    if (resetBtn) {
+      resetBtn.onclick = (e) => {
+        e.stopPropagation();
+        applyFontSize('normal');
+        menu.classList.add('hidden');
+        toast(window.t ? window.t('fontsize.reset_success', '已恢复标准字号大小 (100%)') : '已恢复标准字号大小 (100%)');
+      };
+    }
+
+    menu.querySelectorAll('.fontsize-opt-item').forEach((item) => {
+      item.onclick = (e) => {
+        e.stopPropagation();
+        const val = item.dataset.sizeVal;
+        applyFontSize(val);
+        menu.classList.add('hidden');
+        const labels = {
+          sm: '紧凑小号 (88%)',
+          normal: '标准适中 (100%)',
+          md: '舒适中号 (112%)',
+          lg: '清晰大号 (125%)',
+        };
+        const name = (window.t ? window.t(`fontsize.${val}`) : null) || labels[val] || val;
+        toast(`已切换字号至「${name}」`);
+      };
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!menu.contains(e.target) && e.target !== btn) {
+        menu.classList.add('hidden');
+      }
+    });
+  };
+
+  setupSwitcher('fontsize-menu-btn', 'fontsize-dropdown-menu', 'fontsize-reset-btn');
+  setupSwitcher('login-fontsize-btn', 'login-fontsize-dropdown', 'login-fontsize-reset-btn');
+
+  updateFontSizeUI();
 }
 
 // 🎨 Visual Theme Gallery Modal

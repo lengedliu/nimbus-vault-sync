@@ -38,24 +38,21 @@ export async function api(path, opts = {}) {
     throw new Error('Unauthorized');
   }
 
-  const contentType = res.headers.get('content-type') || '';
-  if (contentType.includes('application/json')) {
-    const data = await res.json();
-    if (!res.ok) {
-      const err = new Error(data.message || data.error || `HTTP ${res.status}`);
-      err.status = res.status;
-      err.data = data;
-      throw err;
-    }
-    return data;
-  }
-
   if (!res.ok) {
-    const text = await res.text();
-    const err = new Error(text || `HTTP ${res.status}`);
+    let msg = `HTTP ${res.status}`;
+    try {
+      const body = await res.clone().json();
+      if (body.error || body.message) msg = body.error || body.message;
+    } catch {}
+    const err = new Error(msg);
     err.status = res.status;
     throw err;
   }
 
   return res;
+}
+
+export async function apiJson(path, opts = {}) {
+  const res = await api(path, opts);
+  return res.json();
 }
