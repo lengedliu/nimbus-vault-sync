@@ -6,8 +6,11 @@ import { showModal, toast } from '../core/dialogs.js';
 export async function showObsidianConnectModal(vault, initialToken, initialDeviceName) {
   const serverUrl = state.serverBase.replace(/\/$/, '');
   const wsUrl = serverUrl.replace(/^http/, 'ws') + '/ws';
-  const vaultId = vault ? vault.id : (state.vaults[0]?.id || 'YOUR_VAULT_ID');
-  const vaultName = vault ? vault.name : 'Vault';
+  const vaultObj = typeof vault === 'string'
+    ? (state.vaults.find((v) => v.id === vault) || { id: vault, name: vault })
+    : (vault || state.vaults.find((v) => v.id === state.activeVaultId) || state.vaults[0] || { id: 'YOUR_VAULT_ID', name: 'Vault' });
+  const vaultId = vaultObj?.id || 'YOUR_VAULT_ID';
+  const vaultName = vaultObj?.name || 'Vault';
   const bratRepoUrl = 'https://github.com/lengedliu/nimbus-vault-sync';
 
   let userTokens = [];

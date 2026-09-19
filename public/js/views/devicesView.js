@@ -146,7 +146,7 @@ export async function renderDevicesPanel() {
 
       card.querySelector('.get-config-btn')?.addEventListener('click', () => {
         const currentVault = state.vaults.find((v) => v.id === state.activeVaultId) || state.vaults[0];
-        showObsidianConnectModal(currentVault?.id || '', dev.token, devName);
+        showObsidianConnectModal(currentVault, dev.token, devName);
       });
 
       card.querySelector('.revoke-dev-btn')?.addEventListener('click', async () => {
