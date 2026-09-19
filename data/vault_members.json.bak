@@ -22,20 +22,6 @@
       "createdAt": 1789802933864
     },
     {
-      "id": "0ba0dc9b-aeff-4c82-b223-4905f62e9318",
-      "vaultId": "e59583d2-3375-4fef-9487-361b2c62478e",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789818625948
-    },
-    {
-      "id": "57aaa433-da6e-430f-8d85-58259eb91515",
-      "vaultId": "68a147a7-0578-4f90-acfd-7e6b631ffb0c",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789818811184
-    },
-    {
       "id": "99feeff6-7fec-4897-95fc-bb4b1e277101",
       "vaultId": "2b152bc7-d420-4f0c-8ac5-5ef0d7308ed6",
       "userId": "u_perm_member",
@@ -48,6 +34,13 @@
       "userId": "u_perm_member",
       "permission": "read-write",
       "createdAt": 1789821929278
+    },
+    {
+      "id": "6b4dcc50-6bac-40ce-89a2-3ed4b925c35d",
+      "vaultId": "4f6777f3-b60c-4292-9c90-1b5e4aa96974",
+      "userId": "u_perm_member",
+      "permission": "read-write",
+      "createdAt": 1789823034658
     }
   ]
 }

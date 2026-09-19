@@ -1,5 +1,53 @@
 [
   {
+    "id": "b90b9cd01b4bd95c",
+    "userId": "10813606-5e2a-40cc-b5ad-989f4d440f72",
+    "deviceName": "Test Online Device",
+    "platform": "desktop",
+    "clientIp": "",
+    "userAgent": "",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMDgxMzYwNi01ZTJhLTQwY2MtYjVhZC05ODlmNGQ0NDBmNzIiLCJ1c2VybmFtZSI6IndzdGVzdF8xNzg5ODIzMDQwNTAyIiwiZGV2aWNlSWQiOiJiOTBiOWNkMDFiNGJkOTVjIiwiZGV2aWNlTmFtZSI6IlRlc3QgT25saW5lIERldmljZSIsInR5cGUiOiJkZXZpY2UiLCJqdGkiOiIxNDc2ZDExMWZiZWFiZTMzIiwiaWF0IjoxNzg5ODIzMDQwLCJleHAiOjE3ODk5MDk0NDB9.DK5WmYtRYegshTtYvK7vyTxlBp7LhONyJlvbjvpUkpE",
+    "createdAt": 1789823040677,
+    "lastActiveAt": 1789823040682,
+    "status": "active"
+  },
+  {
+    "id": "ef007372ea2ecc49",
+    "userId": "10813606-5e2a-40cc-b5ad-989f4d440f72",
+    "deviceName": "Test Device For Revoke",
+    "platform": "desktop",
+    "clientIp": "",
+    "userAgent": "",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMDgxMzYwNi01ZTJhLTQwY2MtYjVhZC05ODlmNGQ0NDBmNzIiLCJ1c2VybmFtZSI6IndzdGVzdF8xNzg5ODIzMDQwNTAyIiwiZGV2aWNlSWQiOiJlZjAwNzM3MmVhMmVjYzQ5IiwiZGV2aWNlTmFtZSI6IlRlc3QgRGV2aWNlIEZvciBSZXZva2UiLCJ0eXBlIjoiZGV2aWNlIiwianRpIjoiYjRhZWRmMjM0OWU0MjZlZSIsImlhdCI6MTc4OTgyMzA0MCwiZXhwIjoxNzg5OTA5NDQwfQ.qrN1sMGPllAHua4DXLJu3PNrSDF0FBv8qeEAajXmAzk",
+    "createdAt": 1789823040669,
+    "lastActiveAt": 1789823040669,
+    "status": "revoked"
+  },
+  {
+    "id": "9a28f9a451b2f36a",
+    "userId": "u_cascade_test",
+    "deviceName": "Cascade Phone",
+    "platform": "ios",
+    "clientIp": "",
+    "userAgent": "",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1X2Nhc2NhZGVfdGVzdCIsInVzZXJuYW1lIjoiY2FzY2FkZV91c2VyIiwiZGV2aWNlSWQiOiI5YTI4ZjlhNDUxYjJmMzZhIiwiZGV2aWNlTmFtZSI6IkNhc2NhZGUgUGhvbmUiLCJ0eXBlIjoiZGV2aWNlIiwianRpIjoiMjY5N2NkNzM1ODdhZWYzNCIsImlhdCI6MTc4OTgyMzAzNCwiZXhwIjoxODIxMzU5MDM0fQ.G6hcOFI7_HZoGnm72ZyFnLVJ8jqiGx8eLrVu5d78OYg",
+    "createdAt": 1789823034692,
+    "lastActiveAt": 1789823034692,
+    "status": "revoked"
+  },
+  {
+    "id": "83d13ea2005404c0",
+    "userId": "u_test_sec_1",
+    "deviceName": "Test-MacBook",
+    "platform": "desktop",
+    "clientIp": "",
+    "userAgent": "",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1X3Rlc3Rfc2VjXzEiLCJ1c2VybmFtZSI6InRlc3Rfc2VjX3VzZXIiLCJkZXZpY2VJZCI6IjgzZDEzZWEyMDA1NDA0YzAiLCJkZXZpY2VOYW1lIjoiVGVzdC1NYWNCb29rIiwidHlwZSI6ImRldmljZSIsImp0aSI6ImRmYzZkMzYzMGIwNGU2NDciLCJpYXQiOjE3ODk4MjMwMzQsImV4cCI6MTc5MjQxNTAzNH0.dhkM29jPeMHRn_MK8ucuSUOShz_C3KK8bsi6mJqV3b0",
+    "createdAt": 1789823034616,
+    "lastActiveAt": 1789823034613,
+    "status": "revoked"
+  },
+  {
     "id": "3d485019c9d755ac",
     "userId": "23dda51a-ec6a-4f4c-adb4-419e47fdd263",
     "deviceName": "Test Online Device",
