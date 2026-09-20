@@ -137,6 +137,11 @@ app.use('/api/vaults', vaultRoutes);
 app.use('/api/vaults', fileRoutes);
 app.use('/api/vaults', vaultExtrasRoutes);
 app.use('/api/admin', adminRoutes);
+// 兼容性路由别名：/api/users -> /api/admin/users
+app.use('/api/users', (req, res, next) => {
+  req.url = '/users' + req.url;
+  adminRoutes(req, res, next);
+});
 app.use('/api/mcp', mcpRoutes);
 app.use('/api/docs', docsRoutes);
 app.use('/api/sponsors', sponsorRoutes);

@@ -103,6 +103,18 @@ router.put('/users/:userId', asyncHandler(async (req, res) => {
   }
 }));
 
+router.put('/users/:userId/password', asyncHandler(async (req, res) => {
+  const { userId } = req.params;
+  const { password } = req.body || {};
+  const user = users.findById(userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (!password || password.length < 6) {
+    return res.status(400).json({ error: '密码长度至少需要 6 位' });
+  }
+  const updatedUser = await users.updateUser(userId, { password: password.trim() });
+  res.json({ ok: true, user: updatedUser });
+}));
+
 router.get('/users/:userId/vaults', (req, res) => {
   const { userId } = req.params;
   const user = users.findById(userId);

@@ -10,7 +10,7 @@ export async function renderUsersPanel(containerEl = null) {
   container.innerHTML = '<div class="empty-state">正在加载用户列表…</div>';
 
   try {
-    const res = await api('/api/users');
+    const res = await api('/api/admin/users');
     const data = await res.json();
     const users = data.users || [];
 
@@ -118,7 +118,7 @@ export async function renderUsersPanel(containerEl = null) {
             return;
           }
           try {
-            const r = await api('/api/users', {
+            const r = await api('/api/admin/users', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ username, password, role }),
@@ -164,7 +164,7 @@ export async function renderUsersPanel(containerEl = null) {
               return;
             }
             try {
-              const r = await api(`/api/users/${userId}/password`, {
+              const r = await api(`/api/admin/users/${userId}/password`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ password: newPassword }),
@@ -197,7 +197,7 @@ export async function renderUsersPanel(containerEl = null) {
         });
         if (!ok) return;
         try {
-          const r = await api(`/api/users/${userId}`, { method: 'DELETE' });
+          const r = await api(`/api/admin/users/${userId}`, { method: 'DELETE' });
           const d = await r.json();
           if (d.ok) {
             toast('用户已删除');
