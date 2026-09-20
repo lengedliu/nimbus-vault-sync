@@ -19,12 +19,6 @@
       "createdAt": "2026-09-18T23:52:00.389Z"
     },
     {
-      "id": "32a2d64d-75cf-452e-90ab-a7c39afcb0fe",
-      "ownerId": "u_perm_owner",
-      "name": "PermTestVault",
-      "createdAt": "2026-09-19T07:28:53.863Z"
-    },
-    {
       "id": "2b152bc7-d420-4f0c-8ac5-5ef0d7308ed6",
       "ownerId": "u_perm_owner",
       "name": "PermTestVault",
@@ -37,22 +31,10 @@
       "createdAt": "2026-09-19T12:45:29.277Z"
     },
     {
-      "id": "c2ef56ae-ddca-48b6-955d-1b1d4c6d223b",
-      "ownerId": "u_sec_owner",
-      "name": "Test/../../Evil..Vault:Name",
-      "createdAt": "2026-09-19T13:03:54.636Z"
-    },
-    {
       "id": "4f6777f3-b60c-4292-9c90-1b5e4aa96974",
       "ownerId": "u_perm_owner",
       "name": "PermTestVault",
       "createdAt": "2026-09-19T13:03:54.657Z"
-    },
-    {
-      "id": "2271c50e-ce0e-465c-9444-b94fea2f4f4c",
-      "ownerId": "u_sec_owner",
-      "name": "Test/../../Evil..Vault:Name",
-      "createdAt": "2026-09-19T13:08:27.532Z"
     },
     {
       "id": "8f127ddc-c2e8-414d-83b7-c4162affb042",
@@ -61,22 +43,10 @@
       "createdAt": "2026-09-19T13:08:27.556Z"
     },
     {
-      "id": "b0d56087-51c0-4326-aaf3-e6939334c5b4",
-      "ownerId": "u_sec_owner",
-      "name": "Test/../../Evil..Vault:Name",
-      "createdAt": "2026-09-20T07:39:41.002Z"
-    },
-    {
       "id": "e14a7691-83b7-48c0-b200-4e3cdeabcae1",
       "ownerId": "u_perm_owner",
       "name": "PermTestVault",
       "createdAt": "2026-09-20T07:39:41.026Z"
-    },
-    {
-      "id": "0e171c0a-f5e7-47c2-8e75-f11a74f02cd3",
-      "ownerId": "u_sec_owner",
-      "name": "Test/../../Evil..Vault:Name",
-      "createdAt": "2026-09-20T07:43:02.036Z"
     },
     {
       "id": "7c46c74d-c4e4-40a4-a5e7-ff28f415f258",
@@ -85,22 +55,58 @@
       "createdAt": "2026-09-20T07:43:02.059Z"
     },
     {
-      "id": "fffe4fc9-7193-4403-a601-5fa194b20752",
+      "id": "08178e7d-a018-41ac-9f98-65f29fa5a675",
       "ownerId": "u_sec_owner",
       "name": "Test/../../Evil..Vault:Name",
-      "createdAt": "2026-09-20T08:02:46.321Z"
+      "createdAt": "2026-09-20T12:47:33.007Z"
     },
     {
-      "id": "23f3a401-c0b7-4def-99b8-f31408ecdb69",
+      "id": "3f0b13ab-1415-423b-a5bf-1a6dcefeb0da",
       "ownerId": "u_perm_owner",
       "name": "PermTestVault",
-      "createdAt": "2026-09-20T08:02:46.347Z"
+      "createdAt": "2026-09-20T12:47:33.021Z"
     },
     {
-      "id": "4fa7ddea-7e80-4f6e-a4fa-15f01d534cdd",
-      "ownerId": "dd6a1058-c884-41a8-a98c-34c3ad1b52e6",
-      "name": "WS_Test_Vault_1789891372446",
-      "createdAt": "2026-09-20T08:02:52.446Z"
+      "id": "d2e0ed6b-a1c4-441f-8c4a-e16b562e7e68",
+      "ownerId": "u_sec_owner",
+      "name": "Test/../../Evil..Vault:Name",
+      "createdAt": "2026-09-20T12:50:00.500Z"
+    },
+    {
+      "id": "813cafa8-5f08-49a0-82a0-e01ef9deaf67",
+      "ownerId": "u_perm_owner",
+      "name": "PermTestVault",
+      "createdAt": "2026-09-20T12:50:00.514Z"
+    },
+    {
+      "id": "d090716a-a69e-4654-998f-fb5b7716506f",
+      "ownerId": "u_sec_owner",
+      "name": "Test/../../Evil..Vault:Name",
+      "createdAt": "2026-09-20T12:50:07.353Z"
+    },
+    {
+      "id": "d584a3a5-db02-4a81-b681-e4a3ef7b38b1",
+      "ownerId": "u_perm_owner",
+      "name": "PermTestVault",
+      "createdAt": "2026-09-20T12:50:07.378Z"
+    },
+    {
+      "id": "27b36640-87df-4618-a7f4-8b1dba8d706b",
+      "ownerId": "u_sec_owner",
+      "name": "Test/../../Evil..Vault:Name",
+      "createdAt": "2026-09-20T12:50:43.890Z"
+    },
+    {
+      "id": "5faa0803-f2da-4225-8990-283a368c906c",
+      "ownerId": "u_perm_owner",
+      "name": "PermTestVault",
+      "createdAt": "2026-09-20T12:50:43.908Z"
+    },
+    {
+      "id": "7dbbd855-156e-449e-999e-4845b687c3bf",
+      "ownerId": "b3b8ded5-dc67-4dd5-ad52-084e5beeb82d",
+      "name": "WS_Test_Vault_1789908649836",
+      "createdAt": "2026-09-20T12:50:49.836Z"
     }
   ]
 }

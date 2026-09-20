@@ -45,8 +45,9 @@ router.get('/:vaultId/changes', asyncHandler(async (req, res) => {
   if (!requireReadAccess(req, res)) return;
   const since = parseInt(req.query.since || '0', 10);
   const limit = parseInt(req.query.limit || '500', 10);
+  const compact = req.query.compact === 'true' || req.query.compact === '1';
   
-  const result = await deltaSync.getChanges(vaultId, since, limit);
+  const result = await deltaSync.getChanges(vaultId, since, limit, { compact });
   if (result.fullSyncRequired) {
     const manifest = await storage.getManifestAsync(vaultId);
     return res.json({

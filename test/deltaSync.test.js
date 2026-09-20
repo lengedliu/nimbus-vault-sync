@@ -60,4 +60,24 @@ test('DeltaSync: First sync and cursor boundary tests', async (t) => {
     assert.equal(res.fullSyncRequired, true);
     assert.equal(res.reason, 'CURSOR_AHEAD_OF_SERVER');
   });
+
+  await t.test('增量追更 compact 选项测试：同一文件多次更新自动去重合并', async () => {
+    const compactVaultId = 'test-compact-' + Date.now();
+    await deltaSync.recordChange(compactVaultId, { path: 'docA.md', action: 'UPSERT', size: 10, hash: 'hA1' });
+    await deltaSync.recordChange(compactVaultId, { path: 'docB.md', action: 'UPSERT', size: 20, hash: 'hB1' });
+    await deltaSync.recordChange(compactVaultId, { path: 'docA.md', action: 'UPSERT', size: 15, hash: 'hA2' });
+    await deltaSync.recordChange(compactVaultId, { path: 'docB.md', action: 'DELETE' });
+
+    // 未启用 compact: updates 包含 2 条 docA，deletes 包含 1 条 docB，updates 包含 1 条 docB
+    const resRaw = await deltaSync.getChanges(compactVaultId, 1, 50, { compact: false });
+    assert.equal(resRaw.changesCount, 3); // cursors 2, 3, 4
+
+    // 启用 compact: docA 只保留最新的 hA2，docB 最终为 DELETE
+    const resCompact = await deltaSync.getChanges(compactVaultId, 1, 50, { compact: true });
+    assert.equal(resCompact.updates.length, 1);
+    assert.equal(resCompact.updates[0].path, 'docA.md');
+    assert.equal(resCompact.updates[0].hash, 'hA2');
+    assert.equal(resCompact.deletes.length, 1);
+    assert.equal(resCompact.deletes[0].path, 'docB.md');
+  });
 });

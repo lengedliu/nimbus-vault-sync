@@ -256,16 +256,29 @@ class DeltaSyncService {
   }
 
   /**
+   * Helper to deduplicate and compact changes by path, keeping latest state per path
+   */
+  _compactChanges(items) {
+    if (!Array.isArray(items) || items.length <= 1) return items;
+    const pathMap = new Map();
+    for (const item of items) {
+      pathMap.set(item.path, item);
+    }
+    return Array.from(pathMap.values()).sort((a, b) => a.cursor - b.cursor);
+  }
+
+  /**
    * Query changes since cursor.
    * If since is <= 0 or older than retained history, caller should fall back to full snapshot.
    */
-  async getChanges(vaultId, sinceCursor = 0, limit = 500) {
+  async getChanges(vaultId, sinceCursor = 0, limit = 500, options = {}) {
     if (!this.vaultState.has(vaultId)) {
       await this.initVault(vaultId);
     }
     const st = this.vaultState.get(vaultId);
     const since = parseInt(sinceCursor || '0', 10);
     const maxLimit = Math.min(Math.max(parseInt(limit || '500', 10), 1), 1000);
+    const shouldCompact = Boolean(options && (options.compact === true || options.compact === 'true' || options.compact === '1'));
 
     // 1. 首次同步判定：当 since <= 0 或非有效正整数时，表示客户端从未同步过或已重置，必须强制下发全量快照 (fullSyncRequired)
     if (Number.isNaN(since) || since <= 0) {
@@ -304,10 +317,11 @@ class DeltaSyncService {
       const hasMore = matched.length > maxLimit;
       const nextCursor = sliced.length > 0 ? sliced[sliced.length - 1].cursor : st.latestCursor;
 
+      const itemsToProcess = shouldCompact ? this._compactChanges(sliced) : sliced;
       const updates = [];
       const deletes = [];
 
-      for (const item of sliced) {
+      for (const item of itemsToProcess) {
         if (item.action === 'DELETE') {
           deletes.push({ path: item.path, cursor: item.cursor, timestamp: item.createdAt });
         } else {
@@ -326,7 +340,8 @@ class DeltaSyncService {
         cursor: nextCursor,
         latestCursor: st.latestCursor,
         hasMore,
-        changesCount: sliced.length,
+        changesCount: itemsToProcess.length,
+        rawChangesCount: sliced.length,
         updates,
         deletes,
       };
@@ -354,9 +369,10 @@ class DeltaSyncService {
           const sliced = rows.slice(0, maxLimit);
           const nextCursor = sliced[sliced.length - 1].cursor;
 
+          const itemsToProcess = shouldCompact ? this._compactChanges(sliced) : sliced;
           const updates = [];
           const deletes = [];
-          for (const item of sliced) {
+          for (const item of itemsToProcess) {
             if (item.action === 'DELETE') {
               deletes.push({ path: item.path, cursor: item.cursor, timestamp: item.createdAt });
             } else {
@@ -375,7 +391,8 @@ class DeltaSyncService {
             cursor: nextCursor,
             latestCursor: st.latestCursor,
             hasMore,
-            changesCount: sliced.length,
+            changesCount: itemsToProcess.length,
+            rawChangesCount: sliced.length,
             updates,
             deletes,
           };
@@ -395,9 +412,10 @@ class DeltaSyncService {
             const sliced = matched.slice(0, maxLimit);
             const nextCursor = sliced[sliced.length - 1].cursor;
 
+            const itemsToProcess = shouldCompact ? this._compactChanges(sliced) : sliced;
             const updates = [];
             const deletes = [];
-            for (const item of sliced) {
+            for (const item of itemsToProcess) {
               if (item.action === 'DELETE') {
                 deletes.push({ path: item.path, cursor: item.cursor, timestamp: item.createdAt });
               } else {
@@ -416,7 +434,8 @@ class DeltaSyncService {
               cursor: nextCursor,
               latestCursor: st.latestCursor,
               hasMore,
-              changesCount: sliced.length,
+              changesCount: itemsToProcess.length,
+              rawChangesCount: sliced.length,
               updates,
               deletes,
             };
