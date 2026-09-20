@@ -32,10 +32,21 @@ export async function api(path, opts = {}) {
     // Token expired or invalid
     state.token = '';
     state.user = null;
-    localStorage.removeItem('nimbus_token');
-    localStorage.removeItem('nimbus_user');
-    window.location.reload();
-    throw new Error('Unauthorized');
+    try {
+      localStorage.removeItem('nimbus_token');
+      localStorage.removeItem('nimbus_user');
+    } catch {}
+    if (typeof window.Nimbus?.showLoginView === 'function') {
+      window.Nimbus.showLoginView();
+    } else {
+      const loginView = document.querySelector('#login-view');
+      const appView = document.querySelector('#app-view');
+      if (appView) appView.classList.add('hidden');
+      if (loginView) loginView.classList.remove('hidden');
+    }
+    const err = new Error('Unauthorized');
+    err.status = 401;
+    throw err;
   }
 
   if (!res.ok) {

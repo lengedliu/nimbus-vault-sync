@@ -5,6 +5,7 @@ import { toast, showConfirm, showAlert, showPrompt, showModal, closeModal } from
 import { THEMES, applyTheme, updateThemeUI, updateDateDisplays, formatCurrentDate, applyFontSize, initThemeSwitcher, initFontSizeSwitcher } from './core/themes.js';
 import { connectWebSocket, disconnectWebSocket } from './core/wsClient.js';
 import {
+  showLoginView,
   checkAuthStatus,
   fillAdminCredentials,
   initAuthForm,
@@ -85,6 +86,7 @@ window.Nimbus = {
   connectWebSocket,
   disconnectWebSocket,
   // Core Shell
+  showLoginView,
   checkAuthStatus,
   fillAdminCredentials,
   enterApp,
@@ -158,16 +160,15 @@ updateDateDisplays();
 setInterval(updateDateDisplays, 10000);
 
 if (state.token && state.user) {
-  enterApp().catch(() => {
-    localStorage.removeItem('nimbus_token');
-    localStorage.removeItem('nimbus_user');
-    location.reload();
+  enterApp().catch((err) => {
+    console.warn('[Nimbus] Session invalid, redirecting to login:', err);
+    showLoginView();
   });
 } else {
+  showLoginView();
   const loginServerInput = $('#login-server');
   if (loginServerInput) {
     loginServerInput.value = state.serverBase === window.location.origin ? '' : state.serverBase;
-    checkAuthStatus();
     loginServerInput.addEventListener('change', () => {
       state.serverBase = normalizeServerUrl(loginServerInput.value.trim());
       checkAuthStatus();

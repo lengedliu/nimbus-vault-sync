@@ -8,12 +8,201 @@ let sqlite3 = null;
 let pg = null;
 let mysql = null;
 
+function createNodeSqliteWrapper(DatabaseSync) {
+  class Database {
+    constructor(filename, callback) {
+      try {
+        this.syncDb = new DatabaseSync(filename);
+        if (typeof callback === 'function') {
+          process.nextTick(() => callback(null));
+        }
+      } catch (err) {
+        if (typeof callback === 'function') {
+          process.nextTick(() => callback(err));
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    exec(sql, callback) {
+      try {
+        this.syncDb.exec(sql);
+        if (typeof callback === 'function') process.nextTick(() => callback(null));
+      } catch (err) {
+        if (typeof callback === 'function') process.nextTick(() => callback(err));
+        else throw err;
+      }
+    }
+
+    run(sql, params, callback) {
+      if (typeof params === 'function') {
+        callback = params;
+        params = [];
+      } else if (params !== undefined && !Array.isArray(params)) {
+        params = [params];
+      }
+      params = params || [];
+      const ctx = { changes: 0, lastID: 0 };
+      try {
+        const trimmed = (sql || '').trim();
+        if (params.length === 0 && trimmed.includes(';') && trimmed.indexOf(';') < trimmed.length - 1) {
+          this.syncDb.exec(trimmed);
+        } else {
+          const stmt = this.syncDb.prepare(trimmed);
+          const result = stmt.run(...params);
+          ctx.changes = Number(result.changes || 0);
+          ctx.lastID = Number(result.lastInsertRowid || 0);
+        }
+        if (typeof callback === 'function') {
+          process.nextTick(() => callback.call(ctx, null));
+        }
+      } catch (err) {
+        if (typeof callback === 'function') {
+          process.nextTick(() => callback.call(ctx, err));
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    get(sql, params, callback) {
+      if (typeof params === 'function') {
+        callback = params;
+        params = [];
+      } else if (params !== undefined && !Array.isArray(params)) {
+        params = [params];
+      }
+      params = params || [];
+      try {
+        const stmt = this.syncDb.prepare(sql);
+        const row = stmt.get(...params);
+        if (typeof callback === 'function') {
+          process.nextTick(() => callback(null, row || null));
+        }
+      } catch (err) {
+        if (typeof callback === 'function') {
+          process.nextTick(() => callback(err, null));
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    all(sql, params, callback) {
+      if (typeof params === 'function') {
+        callback = params;
+        params = [];
+      } else if (params !== undefined && !Array.isArray(params)) {
+        params = [params];
+      }
+      params = params || [];
+      try {
+        const stmt = this.syncDb.prepare(sql);
+        const rows = stmt.all(...params);
+        if (typeof callback === 'function') {
+          process.nextTick(() => callback(null, rows || []));
+        }
+      } catch (err) {
+        if (typeof callback === 'function') {
+          process.nextTick(() => callback(err, []));
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    prepare(sql, callback) {
+      try {
+        const stmt = this.syncDb.prepare(sql);
+        const wrapper = {
+          run: (...args) => {
+            let cb = null;
+            let p = [];
+            if (args.length > 0) {
+              if (typeof args[args.length - 1] === 'function') {
+                cb = args.pop();
+              }
+              if (args.length === 1 && Array.isArray(args[0])) {
+                p = args[0];
+              } else {
+                p = args;
+              }
+            }
+            const ctx = { changes: 0, lastID: 0 };
+            try {
+              const r = stmt.run(...p);
+              ctx.changes = Number(r.changes || 0);
+              ctx.lastID = Number(r.lastInsertRowid || 0);
+              if (cb) process.nextTick(() => cb.call(ctx, null));
+            } catch (e) {
+              if (cb) process.nextTick(() => cb.call(ctx, e));
+            }
+          },
+          get: (...args) => {
+            let cb = typeof args[args.length - 1] === 'function' ? args.pop() : null;
+            let p = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
+            try {
+              const row = stmt.get(...p);
+              if (cb) process.nextTick(() => cb(null, row || null));
+            } catch (e) {
+              if (cb) process.nextTick(() => cb(e, null));
+            }
+          },
+          all: (...args) => {
+            let cb = typeof args[args.length - 1] === 'function' ? args.pop() : null;
+            let p = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
+            try {
+              const rows = stmt.all(...p);
+              if (cb) process.nextTick(() => cb(null, rows || []));
+            } catch (e) {
+              if (cb) process.nextTick(() => cb(e, []));
+            }
+          },
+          finalize: (cb) => {
+            if (cb) process.nextTick(() => cb(null));
+          }
+        };
+        if (typeof callback === 'function') process.nextTick(() => callback(null, wrapper));
+        return wrapper;
+      } catch (err) {
+        if (typeof callback === 'function') process.nextTick(() => callback(err));
+        else throw err;
+      }
+    }
+
+    serialize(fn) {
+      if (typeof fn === 'function') fn();
+    }
+
+    close(callback) {
+      try {
+        this.syncDb.close();
+        if (typeof callback === 'function') process.nextTick(() => callback(null));
+      } catch (err) {
+        if (typeof callback === 'function') process.nextTick(() => callback(err));
+        else throw err;
+      }
+    }
+  }
+
+  return {
+    Database,
+    verbose: () => ({ Database })
+  };
+}
+
 function getSqlite3() {
   if (!sqlite3) {
     try {
       sqlite3 = require('sqlite3').verbose();
     } catch (err) {
-      throw new Error('SQLite driver not available in current environment: ' + err.message);
+      try {
+        const { DatabaseSync } = require('node:sqlite');
+        sqlite3 = createNodeSqliteWrapper(DatabaseSync);
+      } catch (innerErr) {
+        throw new Error('SQLite driver not available in current environment: ' + err.message);
+      }
     }
   }
   return sqlite3;

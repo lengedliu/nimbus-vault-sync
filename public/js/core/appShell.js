@@ -17,6 +17,29 @@ import { renderAllVaultsPanel } from '../views/allVaultsView.js';
 import { renderDatabasePanel } from '../views/databaseView.js';
 import { renderSponsorPanel } from '../views/sponsorView.js';
 
+export function showLoginView() {
+  state.token = '';
+  state.user = null;
+  state.vaults = [];
+  state.activeVaultId = null;
+  state.activeTab = null;
+  try {
+    localStorage.removeItem('nimbus_token');
+    localStorage.removeItem('nimbus_user');
+  } catch {}
+
+  const loginView = $('#login-view');
+  const appView = $('#app-view');
+  if (appView) appView.classList.add('hidden');
+  if (loginView) loginView.classList.remove('hidden');
+
+  const loginServerInput = $('#login-server');
+  if (loginServerInput) {
+    loginServerInput.value = state.serverBase === window.location.origin ? '' : state.serverBase;
+  }
+  checkAuthStatus();
+}
+
 let isBootstrap = false;
 
 export async function checkAuthStatus() {
@@ -135,11 +158,7 @@ export function initAuthForm() {
         icon: '🚪',
       });
       if (!ok) return;
-      localStorage.removeItem('nimbus_token');
-      localStorage.removeItem('nimbus_user');
-      state.token = '';
-      state.user = null;
-      location.reload();
+      showLoginView();
     });
   }
 }
@@ -356,6 +375,10 @@ export async function loadVaults() {
       showTab('dashboard');
     }
   } catch (err) {
+    if (err && err.status === 401) {
+      // 401 Unauthorized is handled gracefully by switching to the login screen
+      return;
+    }
     console.error('[Nimbus] Failed to load vaults:', err);
   }
 }
