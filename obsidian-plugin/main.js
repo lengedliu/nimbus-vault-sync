@@ -195,6 +195,12 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     return this.settings.syncBaselines[vaultId] || {};
   }
 
+  getBaselineEntry(vaultId = this.settings.vaultId, filePath) {
+    if (!vaultId || !filePath) return null;
+    const baseline = this.getVaultBaseline(vaultId);
+    return baseline ? baseline[filePath] || null : null;
+  }
+
   updateBaselineEntry(vaultId, filePath, meta) {
     if (!vaultId || !filePath) return;
     if (!this.settings.syncBaselines) {
@@ -444,12 +450,22 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
     switch (msg.type) {
       case 'init':
+        if (typeof msg.cursor === 'number') {
+          this.currentCursor = msg.cursor;
+        }
         // Initial sync manifest check
         await this.syncManifest(msg.manifest || {});
         break;
 
       case 'change':
         // A file was created/updated remotely
+        if (typeof msg.cursor === 'number') {
+          this.currentCursor = msg.cursor;
+        }
+        if (msg.path && msg.hash && this.fileHashes.get(msg.path) === msg.hash) {
+          // 本地已是目标相同哈希版本（如本设备自产生上传或已同步），无需重复拉取，拦截自反回声
+          return;
+        }
         if (msg.pullRequired || !msg.content) {
           await this.pullRemoteFileViaHttp(msg.path, msg.mtime, msg.hash);
         } else {
@@ -458,8 +474,14 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         break;
 
       case 'batch_file_change':
+      case 'batch_change':
+        if (typeof msg.cursor === 'number') {
+          this.currentCursor = msg.cursor;
+        }
         // Handle coalesced or server batch change notifications
-        if (Array.isArray(msg.changes)) {
+        if (msg.pullRequired) {
+          await this.fullSyncAllFiles();
+        } else if (Array.isArray(msg.changes)) {
           for (const item of msg.changes) {
             if (!item || !item.path) continue;
             if (item.action === 'delete') {
@@ -623,7 +645,6 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
             if (localChanged && !remoteChanged) {
               // 仅本地修改 -> 推送至云端
-              this.fileHashes.set(path, localHash);
               toPush.push(localFile);
             } else if (!localChanged && remoteChanged) {
               // 仅云端修改 -> 拉取至本地
@@ -635,7 +656,6 @@ module.exports = class NimbusSyncPlugin extends Plugin {
               if (remoteMtime > localMtime) {
                 toPull.push({ path, meta: remoteMeta });
               } else {
-                this.fileHashes.set(path, localHash);
                 toPush.push(localFile);
               }
             }
@@ -895,15 +915,20 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
   async pullRemoteFileViaHttp(filePath, mtime, expectedHash) {
     if (!filePath || !this.settings.vaultId || !this.settings.token) return;
+    if (expectedHash && this.fileHashes.get(filePath) === expectedHash) {
+      return;
+    }
     try {
       const serverUrl = this.settings.serverUrl.replace(/\/+$/, '');
       const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
       const url = `${serverUrl}/api/vaults/${encodeURIComponent(this.settings.vaultId)}/files/${encodedPath}`;
-      const res = await fetch(url, {
-        headers: {
-          'Authorization': `Bearer ${this.settings.token}`,
-        },
-      });
+      const headers = {
+        'Authorization': `Bearer ${this.settings.token}`,
+      };
+      if (this.settings.deviceId) {
+        headers['x-device-id'] = this.settings.deviceId;
+      }
+      const res = await fetch(url, { headers });
       if (!res.ok) {
         console.warn(`[Nimbus] HTTP 拉取大文件失败 (${res.status}): ${filePath}`);
         return;
@@ -1035,7 +1060,8 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   async pushLocalFile(file) {
     try {
       const buffer = await this.app.vault.readBinary(file);
-      const baseHash = this.fileHashes.get(file.path);
+      const baseMeta = this.getBaselineEntry(this.settings.vaultId, file.path);
+      const baseHash = (baseMeta && baseMeta.hash) || this.fileHashes.get(file.path) || null;
       const currentHash = await computeSha256(buffer);
       const MAX_WS_INLINE = 2 * 1024 * 1024; // 2MB
 
@@ -1050,6 +1076,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         };
         if (baseHash) headers['x-base-hash'] = baseHash;
         if (file.stat && file.stat.mtime) headers['x-mtime'] = String(file.stat.mtime);
+        if (this.settings.deviceId) headers['x-device-id'] = this.settings.deviceId;
 
         const res = await fetch(url, {
           method: 'PUT',

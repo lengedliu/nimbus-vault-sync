@@ -152,10 +152,11 @@ router.put('/:vaultId/files/*', (req, res) => {
     try {
       const incomingHash = hash.digest('hex');
       const result = storage.writeFileFromPath(vaultId, relPath, tempPath, incomingHash, { mtime, baseHash });
+      const clientDeviceId = req.headers['x-device-id'] || req.headers['x-client-id'] || null;
       
       if (!result.written && result.conflict) {
         // Broadcast the newly created conflict file to all connected clients
-        req.app.get('fnsHub').broadcastFileChange(vaultId, result.conflict, { currentHash: result.conflictHash || incomingHash }, req.user.id);
+        req.app.get('fnsHub').broadcastFileChange(vaultId, result.conflict, { currentHash: result.conflictHash || incomingHash }, req.user.id, clientDeviceId);
         
         syncLogger.recordLog({
           vaultId,
@@ -171,7 +172,7 @@ router.put('/:vaultId/files/*', (req, res) => {
           detail: `版本冲突，已自动生成冲突副本: ${result.conflict}`,
         });
       } else {
-        req.app.get('fnsHub').broadcastFileChange(vaultId, relPath, result, req.user.id);
+        req.app.get('fnsHub').broadcastFileChange(vaultId, relPath, result, req.user.id, clientDeviceId);
 
         syncLogger.recordLog({
           vaultId,
@@ -222,8 +223,9 @@ router.delete('/:vaultId/files/*', (req, res) => {
 
   const vaultId = req.params.vaultId;
   const deviceName = req.headers['x-device-name'] || 'REST / Web Client';
+  const clientDeviceId = req.headers['x-device-id'] || req.headers['x-client-id'] || null;
   const ok = storage.deleteFile(vaultId, relPath);
-  req.app.get('fnsHub').broadcastFileDelete(vaultId, relPath, req.user.id);
+  req.app.get('fnsHub').broadcastFileDelete(vaultId, relPath, req.user.id, clientDeviceId);
 
   if (ok) {
     webhooks.trigger('file.deleted', {

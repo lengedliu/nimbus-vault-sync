@@ -655,8 +655,9 @@ class FnsHub {
         pullRequired: true,
       };
       const json = JSON.stringify(payload);
+      const isExcluded = (c) => excludeWs && (c.ws === excludeWs || c.userId === excludeWs || (typeof excludeWs === 'string' && c.deviceId === excludeWs));
       for (const client of room) {
-        if (excludeWs && client.ws === excludeWs) continue;
+        if (isExcluded(client)) continue;
         this._sendRaw(client.ws, json);
       }
       this._scheduleDebouncedBatchNotification(vaultId, { action: 'update', path: relPath, size: buf.length, mtime: meta?.mtime || Date.now(), hash: result?.currentHash }, fromUserId, excludeWs);
@@ -674,8 +675,9 @@ class FnsHub {
     };
     // 只序列化一次，广播给房间里所有客户端复用同一份字符串
     const json = JSON.stringify(payload);
+    const isExcluded = (c) => excludeWs && (c.ws === excludeWs || c.userId === excludeWs || (typeof excludeWs === 'string' && c.deviceId === excludeWs));
     for (const client of room) {
-      if (excludeWs && client.ws === excludeWs) continue; // don't echo back to the pushing socket
+      if (isExcluded(client)) continue; // don't echo back to the pushing socket or device
       this._sendRaw(client.ws, json);
     }
     this._scheduleDebouncedBatchNotification(vaultId, { action: 'update', path: relPath, size: buf.length, mtime: meta?.mtime || Date.now(), hash: result?.currentHash }, fromUserId, excludeWs);
@@ -699,15 +701,17 @@ class FnsHub {
 
     // For large batch changes (> 10 files), broadcast a lightweight summary event to prevent socket overflow
     const payload = {
-      type: 'batch_change',
+      type: 'batch_file_change',
+      altType: 'batch_change',
       vaultId,
       count: relPaths.length,
       cursor: deltaSync.getLatestCursor(vaultId),
       pullRequired: true,
     };
     const json = JSON.stringify(payload);
+    const isExcluded = (c) => excludeWs && (c.ws === excludeWs || c.userId === excludeWs || (typeof excludeWs === 'string' && c.deviceId === excludeWs));
     for (const client of room) {
-      if (excludeWs && (client.ws === excludeWs || client.userId === excludeWs)) continue;
+      if (isExcluded(client)) continue;
       this._sendRaw(client.ws, json);
     }
   }
@@ -722,8 +726,9 @@ class FnsHub {
       path: relPath,
       cursor: deltaSync.getLatestCursor(vaultId),
     });
+    const isExcluded = (c) => excludeWs && (c.ws === excludeWs || c.userId === excludeWs || (typeof excludeWs === 'string' && c.deviceId === excludeWs));
     for (const client of room) {
-      if (excludeWs && client.ws === excludeWs) continue; // don't echo back to the deleting socket
+      if (isExcluded(client)) continue; // don't echo back to the deleting socket or device
       this._sendRaw(client.ws, json);
     }
     this._scheduleDebouncedBatchNotification(vaultId, { action: 'delete', path: relPath }, fromUserId, excludeWs);
@@ -776,8 +781,9 @@ class FnsHub {
           changes: changesList,
         };
         const json = JSON.stringify(payload);
+        const isExcluded = (c) => batch.excludeWs && (c.ws === batch.excludeWs || c.userId === batch.excludeWs || (typeof batch.excludeWs === 'string' && c.deviceId === batch.excludeWs));
         for (const client of room) {
-          if (batch.excludeWs && client.ws === batch.excludeWs) continue;
+          if (isExcluded(client)) continue;
           this._sendRaw(client.ws, json);
         }
       }

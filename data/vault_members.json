@@ -48,6 +48,27 @@
       "userId": "u_perm_member",
       "permission": "read-write",
       "createdAt": 1789823307557
+    },
+    {
+      "id": "655e625a-3e86-439e-adc8-503122d8339f",
+      "vaultId": "e14a7691-83b7-48c0-b200-4e3cdeabcae1",
+      "userId": "u_perm_member",
+      "permission": "read-write",
+      "createdAt": 1789889981027
+    },
+    {
+      "id": "93c91a8e-f7f5-49e6-ab88-6524d4034bcf",
+      "vaultId": "7c46c74d-c4e4-40a4-a5e7-ff28f415f258",
+      "userId": "u_perm_member",
+      "permission": "read-write",
+      "createdAt": 1789890182060
+    },
+    {
+      "id": "9f760e74-d72d-4167-80a7-e8d62d440192",
+      "vaultId": "23f3a401-c0b7-4def-99b8-f31408ecdb69",
+      "userId": "u_perm_member",
+      "permission": "read-write",
+      "createdAt": 1789891366349
     }
   ]
 }

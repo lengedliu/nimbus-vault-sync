@@ -614,6 +614,7 @@ async function restoreBatchTrash(vaultId, trashIds) {
 
           const hash = sha256(buffer);
           const meta = { size: buffer.length, mtime: now, ctime: now, hash };
+          manifest[targetRelPath] = meta;
           updateManifestEntry(vaultId, targetRelPath, meta);
           invalidateContentCacheEntry(vaultId, targetRelPath);
 
@@ -644,7 +645,8 @@ async function restoreBatchTrash(vaultId, trashIds) {
     if (deltaChanges.length > 0) {
       await deltaSync.recordBatchChanges(vaultId, deltaChanges).catch(() => {});
     }
-    await saveCacheAsync(vaultId, manifest).catch(() => {});
+    const currentManifest = inMemoryManifestCache.get(vaultId)?.manifest || manifest;
+    await saveCacheAsync(vaultId, currentManifest).catch(() => {});
     try {
       gitSync.notifyChange(vaultId);
     } catch {}

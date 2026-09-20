@@ -478,6 +478,23 @@ async function pull(vaultId) {
     return { ok: false, error: maskSecrets(pullRes.stderr || pullRes.stdout) };
   }
 
+  // 远端拉取成功后，刷新 Manifest 缓存、倒排索引并向所有在线客户端广播变更
+  try {
+    const storage = require('./storage');
+    storage.invalidateManifestCache(vaultId);
+    const newManifest = await storage.getManifestAsync(vaultId, true);
+    const ftsEngine = require('./ftsEngine');
+    if (ftsEngine && typeof ftsEngine.rebuildVaultIndex === 'function') {
+      ftsEngine.rebuildVaultIndex(vaultId).catch(() => {});
+    }
+    const wsHub = require('./wsHub');
+    if (wsHub && typeof wsHub.broadcastBatchFileChange === 'function') {
+      wsHub.broadcastBatchFileChange(vaultId, Object.keys(newManifest), null, null);
+    }
+  } catch (err) {
+    console.error(`[GitSync] 远端拉取后刷新缓存/广播失败: ${vaultId}`, err);
+  }
+
   return {
     ok: true,
     message: `拉取成功：${pullRes.stdout || '已是最新状态'}`,
