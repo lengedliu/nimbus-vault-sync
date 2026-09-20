@@ -146,6 +146,44 @@ docker run -d -p 3000:3000 \
 - **MCP AI 接口端点**：`http://localhost:3000/api/mcp`
 - **健康检查探针**：`http://localhost:3000/api/health`
 
+#### ⚙️ Docker 容器环境变量配置清单
+
+在运行 Docker 容器或通过 `docker-compose.yml` 编排时，可通过 `-e` 参数或挂载 `.env` 文件传入以下环境变量：
+
+| 环境变量 | 默认值 / 示例 | 说明 |
+| :--- | :--- | :--- |
+| **基础配置** | | |
+| `PORT` | `3000` | 服务监听端口（Docker 容器内默认为 3000，Compose 映射至主机端口） |
+| `DATA_DIR` | `/app/data` | 笔记库、元数据与快照持久化目录（容器内建议映射主机持久卷） |
+| `JWT_SECRET` | 随机生成（写入 `.jwt_secret`） | 用户认证与 JWT 令牌加密密钥（生产环境强烈建议指定强随机字符串） |
+| `ENCRYPTION_KEY` | 回退至 `JWT_SECRET` | 敏感凭证与 Git 密码的对称加密密钥 |
+| `TOKEN_TTL` | `30d` | 用户登录及 API 设备令牌默认有效期（如 `7d`, `30d`, `90d`） |
+| `INITIAL_ADMIN_PASSWORD` | `admin123` | 首次初始化引导创建系统管理员的默认密码 |
+| `TRUST_PROXY` | `true` | 是否信任前置反向代理（Nginx / Caddy / Cloudflare / K8s Ingress）传递的 X-Forwarded-* 头 |
+| `CORS_ALLOWED_ORIGINS` | `*`（允许所有） | 允许跨域请求的白名单来源（多个来源用半角逗号分隔，如 `https://note.example.com`） |
+| **容量与上传限制** | | |
+| `MAX_UPLOAD_MB` | `500` | 单次文件或附件直接上传的最大体积限制（MB） |
+| `ATTACHMENT_MAX_MB` | `200` | 通过 MCP / AI 工具远程转存或拉取附件的最大字节限制（MB） |
+| **增量同步保留策略** | | |
+| `MAX_DELTA_CHANGES_PER_VAULT` | `5000` | 每个笔记库在 SQLite / JSON 存储中保留的最新增量变更流水条数（超量自动回收） |
+| `MAX_DELTA_CHANGES_AGE_DAYS` | `30` | 增量变更流水的最大留存天数（超期陈旧记录自动修剪，防止磁盘无限膨胀） |
+| **数据库存储引擎配置** | | |
+| `DB_TYPE` | `json` | 数据库类型：可选 `json`（默认轻量本地存储）、`sqlite`、`postgres`、`mysql` |
+| `SQLITE_PATH` | `/app/data/nimbus.sqlite` | SQLite 数据库文件绝对路径 |
+| `DATABASE_URL` | - | PostgreSQL 完整连接串（例：`postgres://user:pass@host:5432/nimbus?sslmode=require`） |
+| `PG_HOST` / `PG_PORT` | `localhost` / `5432` | PostgreSQL 连接主机与端口 |
+| `PG_USER` / `PG_PASSWORD` | `postgres` / 空 | PostgreSQL 用户名与连接密码 |
+| `PG_DATABASE` | `nimbus` | PostgreSQL 数据库名称 |
+| `PG_SSL` | `false` | 是否开启 PostgreSQL SSL 加密连接传输 |
+| `PG_SSL_REJECT_UNAUTHORIZED` | `true` | 是否严格校验 PostgreSQL SSL CA 证书链（默认开启，杜绝中间人攻击） |
+| `PG_SSL_CA` / `PG_SSL_CA_PATH` | - | 自定义 PostgreSQL CA 证书内容（PEM 格式字符串）或容器内证书文件路径 |
+| `MYSQL_HOST` / `MYSQL_PORT` | `localhost` / `3306` | MySQL 连接主机与端口 |
+| `MYSQL_USER` / `MYSQL_PASSWORD` | `root` / 空 | MySQL 用户名与连接密码 |
+| `MYSQL_DATABASE` | `nimbus` | MySQL 数据库名称 |
+| **原生 HTTPS / TLS（可选）** | | |
+| `TLS_CERT_PATH` | - | 自带 SSL 证书路径（例如 `/app/certs/fullchain.pem`，需挂载证书目录） |
+| `TLS_KEY_PATH` | - | 自带 SSL 私钥路径（例如 `/app/certs/privkey.pem`） |
+
 ---
 
 ## 🔌 配套 Obsidian 插件安装与配置

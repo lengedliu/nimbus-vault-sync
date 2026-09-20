@@ -143,6 +143,44 @@ docker run -d -p 3000:3000 \
 - **MCP AI 엔드포인트**: `http://localhost:3000/api/mcp`
 - **헬스체크 프로브**: `http://localhost:3000/api/health`
 
+#### ⚙️ Docker 컨테이너 환경 변수 설정 목록
+
+Docker 컨테이너를 직접 실행하거나 `docker-compose.yml`을 통해 오케스트레이션할 때, `-e` 옵션 또는 `.env` 파일을 통해 다음 환경 변수를 설정할 수 있습니다:
+
+| 환경 변수명 | 기본값 / 예시 | 설명 |
+| :--- | :--- | :--- |
+| **기본 설정** | | |
+| `PORT` | `3000` | 서버 수신 포트 (컨테이너 내부 기본값은 3000, Compose에서 호스트 포트로 매핑) |
+| `DATA_DIR` | `/app/data` | 볼트, 메타데이터, 버전 이력 및 SQLite 파일이 보관되는 영구 볼륨 디렉터리 |
+| `JWT_SECRET` | 자동 생성 (`.jwt_secret`에 저장) | 사용자 인증 및 API 디바이스 JWT 토큰 서명용 비밀키 (운영 환경에서는 명시적 지정을 적극 권장) |
+| `ENCRYPTION_KEY` | `JWT_SECRET`으로 대체 | 저장된 Git 인증 정보 및 민감한 자격 증명의 대칭 암호화 키 |
+| `TOKEN_TTL` | `30d` | 사용자 로그인 세션 및 API 토큰 유효 기간 (예: `7d`, `30d`, `90d`) |
+| `INITIAL_ADMIN_PASSWORD` | `admin123` | 최초 설치 마법사에서 생성되는 초기 관리자 계정의 기본 비밀번호 |
+| `TRUST_PROXY` | `true` | 상위 역방향 프록시(Nginx / Caddy / Cloudflare / K8s Ingress 등)의 `X-Forwarded-*` 헤더 신뢰 여부 |
+| `CORS_ALLOWED_ORIGINS` | `*` (모두 허용) | 교차 출처(CORS) 허용 도메인 화이트리스트 (쉼표로 구분, 예: `https://notes.example.com`) |
+| **업로드 및 첨부 파일 제한** | | |
+| `MAX_UPLOAD_MB` | `500` | 일반 파일 및 첨부 파일 1회 업로드 최대 허용 크기 (MB) |
+| `ATTACHMENT_MAX_MB` | `200` | MCP / AI 도구를 통한 원격 첨부 파일 전송 시 최대 허용 크기 (MB) |
+| **증분 동기화 보존 정책** | | |
+| `MAX_DELTA_CHANGES_PER_VAULT` | `5000` | 각 볼트별 SQLite / JSON 저장소에 보존할 최신 증분 변경 로그 수 (초과 시 자동 정리) |
+| `MAX_DELTA_CHANGES_AGE_DAYS` | `30` | 증분 변경 로그의 최대 보존 일수 (만료된 오래된 로그를 자동 회수하여 디스크 무한 팽창 방지) |
+| **데이터베이스 스토리지 엔진 설정** | | |
+| `DB_TYPE` | `json` | 데이터베이스 드라이버: `json` (기본 경량 로컬 파일), `sqlite`, `postgres`, `mysql` |
+| `SQLITE_PATH` | `/app/data/nimbus.sqlite` | SQLite 데이터베이스 파일의 절대 경로 |
+| `DATABASE_URL` | - | PostgreSQL 전체 연결 URI (예: `postgres://user:pass@host:5432/nimbus?sslmode=require`) |
+| `PG_HOST` / `PG_PORT` | `localhost` / `5432` | PostgreSQL 호스트 및 포트 |
+| `PG_USER` / `PG_PASSWORD` | `postgres` / 비어 있음 | PostgreSQL 사용자 이름 및 비밀번호 |
+| `PG_DATABASE` | `nimbus` | PostgreSQL 데이터베이스 이름 |
+| `PG_SSL` | `false` | PostgreSQL 연결 시 SSL 암호화 전송 활성화 |
+| `PG_SSL_REJECT_UNAUTHORIZED` | `true` | CA 인증서 체인 엄격 검증 활성화 (중간자 공격 방지를 위해 기본 활성화) |
+| `PG_SSL_CA` / `PG_SSL_CA_PATH` | - | 사용자 지정 PostgreSQL CA 인증서 내용 (PEM 문자열) 또는 컨테이너 내부 인증서 파일 경로 |
+| `MYSQL_HOST` / `MYSQL_PORT` | `localhost` / `3306` | MySQL 호스트 및 포트 |
+| `MYSQL_USER` / `MYSQL_PASSWORD` | `root` / 비어 있음 | MySQL 사용자 이름 및 비밀번호 |
+| `MYSQL_DATABASE` | `nimbus` | MySQL 데이터베이스 이름 |
+| **자체 HTTPS / TLS (선택 사항)** | | |
+| `TLS_CERT_PATH` | - | SSL 풀체인 인증서 경로 (예: `/app/certs/fullchain.pem`) |
+| `TLS_KEY_PATH` | - | SSL 개인키 경로 (예: `/app/certs/privkey.pem`) |
+
 ---
 
 ## 🔌 Obsidian 플러그인 설치 및 설정

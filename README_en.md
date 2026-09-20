@@ -146,6 +146,44 @@ docker run -d -p 3000:3000 \
 - **MCP AI Endpoint**: `http://localhost:3000/api/mcp`
 - **Health Check Probe**: `http://localhost:3000/api/health`
 
+#### ⚙️ Docker Container Environment Variables Reference
+
+When launching the container directly or via `docker-compose.yml`, configure the runtime using `-e` flags or by mounting a `.env` file:
+
+| Variable | Default / Example | Description |
+| :--- | :--- | :--- |
+| **Core Configuration** | | |
+| `PORT` | `3000` | Port the server listens on inside the container (mapped to host port in Compose) |
+| `DATA_DIR` | `/app/data` | Directory for vaults, metadata, version history, and sqlite files (bind-mount to host) |
+| `JWT_SECRET` | Auto-generated in `.jwt_secret` | Secret key for signing user auth and API device JWT tokens (recommended to set explicitly) |
+| `ENCRYPTION_KEY` | Falls back to `JWT_SECRET` | Symmetric encryption key for stored Git credentials and sensitive secrets |
+| `TOKEN_TTL` | `30d` | Lifetime of user auth sessions and API tokens (e.g., `7d`, `30d`, `90d`) |
+| `INITIAL_ADMIN_PASSWORD` | `admin123` | Default password for the initial administrator account during first boot wizard |
+| `TRUST_PROXY` | `true` | Trust `X-Forwarded-*` headers from upstream reverse proxies (Nginx / Caddy / Cloudflare / Ingress) |
+| `CORS_ALLOWED_ORIGINS` | `*` (All allowed) | Comma-separated whitelist of allowed CORS origins (e.g., `https://notes.example.com`) |
+| **Upload & Attachment Limits** | | |
+| `MAX_UPLOAD_MB` | `500` | Maximum size in MB allowed for standard file uploads and attachments |
+| `ATTACHMENT_MAX_MB` | `200` | Maximum size in MB allowed for remote attachment downloads via MCP / AI tools |
+| **Delta Sync Retention Policy** | | |
+| `MAX_DELTA_CHANGES_PER_VAULT` | `5000` | Maximum number of incremental changes retained per vault in SQLite / JSON storage before auto-pruning |
+| `MAX_DELTA_CHANGES_AGE_DAYS` | `30` | Maximum retention age in days for delta change logs to prevent unbounded disk growth |
+| **Database Engines** | | |
+| `DB_TYPE` | `json` | Database driver: `json` (default zero-config local), `sqlite`, `postgres`, or `mysql` |
+| `SQLITE_PATH` | `/app/data/nimbus.sqlite` | Absolute file path to the SQLite database file |
+| `DATABASE_URL` | - | Complete PostgreSQL connection string (e.g., `postgres://user:pass@host:5432/nimbus?sslmode=require`) |
+| `PG_HOST` / `PG_PORT` | `localhost` / `5432` | PostgreSQL host and port |
+| `PG_USER` / `PG_PASSWORD` | `postgres` / empty | PostgreSQL username and password |
+| `PG_DATABASE` | `nimbus` | PostgreSQL database name |
+| `PG_SSL` | `false` | Enable SSL encrypted transport for PostgreSQL connections |
+| `PG_SSL_REJECT_UNAUTHORIZED` | `true` | Enforce strict CA certificate chain verification (default enabled to prevent MitM attacks) |
+| `PG_SSL_CA` / `PG_SSL_CA_PATH` | - | Custom CA certificate string (PEM format) or certificate file path inside the container |
+| `MYSQL_HOST` / `MYSQL_PORT` | `localhost` / `3306` | MySQL host and port |
+| `MYSQL_USER` / `MYSQL_PASSWORD` | `root` / empty | MySQL username and password |
+| `MYSQL_DATABASE` | `nimbus` | MySQL database name |
+| **Native HTTPS / TLS (Optional)** | | |
+| `TLS_CERT_PATH` | - | Container path to SSL fullchain certificate (e.g., `/app/certs/fullchain.pem`) |
+| `TLS_KEY_PATH` | - | Container path to SSL private key (e.g., `/app/certs/privkey.pem`) |
+
 ---
 
 ## 🔌 Companion Obsidian Plugin Setup

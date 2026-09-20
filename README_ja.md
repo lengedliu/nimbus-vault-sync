@@ -143,6 +143,44 @@ docker run -d -p 3000:3000 \
 - **MCP AI エンドポイント**: `http://localhost:3000/api/mcp`
 - **ヘルスチェック**: `http://localhost:3000/api/health`
 
+#### ⚙️ Docker コンテナ環境変数設定一覧
+
+Docker コンテナ起動時または `docker-compose.yml` 使用時、`-e` オプションまたは `.env` ファイル経由で以下の環境変数を設定できます：
+
+| 環境変数名 | デフォルト値 / 例 | 説明 |
+| :--- | :--- | :--- |
+| **基本設定** | | |
+| `PORT` | `3000` | サーバーリスニングポート（コンテナ内デフォルトは 3000、Compose でホストポートにマップ） |
+| `DATA_DIR` | `/app/data` | ノート、メタデータ、履歴バージョンおよび SQLite ファイルの永続化ディレクトリ |
+| `JWT_SECRET` | 自動生成（`.jwt_secret` に保存） | ユーザー認証および API デバイストークンの署名用秘密鍵（本番環境では明示的な設定を強く推奨） |
+| `ENCRYPTION_KEY` | `JWT_SECRET` にフォールバック | 保存された Git 認証情報および秘密情報の対称暗号化キー |
+| `TOKEN_TTL` | `30d` | ユーザーログインおよび API トークンの有効期間（例: `7d`, `30d`, `90d`） |
+| `INITIAL_ADMIN_PASSWORD` | `admin123` | 初回セットアップ時の初期管理者アカウント用デフォルトパスワード |
+| `TRUST_PROXY` | `true` | 前段のリバースプロキシ（Nginx / Caddy / Cloudflare 等）からの `X-Forwarded-*` ヘッダーを信頼するかどうか |
+| `CORS_ALLOWED_ORIGINS` | `*`（すべて許可） | クロスオリジン許可ドメインリスト（カンマ区切り、例: `https://notes.example.com`） |
+| **アップロードおよび添付ファイル制限** | | |
+| `MAX_UPLOAD_MB` | `500` | 通常のファイルおよび添付ファイルの最大アップロード容量制限（MB） |
+| `ATTACHMENT_MAX_MB` | `200` | MCP / AI ツールによる外部メディア転送時の最大容量制限（MB） |
+| **増分同期ログ保持ポリシー** | | |
+| `MAX_DELTA_CHANGES_PER_VAULT` | `5000` | 各 Vault の SQLite / JSON ストレージ内に保持する最新変更ログ件数（超過時は自動削除） |
+| `MAX_DELTA_CHANGES_AGE_DAYS` | `30` | 変更ログの最大保持日数（期限切れの過去ログを自動刈り取りし、無制限のディスク肥大化を防止） |
+| **データベースエンジン設定** | | |
+| `DB_TYPE` | `json` | DB 種別：`json`（デフォルトのローカル軽量ストレージ）、`sqlite`、`postgres`、`mysql` |
+| `SQLITE_PATH` | `/app/data/nimbus.sqlite` | SQLite データベースファイルの絶対パス |
+| `DATABASE_URL` | - | PostgreSQL 接続 URI（例: `postgres://user:pass@host:5432/nimbus?sslmode=require`） |
+| `PG_HOST` / `PG_PORT` | `localhost` / `5432` | PostgreSQL ホストおよびポート |
+| `PG_USER` / `PG_PASSWORD` | `postgres` / 空 | PostgreSQL ユーザー名およびパスワード |
+| `PG_DATABASE` | `nimbus` | PostgreSQL データベース名 |
+| `PG_SSL` | `false` | PostgreSQL への SSL 暗号化接続を有効化 |
+| `PG_SSL_REJECT_UNAUTHORIZED` | `true` | CA 証明書チェーンの厳格検証（中間者攻撃を防ぐためデフォルト有効） |
+| `PG_SSL_CA` / `PG_SSL_CA_PATH` | - | カスタム CA 証明書（PEM 形式文字列）またはコンテナ内の証明書ファイルパス |
+| `MYSQL_HOST` / `MYSQL_PORT` | `localhost` / `3306` | MySQL ホストおよびポート |
+| `MYSQL_USER` / `MYSQL_PASSWORD` | `root` / 空 | MySQL ユーザー名およびパスワード |
+| `MYSQL_DATABASE` | `nimbus` | MySQL データベース名 |
+| **ネイティブ HTTPS / TLS（オプション）** | | |
+| `TLS_CERT_PATH` | - | SSL 証明書フルチェーンパス（例: `/app/certs/fullchain.pem`） |
+| `TLS_KEY_PATH` | - | SSL 秘密鍵パス（例: `/app/certs/privkey.pem`） |
+
 ---
 
 ## 🔌 Obsidian プラグインのインストールと設定
