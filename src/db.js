@@ -572,6 +572,19 @@ class DatabaseManager {
         created_at BIGINT NOT NULL,
         UNIQUE(vault_id, user_id)
       );
+      CREATE TABLE IF NOT EXISTS vault_changes (
+        id BIGSERIAL PRIMARY KEY,
+        vault_id VARCHAR(64) NOT NULL,
+        cursor BIGINT NOT NULL,
+        path TEXT NOT NULL,
+        action VARCHAR(32) NOT NULL,
+        size BIGINT DEFAULT 0,
+        mtime BIGINT,
+        hash VARCHAR(128),
+        created_at BIGINT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_vault_changes_cursor ON vault_changes(vault_id, cursor);
+      CREATE INDEX IF NOT EXISTS idx_vault_changes_created ON vault_changes(vault_id, created_at);
     `);
   }
 
@@ -657,6 +670,21 @@ class DatabaseManager {
         permission VARCHAR(32) NOT NULL,
         created_at BIGINT NOT NULL,
         UNIQUE KEY uk_vault_user (vault_id, user_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+    await this.mysqlPool.query(`
+      CREATE TABLE IF NOT EXISTS vault_changes (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        vault_id VARCHAR(64) NOT NULL,
+        cursor BIGINT NOT NULL,
+        path TEXT NOT NULL,
+        action VARCHAR(32) NOT NULL,
+        size BIGINT DEFAULT 0,
+        mtime BIGINT,
+        hash VARCHAR(128),
+        created_at BIGINT NOT NULL,
+        INDEX idx_vault_changes_cursor (vault_id, cursor),
+        INDEX idx_vault_changes_created (vault_id, created_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
   }
@@ -856,11 +884,13 @@ class DatabaseManager {
     let migratedCounts = {
       users: 0,
       vaults: 0,
+      vaultMembers: 0,
       shares: 0,
       syncRules: 0,
       systemSettings: 0,
       apiTokens: 0,
       syncLogs: 0,
+      vaultChanges: 0,
     };
 
     if (doMigrate && dataset) {
@@ -870,19 +900,41 @@ class DatabaseManager {
         const vaultsData = { vaults: dataset.vaults || [] };
         fs.writeFileSync(USERS_FILE, JSON.stringify(usersData, null, 2));
         fs.writeFileSync(VAULTS_FILE, JSON.stringify(vaultsData, null, 2));
+        fs.writeFileSync(path.join(DATA_DIR, 'vault_members.json'), JSON.stringify({ members: dataset.vaultMembers || [] }, null, 2));
         fs.writeFileSync(path.join(DATA_DIR, 'shares.json'), JSON.stringify(dataset.shares || [], null, 2));
         fs.writeFileSync(path.join(DATA_DIR, 'settings.json'), JSON.stringify(dataset.systemSettings || {}, null, 2));
         fs.writeFileSync(path.join(DATA_DIR, 'api_tokens.json'), JSON.stringify(dataset.apiTokens || [], null, 2));
         fs.writeFileSync(path.join(DATA_DIR, 'sync_logs.json'), JSON.stringify(dataset.syncLogs || [], null, 2));
 
+        // Group changes by vaultId and write to changes/changes_{vaultId}.json
+        if (Array.isArray(dataset.vaultChanges) && dataset.vaultChanges.length > 0) {
+          const changesDir = path.join(DATA_DIR, 'changes');
+          fs.mkdirSync(changesDir, { recursive: true });
+          const changesByVault = new Map();
+          for (const c of dataset.vaultChanges) {
+            if (!changesByVault.has(c.vaultId)) {
+              changesByVault.set(c.vaultId, []);
+            }
+            changesByVault.get(c.vaultId).push(c);
+          }
+          for (const [vaultId, cList] of changesByVault.entries()) {
+            cList.sort((a, b) => a.cursor - b.cursor);
+            const latestCursor = cList.length > 0 ? cList[cList.length - 1].cursor : 0;
+            const filePath = path.join(changesDir, `changes_${vaultId}.json`);
+            fs.writeFileSync(filePath, JSON.stringify({ latestCursor, changes: cList }, null, 2));
+          }
+        }
+
         migratedCounts = {
           users: (dataset.users || []).length,
           vaults: (dataset.vaults || []).length,
+          vaultMembers: (dataset.vaultMembers || []).length,
           shares: (dataset.shares || []).length,
           syncRules: Object.keys(dataset.syncRules || {}).length,
           systemSettings: Object.keys(dataset.systemSettings || {}).length,
           apiTokens: (dataset.apiTokens || []).length,
           syncLogs: (dataset.syncLogs || []).length,
+          vaultChanges: (dataset.vaultChanges || []).length,
         };
       } else {
         // Insert into SQL tables
@@ -1005,6 +1057,42 @@ class DatabaseManager {
             migratedCounts.syncLogs++;
           } catch (e) {
             console.warn('[DB Migrate] sync_log insert skipped:', e.message);
+          }
+        }
+
+        // Vault Members
+        for (const m of dataset.vaultMembers || []) {
+          try {
+            await this.execute(
+              'INSERT INTO vault_members (id, vault_id, user_id, permission, created_at) VALUES (?, ?, ?, ?, ?)',
+              [m.id, m.vaultId, m.userId, m.permission, m.createdAt]
+            );
+            migratedCounts.vaultMembers++;
+          } catch (e) {
+            console.warn('[DB Migrate] vault_member insert skipped:', e.message);
+          }
+        }
+
+        // Vault Changes
+        for (const c of dataset.vaultChanges || []) {
+          try {
+            await this.execute(
+              `INSERT INTO vault_changes (vault_id, cursor, path, action, size, mtime, hash, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                c.vaultId,
+                c.cursor,
+                c.path,
+                c.action,
+                c.size || 0,
+                c.mtime || 0,
+                c.hash || null,
+                c.createdAt || Date.now(),
+              ]
+            );
+            migratedCounts.vaultChanges++;
+          } catch (e) {
+            console.warn('[DB Migrate] vault_change insert skipped:', e.message);
           }
         }
       }

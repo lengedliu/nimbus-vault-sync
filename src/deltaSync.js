@@ -38,48 +38,38 @@ class DeltaSyncService {
       let latestCursor = 0;
       const ring = [];
 
-      if (dbManager.type === 'sqlite' && dbManager.sqliteDb) {
+      if (dbManager.type !== 'json') {
         try {
-          await new Promise((resolve) => {
-            dbManager.sqliteDb.run(`
-              CREATE TABLE IF NOT EXISTS vault_changes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                vault_id TEXT NOT NULL,
-                cursor INTEGER NOT NULL,
-                path TEXT NOT NULL,
-                action TEXT NOT NULL,
-                size INTEGER,
-                mtime INTEGER,
-                hash TEXT,
-                created_at INTEGER NOT NULL
-              );
-              CREATE INDEX IF NOT EXISTS idx_vault_changes_cursor ON vault_changes(vault_id, cursor);
-            `, () => resolve());
-          });
-
-          const row = await new Promise((resolve) => {
-            dbManager.sqliteDb.get(
-              'SELECT MAX(cursor) as maxCursor FROM vault_changes WHERE vault_id = ?',
-              [vaultId],
-              (err, r) => resolve(r)
-            );
-          });
-          if (row && row.maxCursor) {
-            latestCursor = row.maxCursor;
+          const row = await dbManager.queryOne(
+            'SELECT MAX(cursor) as maxCursor FROM vault_changes WHERE vault_id = ?',
+            [vaultId]
+          );
+          if (row) {
+            const rawMax = row.maxCursor ?? row.maxcursor;
+            if (rawMax != null) {
+              latestCursor = Number(rawMax);
+            }
           }
 
-          const rows = await new Promise((resolve) => {
-            dbManager.sqliteDb.all(
-              'SELECT cursor, path, action, size, mtime, hash, created_at as createdAt FROM vault_changes WHERE vault_id = ? ORDER BY cursor DESC LIMIT 500',
-              [vaultId],
-              (err, r) => resolve(r || [])
-            );
-          });
+          const rows = await dbManager.queryAll(
+            'SELECT cursor, path, action, size, mtime, hash, created_at as createdAt FROM vault_changes WHERE vault_id = ? ORDER BY cursor DESC LIMIT 500',
+            [vaultId]
+          );
           if (rows && rows.length > 0) {
-            rows.reverse().forEach((r) => ring.push(r));
+            rows.reverse().forEach((r) => {
+              ring.push({
+                cursor: Number(r.cursor),
+                path: r.path,
+                action: r.action,
+                size: Number(r.size || 0),
+                mtime: Number(r.mtime || 0),
+                hash: r.hash || '',
+                createdAt: Number(r.createdat ?? r.createdAt ?? r.created_at ?? 0),
+              });
+            });
           }
         } catch (err) {
-          console.error('[DeltaSync] SQLite init error for vault', vaultId, err.message);
+          console.error('[DeltaSync] SQL DB init error for vault', vaultId, err.message);
         }
       } else {
         // JSON store fallback
@@ -200,34 +190,60 @@ class DeltaSyncService {
   }
 
   async _persistBatchChanges(vaultId, changeItems) {
-    if (dbManager.type === 'sqlite' && dbManager.sqliteDb) {
-      return new Promise((resolve, reject) => {
-        const db = dbManager.sqliteDb;
-        db.serialize(() => {
-          db.run('BEGIN TRANSACTION');
-          const stmt = db.prepare(
-            `INSERT INTO vault_changes (vault_id, cursor, path, action, size, mtime, hash, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-          );
-          for (const change of changeItems) {
-            stmt.run([
-              vaultId,
-              change.cursor,
-              change.path,
-              change.action,
-              change.size,
-              change.mtime,
-              change.hash,
-              change.createdAt,
-            ]);
-          }
-          stmt.finalize();
-          db.run('COMMIT', (err) => {
-            if (err) return reject(err);
-            resolve();
+    if (!Array.isArray(changeItems) || changeItems.length === 0) return;
+
+    if (dbManager.type !== 'json') {
+      if (dbManager.type === 'sqlite' && dbManager.sqliteDb) {
+        return new Promise((resolve, reject) => {
+          const db = dbManager.sqliteDb;
+          db.serialize(() => {
+            db.run('BEGIN TRANSACTION');
+            const stmt = db.prepare(
+              `INSERT INTO vault_changes (vault_id, cursor, path, action, size, mtime, hash, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+            );
+            for (const change of changeItems) {
+              stmt.run([
+                vaultId,
+                change.cursor,
+                change.path,
+                change.action,
+                change.size || 0,
+                change.mtime || 0,
+                change.hash || '',
+                change.createdAt || Date.now(),
+              ]);
+            }
+            stmt.finalize();
+            db.run('COMMIT', (err) => {
+              if (err) return reject(err);
+              resolve();
+            });
           });
         });
-      });
+      }
+
+      // PostgreSQL & MySQL batch insertion
+      const BATCH_SIZE = 100;
+      for (let i = 0; i < changeItems.length; i += BATCH_SIZE) {
+        const batch = changeItems.slice(i, i + BATCH_SIZE);
+        const placeholders = batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+        const sql = `INSERT INTO vault_changes (vault_id, cursor, path, action, size, mtime, hash, created_at) VALUES ${placeholders}`;
+        const params = [];
+        for (const item of batch) {
+          params.push(
+            vaultId,
+            item.cursor,
+            item.path,
+            item.action,
+            item.size || 0,
+            item.mtime || 0,
+            item.hash || '',
+            item.createdAt || Date.now()
+          );
+        }
+        await dbManager.execute(sql, params);
+      }
     } else {
       const store = this._getJsonStore(vaultId);
       store.update((data) => {
@@ -244,9 +260,9 @@ class DeltaSyncService {
   }
 
   async _persistChange(vaultId, change) {
-    if (dbManager.type === 'sqlite' && dbManager.sqliteDb) {
-      return new Promise((resolve, reject) => {
-        dbManager.sqliteDb.run(
+    if (dbManager.type !== 'json') {
+      try {
+        await dbManager.execute(
           `INSERT INTO vault_changes (vault_id, cursor, path, action, size, mtime, hash, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           [
@@ -254,17 +270,15 @@ class DeltaSyncService {
             change.cursor,
             change.path,
             change.action,
-            change.size,
-            change.mtime,
-            change.hash,
-            change.createdAt,
-          ],
-          (err) => {
-            if (err) return reject(err);
-            resolve();
-          }
+            change.size || 0,
+            change.mtime || 0,
+            change.hash || '',
+            change.createdAt || Date.now(),
+          ]
         );
-      });
+      } catch (err) {
+        console.error('[DeltaSync] SQL DB persist error:', err.message);
+      }
     } else {
       const store = this._getJsonStore(vaultId);
       store.update((data) => {
@@ -280,7 +294,7 @@ class DeltaSyncService {
   }
 
   /**
-   * 清理并回收指定 Vault 的陈旧增量变更日志，防止 SQLite 数据库或 JSON 存储文件无限膨胀
+   * 清理并回收指定 Vault 的陈旧增量变更日志，防止数据库或 JSON 存储文件无限膨胀
    */
   async pruneOldChanges(vaultId) {
     const st = this.vaultState.get(vaultId);
@@ -288,30 +302,23 @@ class DeltaSyncService {
     const cursorCutoff = Math.max(0, currentCursor - MAX_CHANGES_RETENTION);
     const timeCutoff = Date.now() - MAX_CHANGES_AGE_MS;
 
-    if (dbManager.type === 'sqlite' && dbManager.sqliteDb) {
-      return new Promise((resolve) => {
-        const db = dbManager.sqliteDb;
-        // 保留策略：
-        // 1. 保留最新 MAX_CHANGES_RETENTION (默认 5000) 条变更
-        // 2. 超出保留条数的游标，或已超过 30 天且非最新 1000 条的陈旧日志直接回收
-        db.run(
+    if (dbManager.type !== 'json') {
+      try {
+        const result = await dbManager.execute(
           `DELETE FROM vault_changes
            WHERE vault_id = ?
              AND (
                cursor <= ?
                OR (created_at < ? AND cursor <= (? - 1000))
              )`,
-          [vaultId, cursorCutoff, timeCutoff, currentCursor],
-          function (err) {
-            if (err) {
-              console.warn('[DeltaSync] SQLite prune failed for vault', vaultId, err.message);
-            } else if (this && this.changes > 0) {
-              console.log(`[DeltaSync] Pruned ${this.changes} obsolete SQLite change records for vault ${vaultId}`);
-            }
-            resolve();
-          }
+          [vaultId, cursorCutoff, timeCutoff, currentCursor]
         );
-      });
+        if (result && result.changes > 0) {
+          console.log(`[DeltaSync] Pruned ${result.changes} obsolete SQL change records for vault ${vaultId}`);
+        }
+      } catch (err) {
+        console.warn(`[DeltaSync] SQL prune failed for vault ${vaultId}:`, err.message);
+      }
     } else {
       // JSON Store 模式清理
       try {
@@ -426,25 +433,32 @@ class DeltaSyncService {
     }
 
     // 5. 内存环已溢出或未命中，尝试从持久化存储检索
-    // 5.1 SQLite 持久化查询
-    if (dbManager.type === 'sqlite' && dbManager.sqliteDb) {
+    // 5.1 SQL 引擎持久化查询 (SQLite, PostgreSQL, MySQL)
+    if (dbManager.type !== 'json') {
       try {
-        const rows = await new Promise((resolve, reject) => {
-          dbManager.sqliteDb.all(
-            `SELECT cursor, path, action, size, mtime, hash, created_at as createdAt
-             FROM vault_changes
-             WHERE vault_id = ? AND cursor > ?
-             ORDER BY cursor ASC
-             LIMIT ?`,
-            [vaultId, since, maxLimit + 1],
-            (err, r) => (err ? reject(err) : resolve(r || []))
-          );
-        });
+        const rows = await dbManager.queryAll(
+          `SELECT cursor, path, action, size, mtime, hash, created_at as createdAt
+           FROM vault_changes
+           WHERE vault_id = ? AND cursor > ?
+           ORDER BY cursor ASC
+           LIMIT ?`,
+          [vaultId, since, maxLimit + 1]
+        );
+
+        const normalizedRows = rows.map((r) => ({
+          cursor: Number(r.cursor),
+          path: r.path,
+          action: r.action,
+          size: Number(r.size || 0),
+          mtime: Number(r.mtime || 0),
+          hash: r.hash || '',
+          createdAt: Number(r.createdat ?? r.createdAt ?? r.created_at ?? 0),
+        }));
 
         // 仅当查到记录且最旧一条游标紧随 since (无历史断层 gap) 时才允许增量返回
-        if (rows.length > 0 && rows[0].cursor <= since + 1) {
-          const hasMore = rows.length > maxLimit;
-          const sliced = rows.slice(0, maxLimit);
+        if (normalizedRows.length > 0 && normalizedRows[0].cursor <= since + 1) {
+          const hasMore = normalizedRows.length > maxLimit;
+          const sliced = normalizedRows.slice(0, maxLimit);
           const nextCursor = sliced[sliced.length - 1].cursor;
 
           const itemsToProcess = shouldCompact ? this._compactChanges(sliced) : sliced;
@@ -476,7 +490,7 @@ class DeltaSyncService {
           };
         }
       } catch (err) {
-        console.error('[DeltaSync] DB Query error:', err.message);
+        console.error('[DeltaSync] SQL DB Query error:', err.message);
       }
     } else {
       // 5.2 JSON Store 持久化查询 (单机轻量部署)
@@ -530,6 +544,67 @@ class DeltaSyncService {
       cursor: st.latestCursor,
       reason: 'CURSOR_OUT_OF_BOUNDS_OR_PURGED',
     };
+  }
+
+  /**
+   * 重置 DeltaSync 内存缓存状态（常用于热切换数据库引擎或重载元数据）
+   */
+  clearCache() {
+    this.vaultState.clear();
+    this.jsonStores.clear();
+    this.initPromises.clear();
+  }
+
+  /**
+   * 跨数据库引擎热迁移时抓取全部已持久化的变更记录
+   */
+  async getAllChangesForMigration() {
+    if (dbManager.type !== 'json') {
+      try {
+        const rows = await dbManager.queryAll(
+          'SELECT vault_id as vaultId, cursor, path, action, size, mtime, hash, created_at as createdAt FROM vault_changes ORDER BY cursor ASC'
+        );
+        return rows.map((r) => ({
+          vaultId: r.vaultid || r.vaultId || r.vault_id,
+          cursor: Number(r.cursor),
+          path: r.path,
+          action: r.action,
+          size: Number(r.size || 0),
+          mtime: Number(r.mtime || 0),
+          hash: r.hash || '',
+          createdAt: Number(r.createdat ?? r.createdAt ?? r.created_at ?? 0),
+        }));
+      } catch (err) {
+        console.warn('[DeltaSync] Failed to read changes for migration from DB:', err.message);
+        return [];
+      }
+    } else {
+      const changesDir = path.join(DATA_DIR, 'changes');
+      if (!fs.existsSync(changesDir)) return [];
+      const files = fs.readdirSync(changesDir).filter((f) => f.startsWith('changes_') && f.endsWith('.json'));
+      const allChanges = [];
+      for (const file of files) {
+        const vaultId = file.replace(/^changes_/, '').replace(/\.json$/, '');
+        try {
+          const content = JSON.parse(fs.readFileSync(path.join(changesDir, file), 'utf8'));
+          if (Array.isArray(content.changes)) {
+            for (const c of content.changes) {
+              allChanges.push({
+                vaultId,
+                cursor: Number(c.cursor),
+                path: c.path,
+                action: c.action,
+                size: Number(c.size || 0),
+                mtime: Number(c.mtime || 0),
+                hash: c.hash || '',
+                createdAt: Number(c.createdAt || 0),
+              });
+            }
+          }
+        } catch {}
+      }
+      return allChanges;
+    }
   }
 }
 

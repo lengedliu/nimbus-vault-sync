@@ -8,6 +8,7 @@ const syncRulesStore = require('../syncRules');
 const settingsManager = require('../settings');
 const syncLogger = require('../syncLogger');
 const devicesStore = require('../devices');
+const deltaSync = require('../deltaSync');
 const dbManager = require('../db');
 const { asyncHandler } = require('../utils/asyncHandler');
 
@@ -234,11 +235,13 @@ router.post('/database/switch', asyncHandler(async (req, res) => {
     const dataset = {
       users: users.getRawUsers ? users.getRawUsers() : [],
       vaults: vaultsStore.getRawVaults ? vaultsStore.getRawVaults() : [],
+      vaultMembers: vaultMembers.getRawMembers ? vaultMembers.getRawMembers() : [],
       shares: sharesStore.getRawShares ? sharesStore.getRawShares() : [],
       syncRules: syncRulesStore.getRawRules ? syncRulesStore.getRawRules() : (syncRulesStore.getAllRules ? syncRulesStore.getAllRules() : {}),
       systemSettings: settingsManager.getSystemSettings ? settingsManager.getSystemSettings() : {},
       apiTokens: settingsManager.getAllTokens ? settingsManager.getAllTokens() : [],
       syncLogs: syncLogger.getRawLogs ? syncLogger.getRawLogs() : [],
+      vaultChanges: deltaSync.getAllChangesForMigration ? await deltaSync.getAllChangesForMigration() : [],
     };
 
     const result = await dbManager.switchAndMigrate(config, dataset, migrateExisting);
@@ -246,10 +249,14 @@ router.post('/database/switch', asyncHandler(async (req, res) => {
     // Refresh memory cache from the newly selected DB
     await users.loadFromDb();
     await vaultsStore.loadFromDb();
+    await vaultMembers.loadFromDb();
     await sharesStore.loadFromDb();
     await syncRulesStore.loadFromDb();
     await settingsManager.loadFromDb();
     await syncLogger.loadFromDb();
+    if (deltaSync.clearCache) {
+      deltaSync.clearCache();
+    }
 
     res.json({
       ok: true,
