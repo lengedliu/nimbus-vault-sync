@@ -5,6 +5,10 @@ const dbManager = require('./db');
 const JsonDb = require('./jsonDb');
 
 const MAX_MEMORY_CHANGES_PER_VAULT = 5000;
+const MAX_CHANGES_RETENTION = parseInt(process.env.MAX_DELTA_CHANGES_PER_VAULT || '5000', 10);
+const PRUNE_INTERVAL_CHANGES = 200; // 每累计 200 次变更触发一次检查与清理
+const MAX_CHANGES_AGE_DAYS = parseInt(process.env.MAX_DELTA_CHANGES_AGE_DAYS || '30', 10);
+const MAX_CHANGES_AGE_MS = MAX_CHANGES_AGE_DAYS * 24 * 60 * 60 * 1000;
 
 class DeltaSyncService {
   constructor() {
@@ -92,7 +96,9 @@ class DeltaSyncService {
         }
       }
 
-      this.vaultState.set(vaultId, { latestCursor, ring });
+      this.vaultState.set(vaultId, { latestCursor, ring, unprunedCount: 0 });
+      // 启动时在后台清理可能遗留的过量陈旧变更日志，释放磁盘空间
+      this.pruneOldChanges(vaultId).catch(() => {});
     })();
 
     this.initPromises.set(vaultId, initPromise);
@@ -137,6 +143,15 @@ class DeltaSyncService {
       console.error('[DeltaSync] Persist error:', err.message);
     });
 
+    // 增量计数与自动衰减清理调度
+    st.unprunedCount = (st.unprunedCount || 0) + 1;
+    if (st.unprunedCount >= PRUNE_INTERVAL_CHANGES) {
+      st.unprunedCount = 0;
+      this.pruneOldChanges(vaultId).catch((err) => {
+        console.warn('[DeltaSync] Periodic prune error:', err.message);
+      });
+    }
+
     return cursor;
   }
 
@@ -171,6 +186,15 @@ class DeltaSyncService {
     this._persistBatchChanges(vaultId, changeItems).catch((err) => {
       console.error('[DeltaSync] Persist batch error:', err.message);
     });
+
+    // 批量增量计数与自动衰减清理调度
+    st.unprunedCount = (st.unprunedCount || 0) + changeItems.length;
+    if (st.unprunedCount >= PRUNE_INTERVAL_CHANGES) {
+      st.unprunedCount = 0;
+      this.pruneOldChanges(vaultId).catch((err) => {
+        console.warn('[DeltaSync] Periodic batch prune error:', err.message);
+      });
+    }
 
     return changeItems;
   }
@@ -211,8 +235,8 @@ class DeltaSyncService {
         data.latestCursor = Math.max(data.latestCursor || 0, maxCursor);
         if (!Array.isArray(data.changes)) data.changes = [];
         data.changes.push(...changeItems);
-        if (data.changes.length > 2000) {
-          data.changes = data.changes.slice(-2000);
+        if (data.changes.length > MAX_CHANGES_RETENTION) {
+          data.changes = data.changes.slice(-MAX_CHANGES_RETENTION);
         }
         return data;
       });
@@ -247,11 +271,65 @@ class DeltaSyncService {
         data.latestCursor = Math.max(data.latestCursor || 0, change.cursor);
         if (!Array.isArray(data.changes)) data.changes = [];
         data.changes.push(change);
-        if (data.changes.length > 2000) {
-          data.changes = data.changes.slice(-2000);
+        if (data.changes.length > MAX_CHANGES_RETENTION) {
+          data.changes = data.changes.slice(-MAX_CHANGES_RETENTION);
         }
         return data;
       });
+    }
+  }
+
+  /**
+   * 清理并回收指定 Vault 的陈旧增量变更日志，防止 SQLite 数据库或 JSON 存储文件无限膨胀
+   */
+  async pruneOldChanges(vaultId) {
+    const st = this.vaultState.get(vaultId);
+    const currentCursor = st ? st.latestCursor : 0;
+    const cursorCutoff = Math.max(0, currentCursor - MAX_CHANGES_RETENTION);
+    const timeCutoff = Date.now() - MAX_CHANGES_AGE_MS;
+
+    if (dbManager.type === 'sqlite' && dbManager.sqliteDb) {
+      return new Promise((resolve) => {
+        const db = dbManager.sqliteDb;
+        // 保留策略：
+        // 1. 保留最新 MAX_CHANGES_RETENTION (默认 5000) 条变更
+        // 2. 超出保留条数的游标，或已超过 30 天且非最新 1000 条的陈旧日志直接回收
+        db.run(
+          `DELETE FROM vault_changes
+           WHERE vault_id = ?
+             AND (
+               cursor <= ?
+               OR (created_at < ? AND cursor <= (? - 1000))
+             )`,
+          [vaultId, cursorCutoff, timeCutoff, currentCursor],
+          function (err) {
+            if (err) {
+              console.warn('[DeltaSync] SQLite prune failed for vault', vaultId, err.message);
+            } else if (this && this.changes > 0) {
+              console.log(`[DeltaSync] Pruned ${this.changes} obsolete SQLite change records for vault ${vaultId}`);
+            }
+            resolve();
+          }
+        );
+      });
+    } else {
+      // JSON Store 模式清理
+      try {
+        const store = this._getJsonStore(vaultId);
+        store.update((data) => {
+          if (Array.isArray(data.changes) && data.changes.length > MAX_CHANGES_RETENTION) {
+            const before = data.changes.length;
+            data.changes = data.changes.slice(-MAX_CHANGES_RETENTION);
+            const pruned = before - data.changes.length;
+            if (pruned > 0) {
+              console.log(`[DeltaSync] Pruned ${pruned} obsolete JSON change records for vault ${vaultId}`);
+            }
+          }
+          return data;
+        });
+      } catch (err) {
+        console.warn('[DeltaSync] JsonDb prune error for vault', vaultId, err.message);
+      }
     }
   }
 

@@ -35,6 +35,10 @@ export async function checkAuthStatus() {
         if (sub) sub.textContent = 'Obsidian 高速实时同步服务 · 管理后台';
         if (btn) btn.textContent = '登录';
       }
+      const hintBadge = $('#login-hint-badge-box') || $('.login-hint-badge');
+      if (hintBadge) {
+        hintBadge.style.display = body.isDefaultAdminPassword ? 'flex' : 'none';
+      }
     }
   } catch (err) {
     console.warn('[Nimbus] Failed to check auth status on serverBase:', state.serverBase, err);
@@ -228,6 +232,36 @@ export async function enterApp() {
   initMobileNavigation();
 
   await loadVaults();
+
+  // 🛡️ 高危安全防线：检测到管理员正在使用弱默认密码时展示全屏显式安全通告栏
+  const existingAlert = $('#admin-security-alert-bar');
+  if (existingAlert) existingAlert.remove();
+
+  if (state.user && state.user.role === 'admin' && state.user.isDefaultAdminPassword) {
+    const alertBar = document.createElement('div');
+    alertBar.id = 'admin-security-alert-bar';
+    alertBar.style.cssText = 'background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); color: #fca5a5; padding: 10px 16px; border-radius: 8px; margin: 12px 16px 0 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; font-weight: 500;';
+    alertBar.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 18px;">⚠️</span>
+        <span><strong>安全警报：</strong>当前管理员账户正使用初始默认密码 (admin123)，极易遭受公网未授权访问与接管！请立即前往系统设置修改密码。</span>
+      </div>
+      <button type="button" id="btn-fix-admin-password" style="background: #ef4444; color: #fff; border: none; padding: 5px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;">
+        立即修改密码
+      </button>
+    `;
+    const appView = $('#app-view');
+    const topbar = appView?.querySelector('.topbar');
+    if (topbar && topbar.nextSibling) {
+      topbar.parentNode.insertBefore(alertBar, topbar.nextSibling);
+    } else if (appView) {
+      appView.prepend(alertBar);
+    }
+    const fixBtn = alertBar.querySelector('#btn-fix-admin-password');
+    if (fixBtn) {
+      fixBtn.onclick = () => showTab('settings');
+    }
+  }
 }
 
 export function closeMobileSidebar() {

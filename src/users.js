@@ -43,7 +43,8 @@ async function loadFromDb() {
 async function ensureDefaultAdmin() {
   if (!findByUsername('admin')) {
     try {
-      const passwordHash = await bcrypt.hash('admin123', 10);
+      const initialPassword = (process.env.INITIAL_ADMIN_PASSWORD || 'admin123').trim();
+      const passwordHash = await bcrypt.hash(initialPassword, 10);
       const user = {
         id: uuid(),
         username: 'admin',
@@ -64,10 +65,24 @@ async function ensureDefaultAdmin() {
           [user.id, user.username, user.passwordHash, user.role, user.createdAt]
         );
       }
-      console.log('[Users] 初始管理员账号已创建: 用户名 admin, 默认密码 admin123');
+      if (initialPassword === 'admin123') {
+        console.warn('⚠️ [安全警报] 初始管理员账号已创建: 用户名 admin, 默认密码 admin123 (高风险！请尽快在后台修改密码！)');
+      } else {
+        console.log('[Users] 初始管理员账号已创建，密码已通过环境变量注入');
+      }
     } catch (err) {
       console.error('[Users] 自动初始化 admin 失败:', err.message);
     }
+  }
+}
+
+async function isDefaultAdminPassword() {
+  const admin = findByUsername('admin');
+  if (!admin || !admin.passwordHash) return false;
+  try {
+    return await bcrypt.compare('admin123', admin.passwordHash);
+  } catch {
+    return false;
   }
 }
 
@@ -220,6 +235,7 @@ module.exports = {
   verifyPassword,
   updatePassword,
   hasAnyUser,
+  isDefaultAdminPassword,
   listAll,
   remove,
   loadFromDb,

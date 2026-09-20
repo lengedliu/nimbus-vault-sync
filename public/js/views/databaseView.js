@@ -143,6 +143,19 @@ function setupDbForm(selectedType, currentConfig = {}, mainPanel = null) {
           <input type="checkbox" id="cfg-pg-ssl" ${currentConfig.ssl ? 'checked' : ''} />
           <span>启用 SSL 加密连接 (云数据库必须)</span>
         </label>
+        <div id="cfg-pg-ssl-options" style="display:${currentConfig.ssl ? 'block' : 'none'};padding:12px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);margin-top:10px;">
+          <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+            <input type="checkbox" id="cfg-pg-ssl-strict" ${currentConfig.sslRejectUnauthorized !== false ? 'checked' : ''} />
+            <span style="font-size:13px;font-weight:600;">严格校验 CA 证书有效性 (推荐，防范中间人攻击)</span>
+          </label>
+          <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+            取消勾选将允许自签名证书（存在中间人嗅探风险）。生产环境建议保持开启。
+          </div>
+          <label style="display:block;">
+            <span style="font-size:12px;color:var(--text-secondary);">自定义 CA 证书内容 (可选 PEM 证书字符串):</span>
+            <textarea id="cfg-pg-ssl-ca" rows="3" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" style="width:100%;font-family:monospace;font-size:12px;margin-top:4px;box-sizing:border-box;">${escapeHtml(currentConfig.sslCa || '')}</textarea>
+          </label>
+        </div>
       </div>
     `;
   } else if (selectedType === 'mysql') {
@@ -196,6 +209,14 @@ function setupDbForm(selectedType, currentConfig = {}, mainPanel = null) {
     </div>
   `;
 
+  const pgSslCheck = container.querySelector('#cfg-pg-ssl');
+  if (pgSslCheck) {
+    pgSslCheck.addEventListener('change', () => {
+      const opts = container.querySelector('#cfg-pg-ssl-options');
+      if (opts) opts.style.display = pgSslCheck.checked ? 'block' : 'none';
+    });
+  }
+
   function collectFormConfig() {
     if (selectedType === 'sqlite') {
       return {
@@ -204,6 +225,7 @@ function setupDbForm(selectedType, currentConfig = {}, mainPanel = null) {
       };
     }
     if (selectedType === 'postgres') {
+      const sslChecked = Boolean(container.querySelector('#cfg-pg-ssl')?.checked);
       return {
         type: 'postgres',
         host: container.querySelector('#cfg-pg-host')?.value.trim(),
@@ -211,7 +233,9 @@ function setupDbForm(selectedType, currentConfig = {}, mainPanel = null) {
         database: container.querySelector('#cfg-pg-database')?.value.trim(),
         user: container.querySelector('#cfg-pg-user')?.value.trim(),
         password: container.querySelector('#cfg-pg-password')?.value || '',
-        ssl: container.querySelector('#cfg-pg-ssl')?.checked,
+        ssl: sslChecked,
+        sslRejectUnauthorized: container.querySelector('#cfg-pg-ssl-strict')?.checked !== false,
+        sslCa: container.querySelector('#cfg-pg-ssl-ca')?.value.trim() || undefined,
       };
     }
     if (selectedType === 'mysql') {
@@ -482,13 +506,23 @@ export async function renderDatabaseSettingsSubtab(container) {
             <span>密码 (Password)</span>
             <input id="db-input-pg-pass" type="password" placeholder="请输入数据库访问密码" />
           </label>
-          <label style="margin:0;display:flex;flex-direction:column;justify-content:center;">
-            <span style="margin-bottom:8px;">SSL 安全加密连接</span>
-            <label class="form-checkbox-label" style="margin:0;">
+          <div style="grid-column:1 / -1;margin-top:6px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);">
+            <label class="form-checkbox-label" style="margin:0 0 8px;">
               <input type="checkbox" id="db-input-pg-ssl" ${cfg.ssl ? 'checked' : ''} />
-              <span>启用 SSL 加密 (云数据库必须开启)</span>
+              <span><b>启用 SSL 加密传输</b> (云数据库如 Supabase / Neon / RDS 必须开启)</span>
             </label>
-          </label>
+            <div id="db-pg-ssl-suboptions" style="display:${cfg.ssl ? 'block' : 'none'};padding-top:8px;margin-top:8px;border-top:1px dashed var(--border);">
+              <label class="form-checkbox-label" style="margin:0 0 6px;">
+                <input type="checkbox" id="db-input-pg-ssl-strict" ${cfg.sslRejectUnauthorized !== false ? 'checked' : ''} />
+                <span><b>严格校验 CA 证书有效性</b>（推荐默认开启，杜绝中间人劫持风险）</span>
+              </label>
+              <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">若连接自签名内网数据库，取消勾选将忽略证书校验（仅测试环境使用）。</div>
+              <label style="display:block;margin:0;">
+                <span style="font-size:12px;color:var(--text-secondary);">自定义 CA 证书内容 (可选 PEM 格式):</span>
+                <textarea id="db-input-pg-ssl-ca" rows="3" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" style="width:100%;font-family:monospace;font-size:12px;margin-top:4px;box-sizing:border-box;">${escapeHtml(cfg.sslCa || '')}</textarea>
+              </label>
+            </div>
+          </div>
         </div>
       `;
     } else if (type === 'mysql') {
@@ -518,6 +552,16 @@ export async function renderDatabaseSettingsSubtab(container) {
         </div>
       `;
     }
+
+    if (type === 'postgres') {
+      const pgSslToggle = wrap.querySelector('#db-input-pg-ssl');
+      if (pgSslToggle) {
+        pgSslToggle.addEventListener('change', () => {
+          const subopts = wrap.querySelector('#db-pg-ssl-suboptions');
+          if (subopts) subopts.style.display = pgSslToggle.checked ? 'block' : 'none';
+        });
+      }
+    }
   }
 
   renderFieldsForEngine(selectedTargetType);
@@ -543,11 +587,17 @@ export async function renderDatabaseSettingsSubtab(container) {
     }
     if (type === 'postgres') {
       const pgUrl = container.querySelector('#db-input-pg-url')?.value.trim();
+      const sslChecked = Boolean(container.querySelector('#db-input-pg-ssl')?.checked);
+      const sslRejectUnauthorized = container.querySelector('#db-input-pg-ssl-strict')?.checked !== false;
+      const sslCa = container.querySelector('#db-input-pg-ssl-ca')?.value.trim() || undefined;
+
       if (pgUrl) {
         return {
           type: 'postgres',
           connectionString: pgUrl,
-          ssl: container.querySelector('#db-input-pg-ssl')?.checked,
+          ssl: sslChecked,
+          sslRejectUnauthorized,
+          sslCa,
         };
       }
       return {
@@ -557,7 +607,9 @@ export async function renderDatabaseSettingsSubtab(container) {
         database: container.querySelector('#db-input-pg-db')?.value.trim() || 'nimbus',
         user: container.querySelector('#db-input-pg-user')?.value.trim() || 'postgres',
         password: container.querySelector('#db-input-pg-pass')?.value || '',
-        ssl: container.querySelector('#db-input-pg-ssl')?.checked,
+        ssl: sslChecked,
+        sslRejectUnauthorized,
+        sslCa,
       };
     }
     if (type === 'mysql') {

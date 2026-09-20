@@ -467,7 +467,8 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     const baseUrl = this.getCleanServerUrl();
     const wsProto = baseUrl.startsWith('https:') ? 'wss:' : 'ws:';
     const host = baseUrl.replace(/^https?:\/\//i, '');
-    const wsUrl = `${wsProto}//${host}/ws?token=${encodeURIComponent(cleanToken)}&vaultId=${encodeURIComponent(this.settings.vaultId)}&deviceId=${encodeURIComponent(this.settings.deviceId)}`;
+    const localCursor = this.getVaultCursor(this.settings.vaultId || 'default');
+    const wsUrl = `${wsProto}//${host}/ws?token=${encodeURIComponent(cleanToken)}&vaultId=${encodeURIComponent(this.settings.vaultId)}&deviceId=${encodeURIComponent(this.settings.deviceId)}&cursor=${encodeURIComponent(localCursor)}`;
 
     try {
       this.ws = new WebSocket(wsUrl);
@@ -542,6 +543,9 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           if (deltaOk) {
             break;
           }
+          // 🛡️ 增量追更若因网络波动或部分拉取未完成，保留游标断点续传，绝不冒然降级全量并推进游标导致漏拉
+          console.warn('[Nimbus] 增量追更有未完成项，保留当前游标等待下次重试');
+          break;
         } else if (localCursor > 0 && serverCursor === localCursor) {
           // 游标完全吻合，秒级对齐完成
           new Notice('✅ 本地已与 Nimbus 云端完全对齐');
@@ -549,7 +553,11 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         }
 
         // 首次同步或游标断层时，执行 3-Way 双向对比
-        await this.syncManifest(msg.manifest || {}, serverCursor);
+        let manifest = msg.manifest;
+        if (!manifest || Object.keys(manifest).length === 0) {
+          manifest = await this.fetchManifestHttp(vaultId);
+        }
+        await this.syncManifest(manifest || {}, serverCursor);
         break;
       }
 
@@ -733,6 +741,22 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     } catch (err) {
       console.warn('[Nimbus] 增量追更发生异常，将回退至全量对比:', err);
       return false;
+    }
+  }
+
+  async fetchManifestHttp(vaultId) {
+    try {
+      const baseUrl = this.getCleanServerUrl();
+      if (!baseUrl || !vaultId || !this.settings.token) return null;
+      const res = await fetch(`${baseUrl}/api/vaults/${encodeURIComponent(vaultId)}/manifest`, {
+        headers: { 'Authorization': `Bearer ${this.settings.token}` }
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data.manifest || null;
+    } catch (err) {
+      console.error('[Nimbus] 获取云端全量清单失败:', err);
+      return null;
     }
   }
 
@@ -952,10 +976,14 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       }
 
       // 3. 并发节流执行拉取 (PULL)，等待所有文件确认落地落盘
+      let hasPullFailure = false;
       const PULL_CONCURRENCY = 4;
       for (let i = 0; i < toPull.length; i += PULL_CONCURRENCY) {
         const batch = toPull.slice(i, i + PULL_CONCURRENCY);
-        await Promise.all(batch.map((item) => this.pullRemoteFileViaHttp(item.path, item.meta?.mtime, item.meta?.hash)));
+        const results = await Promise.all(batch.map((item) => this.pullRemoteFileViaHttp(item.path, item.meta?.mtime, item.meta?.hash)));
+        if (results.some((r) => r === false)) {
+          hasPullFailure = true;
+        }
         if (i + PULL_CONCURRENCY < toPull.length) {
           await new Promise((r) => setTimeout(r, 40));
         }
@@ -971,10 +999,12 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         }
       }
 
-      // 🛡️ 防御机制 3: 仅固化本地已经存在且内容确认的文件基线，未完成拉取的由落盘事件更新
+      // 🛡️ 防御机制 3: 仅固化本地已经存在且内容确认的文件基线，新拉取落盘的文件也一并纳入
+      const currentVaultFiles = this.app.vault.getFiles();
+      const currentLocalPaths = new Set(currentVaultFiles.map((f) => f.path));
       const sanitizedBaseline = {};
       for (const [p, bInfo] of Object.entries(baseline)) {
-        if (localFileMap.has(p)) {
+        if (currentLocalPaths.has(p)) {
           sanitizedBaseline[p] = bInfo;
         }
       }
@@ -982,8 +1012,11 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       if (!this.baselinesCache) this.baselinesCache = {};
       this.baselinesCache[vaultId] = sanitizedBaseline;
       await this.saveBaselineCache();
-      if (remoteCursor) {
+      if (remoteCursor && !hasPullFailure) {
         this.setVaultCursor(vaultId, remoteCursor);
+      } else if (hasPullFailure) {
+        console.warn('[Nimbus] 3-Way 同步有部分文件未能成功拉取，暂不推进最新游标以备下次重试完整对齐');
+        new Notice('⚠️ 部分文件拉取遇阻，未推进游标以防漏拉，将在网络稳定后自动重试');
       }
 
       new Notice(`✅ 3-Way 自动同步完成: 成功处理 ${pushCount + pullCount + localDelCount + remoteDelCount} 个变更任务`);

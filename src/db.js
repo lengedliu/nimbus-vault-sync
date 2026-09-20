@@ -75,6 +75,8 @@ class DatabaseManager {
       };
     }
     if (dbType === 'postgres' || dbType === 'postgresql' || process.env.DATABASE_URL || process.env.PG_HOST) {
+      const sslEnabled = process.env.PG_SSL === 'true' ||
+        (typeof process.env.DATABASE_URL === 'string' && (process.env.DATABASE_URL.includes('sslmode=require') || process.env.DATABASE_URL.includes('ssl=true')));
       return {
         type: 'postgres',
         connectionString: process.env.DATABASE_URL || '',
@@ -83,7 +85,9 @@ class DatabaseManager {
         user: process.env.PG_USER || 'postgres',
         password: process.env.PG_PASSWORD || '',
         database: process.env.PG_DATABASE || 'nimbus',
-        ssl: process.env.PG_SSL === 'true',
+        ssl: sslEnabled,
+        sslRejectUnauthorized: process.env.PG_SSL_REJECT_UNAUTHORIZED !== 'false',
+        sslCa: process.env.PG_SSL_CA || '',
       };
     }
     if (dbType === 'mysql' || process.env.MYSQL_HOST) {
@@ -156,10 +160,11 @@ class DatabaseManager {
       } else if (this.type === 'postgres' || this.type === 'postgresql') {
         this.type = 'postgres';
         const { Pool } = getPg();
+        const sslConfig = this._buildPgSslConfig(config);
         const poolConfig = config.connectionString
           ? {
               connectionString: config.connectionString,
-              ssl: config.ssl ? { rejectUnauthorized: false } : false,
+              ssl: sslConfig,
             }
           : {
               host: config.host,
@@ -167,7 +172,7 @@ class DatabaseManager {
               user: config.user,
               password: config.password,
               database: config.database,
-              ssl: config.ssl ? { rejectUnauthorized: false } : false,
+              ssl: sslConfig,
             };
         this.pgPool = new Pool(poolConfig);
         await this._createPostgresTables();
@@ -285,6 +290,19 @@ class DatabaseManager {
         UNIQUE(vault_id, user_id)
       );
     `);
+    await run(`
+      CREATE TABLE IF NOT EXISTS vault_changes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        vault_id TEXT NOT NULL,
+        cursor INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        action TEXT NOT NULL,
+        size INTEGER DEFAULT 0,
+        mtime INTEGER,
+        hash TEXT,
+        created_at INTEGER NOT NULL
+      );
+    `);
     // Performance indexes for fast querying & high concurrency
     await run(`CREATE INDEX IF NOT EXISTS idx_sync_logs_vault_time ON sync_logs(vault_id, timestamp DESC);`);
     await run(`CREATE INDEX IF NOT EXISTS idx_sync_logs_user_time ON sync_logs(user_id, timestamp DESC);`);
@@ -292,6 +310,8 @@ class DatabaseManager {
     await run(`CREATE INDEX IF NOT EXISTS idx_vault_members_user ON vault_members(user_id);`);
     await run(`CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);`);
     await run(`CREATE INDEX IF NOT EXISTS idx_vaults_owner ON vaults(owner_id);`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_vault_changes_cursor ON vault_changes(vault_id, cursor);`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_vault_changes_created ON vault_changes(vault_id, created_at);`);
   }
 
   async _createPostgresTables() {
@@ -479,12 +499,13 @@ class DatabaseManager {
 
     if (type === 'postgres' || type === 'postgresql') {
       const { Pool } = getPg();
+      const sslConfig = this._buildPgSslConfig(config);
       const pool = new Pool(
         config.connectionString
           ? {
               connectionString: config.connectionString,
               connectionTimeoutMillis: 4000,
-              ssl: config.ssl ? { rejectUnauthorized: false } : false,
+              ssl: sslConfig,
             }
           : {
               host: config.host,
@@ -493,7 +514,7 @@ class DatabaseManager {
               password: config.password,
               database: config.database,
               connectionTimeoutMillis: 4000,
-              ssl: config.ssl ? { rejectUnauthorized: false } : false,
+              ssl: sslConfig,
             }
       );
       try {
@@ -533,6 +554,39 @@ class DatabaseManager {
     return { ok: true, message: 'JSON 本地文件存储模式运行就绪 (零配置/毫秒级本地 IO)', latencyMs: 0 };
   }
 
+  _buildPgSslConfig(config) {
+    if (!config || !config.ssl) return false;
+
+    // 默认启用严格证书校验 (rejectUnauthorized: true)，杜绝公网传输遭遇中间人攻击 (MitM)
+    // 仅在用户显式指定允许自签名或测试证书时 (sslRejectUnauthorized === false 或 PG_SSL_REJECT_UNAUTHORIZED=false) 才允许降级
+    let rejectUnauthorized = true;
+    if (typeof config.sslRejectUnauthorized === 'boolean') {
+      rejectUnauthorized = config.sslRejectUnauthorized;
+    } else if (process.env.PG_SSL_REJECT_UNAUTHORIZED === 'false' || config.allowSelfSigned === true) {
+      rejectUnauthorized = false;
+    }
+
+    const sslConfig = { rejectUnauthorized };
+
+    if (!rejectUnauthorized) {
+      console.warn('[DB] ⚠️ 安全告警：PostgreSQL SSL 连接已关闭证书校验 (rejectUnauthorized=false)，易受中间人攻击。生产环境强烈建议启用有效证书验证。');
+    }
+
+    if (config.sslCa && typeof config.sslCa === 'string' && config.sslCa.trim()) {
+      sslConfig.ca = config.sslCa.trim();
+    } else if (process.env.PG_SSL_CA) {
+      sslConfig.ca = process.env.PG_SSL_CA;
+    } else if (process.env.PG_SSL_CA_PATH && fs.existsSync(process.env.PG_SSL_CA_PATH)) {
+      try {
+        sslConfig.ca = fs.readFileSync(process.env.PG_SSL_CA_PATH, 'utf8');
+      } catch (err) {
+        console.warn('[DB] 读取 PG_SSL_CA_PATH 失败:', err.message);
+      }
+    }
+
+    return sslConfig;
+  }
+
   getStatus() {
     return {
       type: this.type,
@@ -547,6 +601,8 @@ class DatabaseManager {
         database: this.connectionConfig.database || '',
         user: this.connectionConfig.user || '',
         ssl: Boolean(this.connectionConfig.ssl),
+        sslRejectUnauthorized: this.connectionConfig.sslRejectUnauthorized !== false,
+        hasCustomCa: Boolean(this.connectionConfig.sslCa || process.env.PG_SSL_CA || process.env.PG_SSL_CA_PATH),
       },
     };
   }
