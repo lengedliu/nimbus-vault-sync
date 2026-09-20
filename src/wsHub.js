@@ -258,7 +258,7 @@ class FnsHub {
     }));
   }
 
-  _onConnection(ws, user, vaultId, deviceMeta, permission = 'read-write') {
+  _onConnection(ws, user, vaultId, deviceMeta, permission = 'read-write', options = {}) {
     const deviceId = typeof deviceMeta === 'object' && deviceMeta ? deviceMeta.deviceId : 'device-' + user.id.slice(0, 6);
     const deviceName = typeof deviceMeta === 'object' && deviceMeta ? deviceMeta.deviceName : (deviceMeta || 'Obsidian Client');
     const token = typeof deviceMeta === 'object' && deviceMeta ? deviceMeta.token : null;
@@ -290,7 +290,10 @@ class FnsHub {
     const serverCursor = deltaSync.getLatestCursor(vaultId);
     // ⚡ 核心性能优化：当客户端游标有效且大于 0 时，绝不在 init 握手包中冗余下发数兆字节的全量 manifest
     // 只有初次绑定/换机 (clientCursor <= 0) 时才携带全量 manifest，日常秒级重连握手包体积缩小 99.9%
-    const clientCursor = (options && typeof options.clientCursor === 'number' && !isNaN(options.clientCursor)) ? options.clientCursor : 0;
+    const cursorCandidate = (typeof deviceMeta === 'object' && deviceMeta && typeof deviceMeta.clientCursor === 'number')
+      ? deviceMeta.clientCursor
+      : (options && typeof options.clientCursor === 'number' ? options.clientCursor : 0);
+    const clientCursor = (!isNaN(cursorCandidate)) ? cursorCandidate : 0;
     const needManifest = clientCursor <= 0;
     const manifest = needManifest ? storage.getManifest(vaultId) : null;
 
