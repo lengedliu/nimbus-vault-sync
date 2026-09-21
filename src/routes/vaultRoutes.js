@@ -16,12 +16,12 @@ router.get('/', (req, res) => {
   res.json({ vaults: vaults.listForUser(req.user.id, isAdmin) });
 });
 
-router.post('/', (req, res) => {
+router.post('/', asyncHandler(async (req, res) => {
   const { name } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name required' });
-  const vault = vaults.create(req.user.id, name);
+  const vault = await vaults.create(req.user.id, name);
   res.json({ vault });
-});
+}));
 
 router.delete('/:vaultId', asyncHandler(async (req, res) => {
   const { vaultId } = req.params;

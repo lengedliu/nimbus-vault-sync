@@ -19,7 +19,7 @@ export async function renderRulesSubtab(vaultId, container) {
           匹配以下通配符的文件将不会上传到服务器或下发到客户端，避免同步无意义的临时文件：
         </p>
         <label>忽略路径规则 (每行一条匹配表达式，支持 * 与 **):
-          <textarea id="ignore-patterns-textarea" rows="8" style="font-family:monospace;font-size:13px;">${(rules.ignorePatterns || []).join('\n')}</textarea>
+          <textarea id="ignore-patterns-textarea" rows="14" style="font-family:monospace;font-size:13px;min-height:260px;height:280px;">${(rules.ignorePatterns || []).join('\n')}</textarea>
         </label>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;">
           <label>单文件最大同步限制 (MB)

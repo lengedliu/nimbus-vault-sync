@@ -389,6 +389,34 @@ export function renderVaultList() {
   ul.innerHTML = '';
   const isAdmin = state.user?.role === 'admin';
 
+  if (!state.vaults || state.vaults.length === 0) {
+    const emptyLi = document.createElement('li');
+    emptyLi.style.cssText = 'padding:10px 8px;font-size:12px;color:var(--text-secondary);text-align:center;';
+    emptyLi.innerHTML = `
+      <div style="margin-bottom:8px;">暂无 Vault 笔记库</div>
+      <button class="btn-primary" id="sidebar-quick-create-vault-btn" style="font-size:12px;padding:5px 10px;width:100%;">➕ 创建测试 Vault</button>
+    `;
+    ul.appendChild(emptyLi);
+    const quickBtn = emptyLi.querySelector('#sidebar-quick-create-vault-btn');
+    if (quickBtn) {
+      quickBtn.onclick = async () => {
+        try {
+          const res = await api('/api/vaults', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'TestVault' }),
+          });
+          const body = await res.json();
+          await loadVaults();
+          if (body.vault) openVault(body.vault.id);
+        } catch (err) {
+          console.error('[Nimbus] Failed to create test vault:', err);
+        }
+      };
+    }
+    return;
+  }
+
   for (const v of state.vaults) {
     const li = document.createElement('li');
     const btn = document.createElement('button');

@@ -61,6 +61,13 @@ if (JWT_SECRET_SOURCE === 'env') {
     await settingsManager.loadFromDb();
     await syncLogger.loadFromDb();
     await devicesStore.loadFromDb();
+
+    // 自动为系统初始化默认测试笔记库（当当前库数量为0时）
+    const allUsers = users.listAll();
+    const adminUser = allUsers.find((u) => u.role === 'admin') || allUsers[0];
+    if (adminUser) {
+      await vaultsStore.ensureDefaultVaults(adminUser.id);
+    }
   } catch (err) {
     console.error('[DB] Initial startup load error:', err);
   }
