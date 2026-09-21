@@ -9,7 +9,7 @@ const sharesStore = require('./shares');
 const fnsHub = require('./wsHub');
 const gitSync = require('./gitSync');
 const webhooks = require('./webhooks');
-const { isPrivateOrReservedIp } = require('./utils/ssrfGuard');
+const { isPrivateOrReservedIp, assertSafePublicUrl, resolveAndAssertSafeIp } = require('./utils/ssrfGuard');
 const { VERSION } = require('./config');
 
 // upload_attachment 的 sourceUrl 允许下载的最大字节数，防止一个巨大的远程文件把内存吃爆。
@@ -18,74 +18,77 @@ const MAX_ATTACHMENT_BYTES = parseInt(process.env.ATTACHMENT_MAX_MB || '200', 10
 /**
  * 安全地下载一个远程附件：只允许 http/https，解析出真实 IP 后拒绝内网/本机地址
  * （防止把 Nimbus 服务器当跳板去探测内网或云主机元数据接口），并限制下载大小上限。
- * 用解析后的 IP 而不是原始 hostname 做判断，避免 DNS rebinding 绕过检查。
+ * 显式限制重定向（redirect: 'manual'），对每一次重定向的目标 URL/IP 进行严格校验，
+ * 彻底防御通过 301/302/307 重定向到内网地址的 SSRF 攻击。
  */
-async function fetchAttachmentUrlSafely(sourceUrl) {
-  let parsed;
-  try {
-    parsed = new URL(sourceUrl);
-  } catch {
-    throw new Error(`Invalid sourceUrl: "${sourceUrl}"`);
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error('sourceUrl must be an http:// or https:// URL.');
-  }
-
-  let addresses;
-  try {
-    addresses = await dns.lookup(parsed.hostname, { all: true });
-  } catch (e) {
-    throw new Error(`Could not resolve host "${parsed.hostname}": ${e.message}`);
-  }
-  for (const { address } of addresses) {
-    if (isPrivateOrReservedIp(address)) {
-      throw new Error(
-        `Refusing to fetch "${sourceUrl}": resolves to a private/internal address (${address}). ` +
-        'Downloading attachments from internal network addresses is not allowed.'
-      );
-    }
-  }
+async function fetchAttachmentUrlSafely(sourceUrl, maxRedirects = 5) {
+  let currentUrl = sourceUrl;
+  let redirectsCount = 0;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 30_000);
-  let resp;
+
   try {
-    resp = await fetch(sourceUrl, { signal: controller.signal, redirect: 'follow' });
+    while (redirectsCount <= maxRedirects) {
+      const parsed = assertSafePublicUrl(currentUrl, 'sourceUrl');
+      await resolveAndAssertSafeIp(parsed.hostname, currentUrl);
+
+      const resp = await fetch(currentUrl, {
+        signal: controller.signal,
+        redirect: 'manual',
+      });
+
+      // 处理 HTTP 3xx 重定向
+      if (resp.status >= 300 && resp.status < 400) {
+        redirectsCount++;
+        if (redirectsCount > maxRedirects) {
+          throw new Error(`下载附件失败：重定向次数过多 (> ${maxRedirects})`);
+        }
+        const location = resp.headers.get('location');
+        if (!location) {
+          throw new Error(`下载附件重定向异常：HTTP ${resp.status} 缺少 Location 响应头`);
+        }
+        // 解析可能为相对路径的 Location 并重新循环校验
+        currentUrl = new URL(location, currentUrl).href;
+        continue;
+      }
+
+      if (!resp.ok) {
+        throw new Error(`Failed to download attachment from URL: HTTP ${resp.status} ${resp.statusText}`);
+      }
+
+      const declaredLength = resp.headers.get('content-length');
+      if (declaredLength && parseInt(declaredLength, 10) > MAX_ATTACHMENT_BYTES) {
+        throw new Error(`Remote file is too large (> ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB).`);
+      }
+
+      // 就算没有 Content-Length（或虚假声明），也在流式读取中强制上限
+      if (!resp.body) {
+        const arrayBuf = await resp.arrayBuffer();
+        if (arrayBuf.byteLength > MAX_ATTACHMENT_BYTES) {
+          throw new Error(`Remote file is too large (> ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB).`);
+        }
+        return Buffer.from(arrayBuf);
+      }
+
+      const reader = resp.body.getReader();
+      const chunks = [];
+      let total = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > MAX_ATTACHMENT_BYTES) {
+          reader.cancel().catch(() => {});
+          throw new Error(`Remote file is too large (> ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB).`);
+        }
+        chunks.push(value);
+      }
+      return Buffer.concat(chunks.map((c) => Buffer.from(c)));
+    }
   } finally {
     clearTimeout(timeoutId);
   }
-  if (!resp.ok) {
-    throw new Error(`Failed to download attachment from URL: HTTP ${resp.status} ${resp.statusText}`);
-  }
-
-  const declaredLength = resp.headers.get('content-length');
-  if (declaredLength && parseInt(declaredLength, 10) > MAX_ATTACHMENT_BYTES) {
-    throw new Error(`Remote file is too large (> ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB).`);
-  }
-
-  // 就算没有 Content-Length（或撒谎），也要在实际读取时兜底限制大小。
-  if (!resp.body) {
-    const arrayBuf = await resp.arrayBuffer();
-    if (arrayBuf.byteLength > MAX_ATTACHMENT_BYTES) {
-      throw new Error(`Remote file is too large (> ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB).`);
-    }
-    return Buffer.from(arrayBuf);
-  }
-
-  const reader = resp.body.getReader();
-  const chunks = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > MAX_ATTACHMENT_BYTES) {
-      reader.cancel().catch(() => {});
-      throw new Error(`Remote file is too large (> ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB).`);
-    }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks.map((c) => Buffer.from(c)));
 }
 
 /*

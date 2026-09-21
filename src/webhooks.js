@@ -4,7 +4,7 @@ const url = require('url');
 const crypto = require('crypto');
 const dns = require('node:dns/promises');
 const settings = require('./settings');
-const { isPrivateOrReservedIp } = require('./utils/ssrfGuard');
+const { isPrivateOrReservedIp, assertSafePublicUrl, resolveAndAssertSafeIp } = require('./utils/ssrfGuard');
 const { encryptField, decryptField } = require('./utils/crypto');
 
 /**
@@ -151,38 +151,23 @@ async function sendHttpRequest(targetUrl, payload) {
     throw new Error('无效的 Webhook URL 地址');
   }
 
-  let parsed;
-  try {
-    parsed = new URL(targetUrl);
-  } catch {
-    throw new Error(`无法解析的 Webhook URL: "${targetUrl}"`);
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error('Webhook URL 仅支持 http: 或 https: 协议');
-  }
-
-  let addresses;
-  try {
-    addresses = await dns.lookup(parsed.hostname, { all: true });
-  } catch (e) {
-    throw new Error(`无法解析 Webhook 主机 "${parsed.hostname}": ${e.message}`);
-  }
-  for (const { address } of addresses) {
-    if (isPrivateOrReservedIp(address)) {
-      throw new Error(
-        `拒绝发送 Webhook 到目标 "${targetUrl}": 域名解析到了私有/保留地址 (${address})。禁止向内网发送 Webhook 请求。`
-      );
-    }
-  }
+  const parsed = assertSafePublicUrl(targetUrl, 'Webhook URL');
+  // 严格解析并拦截内网/保留 IP，拿到首个已验证的安全 IP
+  const safeIp = await resolveAndAssertSafeIp(parsed.hostname, targetUrl);
 
   return new Promise((resolve, reject) => {
     const postData = JSON.stringify(payload);
+    const isHttps = parsed.protocol === 'https:';
+    const port = parsed.port || (isHttps ? 443 : 80);
+
     const options = {
-      hostname: parsed.hostname,
-      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+      // 通过 host/lookup 固定已校验的 safeIp，彻底避免底层发生二次 DNS 解析 (DNS Rebinding)
+      host: safeIp,
+      port,
       path: parsed.pathname + (parsed.search || ''),
       method: 'POST',
       headers: {
+        'Host': parsed.host, // 保持原始 Host（带端口若有），确保虚拟主机与 SNI 握手正常
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(postData),
         'User-Agent': 'Nimbus-Sync-Server/1.1',
@@ -190,7 +175,12 @@ async function sendHttpRequest(targetUrl, payload) {
       timeout: 6000,
     };
 
-    const client = parsed.protocol === 'https:' ? https : http;
+    // HTTPS 模式下需要配置 servername 保证 TLS SNI 证书校验依然针对原始 hostname
+    if (isHttps) {
+      options.servername = parsed.hostname;
+    }
+
+    const client = isHttps ? https : http;
     const req = client.request(options, (res) => {
       let body = '';
       res.on('data', (chunk) => (body += chunk));
