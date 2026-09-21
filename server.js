@@ -167,6 +167,14 @@ app.get('/share/:shareId', (req, res) => {
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/admin', express.static(path.join(__dirname, 'public')));
 
+// SPA Dashboard 路由 fallback：所有非 /api 的前端页面 GET 请求兜底返回 index.html
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api/') || req.path.startsWith('/ws')) {
+    return next();
+  }
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
 // 全局错误处理中间件：兜底捕获所有路由抛出/reject 的异常（配合各路由用的
 // asyncHandler），统一返回 JSON 错误而不是 Express 默认的 HTML 错误页
 // （默认错误页在没有显式设置 NODE_ENV=production 时会把堆栈信息直接展示给客户端）。

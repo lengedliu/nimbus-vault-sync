@@ -396,7 +396,7 @@
         codeWrap.style.display = 'block';
       };
     } else {
-      const htmlContent = marked ? marked.parse(data.content) : data.content;
+      const htmlContent = (typeof marked !== 'undefined' && marked && typeof marked.parse === 'function') ? marked.parse(data.content) : escapeHtml(data.content);
       container.innerHTML = `
         <article class="article-card">
           <div class="note-meta">
