@@ -163,32 +163,77 @@ router.put('/users/:userId/vaults', asyncHandler(async (req, res) => {
   res.json({ ok: true, memberships: vaultMembers.listForUser(userId) });
 }));
 
-router.delete('/users/:userId', asyncHandler(async (req, res) => {
+router.delete('/users/:userId', express.json(), asyncHandler(async (req, res) => {
   const { userId } = req.params;
   if (userId === req.user.id) {
     return res.status(400).json({ error: "You can't delete your own account here." });
   }
 
-  // 1. 这个用户名下自己拥有的 vault 不能就地变成孤儿——ownerId 会指向一个已经
-  //    不存在的用户，普通用户从此再也进不去，只能靠管理员的越权豁免才够得到。
-  //    转移给执行这次删除操作的管理员，数据和访问权限都还在，只是换了个主人；
-  //    响应里把转移列表带回去，方便管理员知道有哪些 vault 需要后续处理
-  //    （比如再转给真正该接手的人，或者确认可以直接删掉）。
-  const ownedVaults = vaultsStore.listOwnedByUser(userId);
-  const transferredVaults = [];
-  for (const v of ownedVaults) {
-    await vaultsStore.transferOwnership(v.id, req.user.id);
-    transferredVaults.push({ id: v.id, name: v.name });
+  const targetUser = users.findById(userId);
+  if (!targetUser) {
+    return res.status(404).json({ error: 'User not found' });
   }
 
-  // 2. Revoke all active device tokens for the user
+  // 支持通过 query 参数或 request body 指定对该用户拥有的 Vaults 的处置策略：
+  // 1. 'transfer' (默认): 自动转让给系统管理员 (Admin)，保留数据和访问配置
+  // 2. 'cascade_delete' / 'delete' / 'destroy': 级联销毁该用户拥有的所有 Vaults 及其全部历史、成员、变更与磁盘数据
+  const actionParam = (req.query.vaultAction || req.query.action || (req.body && (req.body.vaultAction || req.body.action)) || 'transfer').toLowerCase();
+  const isCascadeDelete = actionParam === 'cascade_delete' || actionParam === 'delete' || actionParam === 'destroy';
+
+  const ownedVaults = vaultsStore.listOwnedByUser(userId);
+  const transferredVaults = [];
+  const deletedVaults = [];
+
+  if (isCascadeDelete) {
+    // 级联彻底销毁所有名下 Vaults
+    for (const v of ownedVaults) {
+      await vaultsStore.remove(v.id);
+      deletedVaults.push({ id: v.id, name: v.name });
+    }
+  } else {
+    // 自动转让所有权给系统管理员（优先使用指定的 transferToUserId，否则转给当前操作管理员或首个可用管理员）
+    let targetAdminId = req.query.transferToUserId || (req.body && req.body.transferToUserId) || req.user.id;
+    const targetAdminUser = users.findById(targetAdminId);
+    if (!targetAdminUser || targetAdminUser.id === userId) {
+      const fallbackAdmin = users.listAll().find((u) => u.role === 'admin' && u.id !== userId);
+      targetAdminId = fallbackAdmin ? fallbackAdmin.id : req.user.id;
+    }
+
+    for (const v of ownedVaults) {
+      await vaultsStore.transferOwnership(v.id, targetAdminId);
+      transferredVaults.push({ id: v.id, name: v.name, transferredTo: targetAdminId });
+    }
+  }
+
+  // 2. 撤销该用户所有活跃的设备与 API 令牌
   devicesStore.revokeAllForUser(userId);
-  // 3. Remove all vault memberships for the user
+
+  // 3. 移除该用户在所有库中的成员资格
   await vaultMembers.removeAllForUser(userId);
-  // 4. Remove user account
+
+  // 4. 清理该用户创建的所有分享外链
+  await sharesStore.removeAllForUser(userId);
+
+  // 5. 断开该用户的 WebSocket 实时连接
+  const fnsHub = req.app.get('fnsHub');
+  if (fnsHub) {
+    try {
+      fnsHub.disconnectUser(userId, 'user_deleted');
+    } catch {}
+  }
+
+  // 6. 删除用户账号记录
   users.remove(userId);
 
-  res.json({ ok: true, transferredVaults });
+  res.json({
+    ok: true,
+    action: isCascadeDelete ? 'cascade_delete' : 'transfer',
+    transferredVaults,
+    deletedVaults,
+    message: isCascadeDelete
+      ? `用户已删除，其名下的 ${deletedVaults.length} 个库已级联销毁`
+      : `用户已删除，其名下的 ${transferredVaults.length} 个库已转让给管理员`,
+  });
 }));
 
 // All vaults across all users, with owner username attached — for the admin dashboard.

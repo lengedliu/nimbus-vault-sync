@@ -407,6 +407,19 @@ class FTSService {
     const idx = this.getIndex(vaultId);
     return idx.search(query, { limit, folder, readContentFn });
   }
+
+  removeVaultIndex(vaultId) {
+    if (!vaultId) return;
+    this.vaultIndexes.delete(vaultId);
+    try {
+      const idxFile = path.join(INDEX_DIR, `fts_${vaultId}.json`);
+      if (fs.existsSync(idxFile)) {
+        fs.unlinkSync(idxFile);
+      }
+    } catch (err) {
+      console.error('[FTS] Error deleting index file:', err.message);
+    }
+  }
 }
 
 const ftsService = new FTSService();

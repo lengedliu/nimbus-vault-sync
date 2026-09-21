@@ -118,26 +118,40 @@ async function resolveConflict(vaultId, { conflictPath, resolution, customConten
 
   if (resolution === 'keep-current') {
     // Keep server current version -> safely delete conflict copy with deltaSync & trash tracking
-    storage.deleteFile(vaultId, conflictPath);
+    await storage.withFileLock(vaultId, conflictPath, async () => {
+      storage.deleteFile(vaultId, conflictPath);
+    });
   } else if (resolution === 'keep-conflict') {
     // Keep conflict version -> overwrite base with conflict file, delete conflict file
     const buf = fs.readFileSync(fullConflict);
     resolvedBuffer = buf;
-    storage.writeFile(vaultId, basePath, buf, { mtime: Date.now() });
-    storage.deleteFile(vaultId, conflictPath);
+    await storage.withFileLock(vaultId, basePath, async () => {
+      storage.writeFile(vaultId, basePath, buf, { mtime: Date.now() });
+    });
+    await storage.withFileLock(vaultId, conflictPath, async () => {
+      storage.deleteFile(vaultId, conflictPath);
+    });
   } else if (resolution === 'merge-both') {
     // Merge both with conflict markers
     const baseBuf = fs.existsSync(fullBase) ? fs.readFileSync(fullBase) : Buffer.from('');
     const conflictBuf = fs.readFileSync(fullConflict);
     const combined = `<<<<<<< [当前版本 (服务端)]\n${baseBuf.toString('utf8')}\n=======\n${conflictBuf.toString('utf8')}\n>>>>>>> [冲突版本 (客户端)]\n`;
     resolvedBuffer = Buffer.from(combined, 'utf8');
-    storage.writeFile(vaultId, basePath, resolvedBuffer, { mtime: Date.now() });
-    storage.deleteFile(vaultId, conflictPath);
+    await storage.withFileLock(vaultId, basePath, async () => {
+      storage.writeFile(vaultId, basePath, resolvedBuffer, { mtime: Date.now() });
+    });
+    await storage.withFileLock(vaultId, conflictPath, async () => {
+      storage.deleteFile(vaultId, conflictPath);
+    });
   } else if (resolution === 'custom') {
     if (typeof customContent !== 'string') throw new Error('缺少自定义合并内容');
     resolvedBuffer = Buffer.from(customContent, 'utf8');
-    storage.writeFile(vaultId, basePath, resolvedBuffer, { mtime: Date.now() });
-    storage.deleteFile(vaultId, conflictPath);
+    await storage.withFileLock(vaultId, basePath, async () => {
+      storage.writeFile(vaultId, basePath, resolvedBuffer, { mtime: Date.now() });
+    });
+    await storage.withFileLock(vaultId, conflictPath, async () => {
+      storage.deleteFile(vaultId, conflictPath);
+    });
   } else {
     throw new Error('未知的冲突解决策略 (可选: keep-current, keep-conflict, merge-both, custom)');
   }

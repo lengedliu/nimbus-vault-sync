@@ -42,7 +42,7 @@ const { secret: JWT_SECRET, source: JWT_SECRET_SOURCE } = resolveJwtSecret();
 module.exports = {
   VERSION: APP_VERSION,
   APP_VERSION,
-  PORT: parseInt(process.env.PORT || '3000', 10),
+  PORT: 3000,
   JWT_SECRET,
   JWT_SECRET_SOURCE,
   TOKEN_TTL: process.env.TOKEN_TTL || '30d',

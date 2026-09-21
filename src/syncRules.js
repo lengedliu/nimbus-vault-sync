@@ -148,9 +148,21 @@ function isPathIgnored(vaultId, relPath) {
   return false;
 }
 
+async function removeRulesForVault(vaultId) {
+  rulesCache.delete(vaultId);
+  if (dbManager.type !== 'json') {
+    try {
+      await dbManager.execute('DELETE FROM sync_rules WHERE vault_id = ?', [vaultId]);
+    } catch (err) {
+      console.error('[SyncRules] Error deleting sync_rules for vault:', err.message);
+    }
+  }
+}
+
 module.exports = {
   getRules,
   saveRules,
+  removeRulesForVault,
   isPathIgnored,
   DEFAULT_RULES,
   loadFromDb,

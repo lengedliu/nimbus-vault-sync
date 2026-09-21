@@ -155,6 +155,34 @@ function remove(id, userId) {
   return found;
 }
 
+async function removeAllForVault(vaultId) {
+  if (!vaultId) return;
+  sharesCache = sharesCache.filter((s) => s.vaultId !== vaultId);
+  if (dbManager.type === 'json') {
+    jsonDb.update((list) => (Array.isArray(list) ? list : []).filter((s) => s.vaultId !== vaultId));
+  } else {
+    try {
+      await dbManager.execute('DELETE FROM shares WHERE vault_id = ?', [vaultId]);
+    } catch (err) {
+      console.error('[Shares] DB removeAllForVault error:', err.message);
+    }
+  }
+}
+
+async function removeAllForUser(userId) {
+  if (!userId) return;
+  sharesCache = sharesCache.filter((s) => s.userId !== userId);
+  if (dbManager.type === 'json') {
+    jsonDb.update((list) => (Array.isArray(list) ? list : []).filter((s) => s.userId !== userId));
+  } else {
+    try {
+      await dbManager.execute('DELETE FROM shares WHERE user_id = ?', [userId]);
+    } catch (err) {
+      console.error('[Shares] DB removeAllForUser error:', err.message);
+    }
+  }
+}
+
 function recordView(id) {
   sharesCache = sharesCache.map((s) => (s.id === id ? { ...s, viewCount: (s.viewCount || 0) + 1 } : s));
 
@@ -178,6 +206,8 @@ module.exports = {
   create,
   verifyPassword,
   remove,
+  removeAllForVault,
+  removeAllForUser,
   recordView,
   loadFromDb,
   getRawShares: () => sharesCache,

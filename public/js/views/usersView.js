@@ -189,24 +189,80 @@ export async function renderUsersPanel(containerEl = null) {
       btn.onclick = async () => {
         const userId = btn.dataset.userId;
         const uname = btn.dataset.username;
-        const ok = await showConfirm({
-          title: '删除用户账号',
-          message: `确定彻底删除用户「${uname}」吗？此操作将同时吊销其名下所有的设备与权限。`,
-          confirmText: '确认删除',
-          type: 'danger',
-        });
-        if (!ok) return;
-        try {
-          const r = await api(`/api/admin/users/${userId}`, { method: 'DELETE' });
-          const d = await r.json();
-          if (d.ok) {
-            toast('用户已删除');
-            renderUsersPanel(container);
-          } else {
-            toast('删除失败: ' + (d.error || '未知错误'));
+        const targetUserObj = users.find((u) => u.id === userId);
+        const ownedCount = targetUserObj?.ownedVaults?.length || 0;
+
+        if (ownedCount > 0) {
+          showModal(`
+            <div class="modal-header">
+              <h3 style="color:var(--danger);">⚠️ 删除用户与关联库处置</h3>
+              <button class="modal-close ghost">✕</button>
+            </div>
+            <div class="modal-body">
+              <p style="font-size:13.5px;color:var(--text);margin-bottom:12px;">
+                用户「<strong>${escapeHtml(uname)}</strong>」名下拥有 <strong>${ownedCount}</strong> 个笔记库。请选择名下笔记库的处置策略，以防止出现孤儿数据：
+              </p>
+              <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px;">
+                <label style="display:flex;align-items:flex-start;gap:10px;padding:10px;border:1px solid var(--border);border-radius:6px;cursor:pointer;background:var(--panel);">
+                  <input type="radio" name="del-vault-action" value="transfer" checked style="margin-top:3px;" />
+                  <div>
+                    <strong style="display:block;font-size:13px;color:var(--text);">👑 自动转让所有权给系统管理员（推荐）</strong>
+                    <span style="font-size:12px;color:var(--muted);">保留所有笔记文件与同步历史，由系统管理员接管所有权，避免孤儿库。</span>
+                  </div>
+                </label>
+                <label style="display:flex;align-items:flex-start;gap:10px;padding:10px;border:1px solid rgba(248,81,73,0.3);border-radius:6px;cursor:pointer;background:rgba(248,81,73,0.05);">
+                  <input type="radio" name="del-vault-action" value="cascade_delete" style="margin-top:3px;" />
+                  <div>
+                    <strong style="display:block;font-size:13px;color:var(--danger);">💥 级联彻底销毁所有名下笔记库</strong>
+                    <span style="font-size:12px;color:var(--muted);">彻底销毁该用户拥有的所有库文件、变更历史、成员关联与回收站，不可恢复。</span>
+                  </div>
+                </label>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button class="secondary modal-close">取消</button>
+              <button class="btn-primary" id="btn-confirm-delete-user" style="background:var(--danger);border-color:var(--danger);">确认删除用户</button>
+            </div>
+          `, (modal) => {
+            modal.querySelector('#btn-confirm-delete-user').onclick = async () => {
+              const selectedAction = modal.querySelector('input[name="del-vault-action"]:checked')?.value || 'transfer';
+              try {
+                const r = await api(`/api/admin/users/${userId}?vaultAction=${selectedAction}`, {
+                  method: 'DELETE',
+                });
+                const d = await r.json();
+                if (d.ok) {
+                  closeModal();
+                  toast(d.message || '用户及关联资源处理完成');
+                  renderUsersPanel(container);
+                } else {
+                  toast('删除失败: ' + (d.error || '未知错误'));
+                }
+              } catch (err) {
+                toast('删除失败: ' + err.message);
+              }
+            };
+          });
+        } else {
+          const ok = await showConfirm({
+            title: '删除用户账号',
+            message: `确定彻底删除用户「${uname}」吗？此操作将同时吊销其名下所有的设备与权限。`,
+            confirmText: '确认删除',
+            type: 'danger',
+          });
+          if (!ok) return;
+          try {
+            const r = await api(`/api/admin/users/${userId}?vaultAction=transfer`, { method: 'DELETE' });
+            const d = await r.json();
+            if (d.ok) {
+              toast('用户已删除');
+              renderUsersPanel(container);
+            } else {
+              toast('删除失败: ' + (d.error || '未知错误'));
+            }
+          } catch (err) {
+            toast('删除失败: ' + err.message);
           }
-        } catch (err) {
-          toast('删除失败: ' + err.message);
         }
       };
     });

@@ -42,6 +42,44 @@ const NOISE_FILE_REGEXES = [
   /^\.Trashes/i,
 ];
 
+// --------------------------- Key-Based File Mutex ---------------------------
+// 基于文件路径的轻量级 Promise 链式锁（毫秒级并发互斥），无第三方依赖。
+// 确保同一 Vault 下针对同一相对路径的写入、覆盖、删除操作在单进程内严格串行化，
+// 消除“读取原文件 Hash”与“写入新文件内容”之间的微小并发竞态窗口。
+const fileLocks = new Map(); // key (${vaultId}:${relPath}) -> Promise chain
+
+function getFileLockKey(vaultId, relPath) {
+  const norm = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  return `${vaultId}:${norm}`;
+}
+
+async function withFileLock(vaultId, relPath, fn) {
+  const key = getFileLockKey(vaultId, relPath);
+  const current = fileLocks.get(key) || Promise.resolve();
+  let release;
+  const next = new Promise((resolve) => { release = resolve; });
+  fileLocks.set(key, current.then(() => next, () => next));
+
+  try {
+    await current;
+    return await fn();
+  } finally {
+    release();
+    if (fileLocks.get(key) === next) {
+      fileLocks.delete(key);
+    }
+  }
+}
+
+function clearVaultLocks(vaultId) {
+  const prefix = `${vaultId}:`;
+  for (const key of Array.from(fileLocks.keys())) {
+    if (key.startsWith(prefix)) {
+      fileLocks.delete(key);
+    }
+  }
+}
+
 function isNoiseFile(name) {
   if (!name) return false;
   return NOISE_FILE_REGEXES.some((re) => re.test(name));
@@ -124,6 +162,37 @@ const inMemoryManifestCache = new Map();
 function invalidateManifestCache(vaultId) {
   inMemoryManifestCache.delete(vaultId);
   contentCache.delete(vaultId);
+}
+
+function clearVaultCache(vaultId) {
+  inMemoryManifestCache.delete(vaultId);
+  contentCache.delete(vaultId);
+  clearVaultLocks(vaultId);
+}
+
+function deleteVaultDirectory(vaultId) {
+  const { DATA_DIR, VAULTS_DIR } = require('./config');
+  clearVaultCache(vaultId);
+
+  // 1. 删除主 Vault 目录（包含 files/, history/, trash/, sync-rules.json 等）
+  const vRoot = vaultRoot(vaultId);
+  if (fs.existsSync(vRoot)) {
+    try {
+      fs.rmSync(vRoot, { recursive: true, force: true });
+    } catch (e) {
+      console.error(`[Storage] Failed to remove vault dir ${vRoot}:`, e.message);
+    }
+  }
+
+  // 2. 清理可能存在的独立 data/trash/:vaultId 目录
+  const legacyTrashDir = path.join(DATA_DIR, 'trash', vaultId);
+  if (fs.existsSync(legacyTrashDir)) {
+    try {
+      fs.rmSync(legacyTrashDir, { recursive: true, force: true });
+    } catch (e) {
+      console.error(`[Storage] Failed to remove legacy trash dir ${legacyTrashDir}:`, e.message);
+    }
+  }
 }
 
 function updateManifestEntry(vaultId, relPath, meta) {
@@ -1252,4 +1321,7 @@ module.exports = {
   SEARCH_YIELD_BATCH_SIZE,
   isNoiseFile,
   pruneVaultHistory,
+  withFileLock,
+  clearVaultCache,
+  deleteVaultDirectory,
 };

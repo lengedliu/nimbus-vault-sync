@@ -8,6 +8,7 @@ const syncLogger = require('../syncLogger');
 const syncRules = require('../syncRules');
 const webhooks = require('../webhooks');
 const { requireReadAccess, requireWriteAccess } = require('../permissions');
+const { asyncHandler } = require('../utils/asyncHandler');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -128,7 +129,7 @@ router.put('/:vaultId/files/*', (req, res) => {
 
   const writeStream = fs.createWriteStream(tempPath);
 
-  pipeline(req, hashingPass, writeStream, (err) => {
+  pipeline(req, hashingPass, writeStream, async (err) => {
     if (err) {
       cleanupTemp();
       const status = aborted ? 413 : 400;
@@ -151,7 +152,9 @@ router.put('/:vaultId/files/*', (req, res) => {
 
     try {
       const incomingHash = hash.digest('hex');
-      const result = storage.writeFileFromPath(vaultId, relPath, tempPath, incomingHash, { mtime, baseHash });
+      const result = await storage.withFileLock(vaultId, relPath, async () => {
+        return storage.writeFileFromPath(vaultId, relPath, tempPath, incomingHash, { mtime, baseHash });
+      });
       const clientDeviceId = req.headers['x-device-id'] || req.headers['x-client-id'] || null;
       
       if (!result.written && result.conflict) {
@@ -213,7 +216,7 @@ router.put('/:vaultId/files/*', (req, res) => {
 });
 
 // DELETE file
-router.delete('/:vaultId/files/*', (req, res) => {
+router.delete('/:vaultId/files/*', asyncHandler(async (req, res) => {
   if (!requireWriteAccess(req, res)) return;
   let relPath = req.params[0] || '';
   try {
@@ -224,7 +227,9 @@ router.delete('/:vaultId/files/*', (req, res) => {
   const vaultId = req.params.vaultId;
   const deviceName = req.headers['x-device-name'] || 'REST / Web Client';
   const clientDeviceId = req.headers['x-device-id'] || req.headers['x-client-id'] || null;
-  const ok = storage.deleteFile(vaultId, relPath);
+  const ok = await storage.withFileLock(vaultId, relPath, async () => {
+    return storage.deleteFile(vaultId, relPath);
+  });
   req.app.get('fnsHub').broadcastFileDelete(vaultId, relPath, req.user.id, clientDeviceId);
 
   if (ok) {
@@ -249,10 +254,10 @@ router.delete('/:vaultId/files/*', (req, res) => {
   });
 
   res.json({ deleted: ok });
-});
+}));
 
 // POST batch delete files into trash
-router.post('/:vaultId/batch/delete', express.json(), (req, res) => {
+router.post('/:vaultId/batch/delete', express.json(), asyncHandler(async (req, res) => {
   if (!requireWriteAccess(req, res)) return;
   const { paths } = req.body;
   if (!Array.isArray(paths) || paths.length === 0) {
@@ -269,7 +274,9 @@ router.post('/:vaultId/batch/delete', express.json(), (req, res) => {
   for (const rawPath of paths) {
     if (!rawPath || typeof rawPath !== 'string') continue;
     const relPath = rawPath.replace(/\\/g, '/');
-    const ok = storage.deleteFile(vaultId, relPath);
+    const ok = await storage.withFileLock(vaultId, relPath, async () => {
+      return storage.deleteFile(vaultId, relPath);
+    });
     if (ok) {
       successCount++;
       deletedChanges.push({ action: 'delete', path: relPath });
@@ -304,7 +311,7 @@ router.post('/:vaultId/batch/delete', express.json(), (req, res) => {
   });
 
   res.json({ success: true, count: successCount, results });
-});
+}));
 
 // POST batch move files to target folder
 router.post('/:vaultId/batch/move', express.json(), (req, res) => {

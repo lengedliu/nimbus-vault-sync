@@ -181,6 +181,33 @@ class FnsHub {
   }
 
   /**
+   * Close and clean up all connections and room state for a deleted vault
+   */
+  closeVault(vaultId) {
+    if (!vaultId) return;
+    const room = this.rooms.get(vaultId);
+    if (room) {
+      for (const client of Array.from(room)) {
+        try {
+          this._send(client.ws, {
+            type: 'vault_deleted',
+            vaultId,
+            message: '该笔记库已被删除',
+          });
+          client.ws.close(4004, 'Vault deleted');
+        } catch {}
+      }
+      this.rooms.delete(vaultId);
+    }
+    this.activityLogs.delete(vaultId);
+    const batch = this.pendingBatches.get(vaultId);
+    if (batch && batch.timer) {
+      clearTimeout(batch.timer);
+    }
+    this.pendingBatches.delete(vaultId);
+  }
+
+  /**
    * Kick out all active WebSocket sessions for a specific user ID (e.g. on password change or account disable)
    */
   disconnectUser(userId, reason = 'user_revoked') {
@@ -321,7 +348,7 @@ class FnsHub {
     if (ws.readyState === ws.OPEN) ws.send(json);
   }
 
-  _onMessage(client, vaultId, raw) {
+  async _onMessage(client, vaultId, raw) {
     let msg;
     try {
       msg = JSON.parse(raw.toString());
@@ -443,9 +470,11 @@ class FnsHub {
         }
 
         const buffer = Buffer.from(msg.content, 'base64');
-        const result = storage.writeFile(vaultId, msg.path, buffer, {
-          mtime: msg.mtime,
-          baseHash: msg.baseHash,
+        const result = await storage.withFileLock(vaultId, msg.path, async () => {
+          return storage.writeFile(vaultId, msg.path, buffer, {
+            mtime: msg.mtime,
+            baseHash: msg.baseHash,
+          });
         });
 
         if (!result.written && result.conflict) {
@@ -511,7 +540,9 @@ class FnsHub {
           return this._send(client.ws, { type: 'error', message: '只读权限，禁止删除文件', path: msg.path });
         }
 
-        const ok = storage.deleteFile(vaultId, msg.path);
+        const ok = await storage.withFileLock(vaultId, msg.path, async () => {
+          return storage.deleteFile(vaultId, msg.path);
+        });
         this._logActivity(vaultId, { type: 'delete', path: msg.path, userId: client.userId });
         syncLogger.recordLog({
           vaultId,
