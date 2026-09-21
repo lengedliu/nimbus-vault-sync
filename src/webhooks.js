@@ -32,13 +32,27 @@ function getWebhookConfig() {
 
 function saveWebhookConfig(config) {
   const current = getWebhookConfig(); // 已经是解密后的明文
+  const isEnabled = config.enabled !== undefined ? Boolean(config.enabled) : Boolean(current.enabled);
+  const url = (config.url !== undefined ? config.url : current.url || '').trim();
+
+  // 仅在启用状态下强校验 URL 不能为空
+  if (isEnabled) {
+    if (!url) {
+      throw new Error('Webhook 回调 URL 地址不能为空');
+    }
+    assertSafePublicUrl(url, 'Webhook 回调 URL 地址');
+  } else if (url) {
+    // 停用状态下若填写了 URL，也确保协议合法
+    assertSafePublicUrl(url, 'Webhook 回调 URL 地址');
+  }
+
   const updated = {
     ...current,
     ...config,
-    enabled: Boolean(config.enabled),
+    enabled: isEnabled,
     platform: config.platform || 'custom',
-    url: (config.url || '').trim(),
-    secret: (config.secret || '').trim(),
+    url,
+    secret: (config.secret !== undefined ? config.secret : current.secret || '').trim(),
     events: Array.isArray(config.events) ? config.events : current.events,
   };
   // 落盘前才加密，返回给调用方的 updated 保持明文。

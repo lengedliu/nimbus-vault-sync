@@ -116,6 +116,24 @@ test('Discovery 5: Webhook URL SSRF 防护测试', async () => {
     /私有\/保留地址|禁止向内网/,
     '向 localhost 发送 Webhook 必须被 SSRF 防护拦截'
   );
+
+  // 3. 保存 Webhook 时：启用状态下验证 URL 地址不能为空；停用状态下允许为空但若填写则验证协议合法
+  assert.throws(
+    () => webhooks.saveWebhookConfig({ enabled: true, url: '' }),
+    /Webhook 回调 URL 地址不能为空/
+  );
+  assert.throws(
+    () => webhooks.saveWebhookConfig({ enabled: true, url: '   ' }),
+    /Webhook 回调 URL 地址不能为空/
+  );
+  assert.throws(
+    () => webhooks.saveWebhookConfig({ enabled: false, url: 'ftp://example.com' }),
+    /仅支持 http: 或 https: 协议/
+  );
+
+  const disabledConfig = webhooks.saveWebhookConfig({ enabled: false, url: '' });
+  assert.strictEqual(disabledConfig.enabled, false);
+  assert.strictEqual(disabledConfig.url, '');
 });
 
 test('Discovery 6: 用户注销级联吊销设备令牌与成员关系', async () => {

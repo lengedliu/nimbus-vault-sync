@@ -357,8 +357,12 @@ const handleSaveWebhooks = (req, res) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ error: '只有管理员有权限配置全局 Webhook' });
   }
-  const updated = webhooks.saveWebhookConfig(req.body || {});
-  res.json({ ok: true, config: updated, webhooks: updated, message: 'Webhook 设置已更新' });
+  try {
+    const updated = webhooks.saveWebhookConfig(req.body || {});
+    res.json({ ok: true, config: updated, webhooks: updated, message: 'Webhook 设置已更新' });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
 };
 
 router.put('/webhooks', handleSaveWebhooks);

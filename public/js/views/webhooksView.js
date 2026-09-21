@@ -161,6 +161,12 @@ export async function renderWebhooksPanel() {
       const events = [];
       mainPanel.querySelectorAll('.wh-event-chk:checked').forEach((c) => events.push(c.value));
 
+      if (enabled && !url) {
+        toast('Webhook 回调 URL 地址不能为空');
+        mainPanel.querySelector('#wh-url').focus();
+        return;
+      }
+
       try {
         await api('/api/settings/webhooks', {
           method: 'POST',
