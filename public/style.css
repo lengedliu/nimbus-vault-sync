@@ -1165,6 +1165,23 @@ body {
 }
 .login-card .brand .logo {
   font-size: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cloud-logo-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.brand:hover .cloud-logo-wrap {
+  transform: scale(1.1) translateY(-1px);
+}
+.cloud-logo-svg {
+  display: block;
+  flex-shrink: 0;
 }
 .login-date-display {
   display: inline-flex;
