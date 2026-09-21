@@ -358,7 +358,7 @@
             </div>
           </div>
           <div id="share-html-view-wrap" style="height:650px;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#fff;">
-            <iframe id="share-html-frame" style="width:100%;height:100%;border:none;" sandbox="allow-same-origin allow-scripts allow-forms allow-popups"></iframe>
+            <iframe id="share-html-frame" style="width:100%;height:100%;border:none;" sandbox="allow-scripts allow-forms allow-popups"></iframe>
           </div>
           <div id="share-code-view-wrap" style="display:none;margin-top:10px;">
             <pre style="background:var(--code-bg);border:1px solid var(--border);padding:16px;border-radius:8px;overflow-x:auto;font-family:monospace;font-size:13px;white-space:pre-wrap;">${escapeHtml(data.content)}</pre>
@@ -396,7 +396,10 @@
         codeWrap.style.display = 'block';
       };
     } else {
-      const htmlContent = (typeof marked !== 'undefined' && marked && typeof marked.parse === 'function') ? marked.parse(data.content) : escapeHtml(data.content);
+      const rawRendered = (typeof marked !== 'undefined' && marked && typeof marked.parse === 'function')
+        ? marked.parse(data.content || '')
+        : escapeHtml(data.content || '');
+      const safeHtmlContent = sanitizeHtml(rawRendered);
       container.innerHTML = `
         <article class="article-card">
           <div class="note-meta">
@@ -407,7 +410,7 @@
             </div>
           </div>
           <div class="markdown-body">
-            ${htmlContent}
+            ${safeHtmlContent}
           </div>
         </article>
       `;
@@ -422,6 +425,43 @@
           prompt('复制笔记内容：', currentRawContent);
         }
       };
+    }
+  }
+
+  function sanitizeHtml(dirty) {
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(dirty, 'text/html');
+      const FORBIDDEN_TAGS = ['script', 'iframe', 'object', 'embed', 'base', 'link', 'meta', 'style', 'form'];
+
+      function cleanNode(node) {
+        const children = Array.from(node.childNodes);
+        for (const child of children) {
+          if (child.nodeType === 1) {
+            const tag = child.tagName.toLowerCase();
+            if (FORBIDDEN_TAGS.includes(tag)) {
+              child.remove();
+              continue;
+            }
+            const attrs = Array.from(child.attributes);
+            for (const attr of attrs) {
+              const name = attr.name.toLowerCase();
+              const val = attr.value.trim().toLowerCase();
+              if (name.startsWith('on')) {
+                child.removeAttribute(attr.name);
+              } else if ((name === 'href' || name === 'src' || name === 'action') &&
+                         (val.startsWith('javascript:') || val.startsWith('data:text/html') || val.startsWith('vbscript:'))) {
+                child.removeAttribute(attr.name);
+              }
+            }
+            cleanNode(child);
+          }
+        }
+      }
+      cleanNode(doc.body);
+      return doc.body.innerHTML;
+    } catch (e) {
+      return escapeHtml(dirty);
     }
   }
 
