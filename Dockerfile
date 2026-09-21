@@ -10,6 +10,7 @@ RUN npm install --omit=dev
 FROM node:20-alpine
 WORKDIR /app
 ENV NODE_ENV=production
+ENV PORT=3000
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
 COPY server.js ./
@@ -20,6 +21,6 @@ COPY public ./public
 # survives container rebuilds. See docker-compose.yml.
 VOLUME ["/app/data"]
 
-EXPOSE 8787
+EXPOSE 3000
 
 CMD ["node", "server.js"]
