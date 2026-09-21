@@ -676,14 +676,14 @@ class DatabaseManager {
       CREATE TABLE IF NOT EXISTS vault_changes (
         id BIGINT AUTO_INCREMENT PRIMARY KEY,
         vault_id VARCHAR(64) NOT NULL,
-        cursor BIGINT NOT NULL,
+        \`cursor\` BIGINT NOT NULL,
         path TEXT NOT NULL,
         action VARCHAR(32) NOT NULL,
         size BIGINT DEFAULT 0,
         mtime BIGINT,
         hash VARCHAR(128),
         created_at BIGINT NOT NULL,
-        INDEX idx_vault_changes_cursor (vault_id, cursor),
+        INDEX idx_vault_changes_cursor (vault_id, \`cursor\`),
         INDEX idx_vault_changes_created (vault_id, created_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);

@@ -22,41 +22,6 @@
       "createdAt": 1789823034658
     },
     {
-      "id": "f4ee0ce3-28e8-41d8-af46-b0ddbe0fef92",
-      "vaultId": "d584a3a5-db02-4a81-b681-e4a3ef7b38b1",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789908607379
-    },
-    {
-      "id": "55404c6a-81be-49bb-9cd3-eed4b7f6f483",
-      "vaultId": "6b14db32-ca63-4fcc-8029-b7b45de784ca",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789945949239
-    },
-    {
-      "id": "8f430a29-6c0c-44ba-bb90-ac7be8bb48bb",
-      "vaultId": "551073a9-2a12-44c4-b931-a5f58b884916",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789946217550
-    },
-    {
-      "id": "062bae2b-96f6-4f9b-9de8-171efd6c78cb",
-      "vaultId": "3284bb46-4ce3-455f-98ac-6ba22606a038",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789948638448
-    },
-    {
-      "id": "2c3376ef-417f-4b8f-9ee8-74d6498b0449",
-      "vaultId": "557e3a3e-769a-4165-ac50-8d6e8d384422",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789948689121
-    },
-    {
       "id": "ca8f3a37-3fd0-4024-8d90-d4a3f3967f12",
       "vaultId": "f084d77f-e6fc-48c5-9614-ee73c81a8a27",
       "userId": "u_test_cascade_member",
@@ -78,25 +43,11 @@
       "createdAt": 1789948814950
     },
     {
-      "id": "6b4bcd8f-0504-4342-950e-2ea8d0c230fa",
-      "vaultId": "b4b4ad8f-38a9-44cd-897e-0b6a404309e4",
+      "id": "a70d16e3-a7dd-406f-8363-d2173576d606",
+      "vaultId": "75e8d466-2ff4-4fa4-b648-242247ff77ba",
       "userId": "u_perm_member",
       "permission": "read-write",
-      "createdAt": 1789949468287
-    },
-    {
-      "id": "6e74a01d-5d12-4af6-88ff-599f8bd325ae",
-      "vaultId": "588d1b51-b3da-4f81-8d52-f495dc694f64",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789949530785
-    },
-    {
-      "id": "cd0be370-6a18-4ed7-82a2-bfe69cb09eea",
-      "vaultId": "103e472e-7deb-4a4b-94b8-159346cc3d87",
-      "userId": "u_perm_member",
-      "permission": "read-write",
-      "createdAt": 1789952023858
+      "createdAt": 1789952622159
     }
   ]
 }
