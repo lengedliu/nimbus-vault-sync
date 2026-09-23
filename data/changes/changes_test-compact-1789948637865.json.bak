@@ -1,0 +1,32 @@
+{
+  "latestCursor": 3,
+  "changes": [
+    {
+      "cursor": 1,
+      "path": "docA.md",
+      "action": "UPSERT",
+      "size": 10,
+      "mtime": 1789948637865,
+      "hash": "hA1",
+      "createdAt": 1789948637865
+    },
+    {
+      "cursor": 2,
+      "path": "docB.md",
+      "action": "UPSERT",
+      "size": 20,
+      "mtime": 1789948637865,
+      "hash": "hB1",
+      "createdAt": 1789948637865
+    },
+    {
+      "cursor": 3,
+      "path": "docA.md",
+      "action": "UPSERT",
+      "size": 15,
+      "mtime": 1789948637866,
+      "hash": "hA2",
+      "createdAt": 1789948637866
+    }
+  ]
+}

@@ -30,27 +30,3 @@ test('isPrivateOrReservedIp: 不应该拦截公网地址', () => {
     assert.equal(isPrivateOrReservedIp(ip), false, `${ip} 不应该被拦截`);
   }
 });
-
-test('assertSafePublicUrl: 验证协议规范与 URL 有效性', () => {
-  const { assertSafePublicUrl } = require('../src/utils/ssrfGuard');
-  assert.throws(() => assertSafePublicUrl('file:///etc/passwd'), /仅支持 http: 或 https: 协议/);
-  assert.throws(() => assertSafePublicUrl('ftp://example.com/file'), /仅支持 http: 或 https: 协议/);
-  assert.throws(() => assertSafePublicUrl('javascript:alert(1)'), /仅支持 http: 或 https: 协议/);
-  assert.throws(() => assertSafePublicUrl('not a url'), /无法解析/);
-
-  const parsed = assertSafePublicUrl('https://example.com/test?a=1');
-  assert.equal(parsed.hostname, 'example.com');
-  assert.equal(parsed.protocol, 'https:');
-});
-
-test('resolveAndAssertSafeIp: 拒绝解析到内网或保留 IP 的域名', async () => {
-  const { resolveAndAssertSafeIp } = require('../src/utils/ssrfGuard');
-  await assert.rejects(
-    async () => resolveAndAssertSafeIp('localhost', 'http://localhost/test'),
-    /目标地址解析到了私有\/保留地址/
-  );
-  await assert.rejects(
-    async () => resolveAndAssertSafeIp('127.0.0.1', 'http://127.0.0.1/test'),
-    /目标地址解析到了私有\/保留地址/
-  );
-});

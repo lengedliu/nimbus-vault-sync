@@ -89,7 +89,7 @@ function hasWriteAccess(userId, vaultId, isAdmin = false) {
   return perm === 'owner' || perm === 'admin' || perm === 'read-write';
 }
 
-function create(ownerId, name) {
+async function create(ownerId, name) {
   const vault = { id: uuid(), ownerId, name, createdAt: new Date().toISOString() };
   vaultsCache.push(vault);
 
@@ -100,16 +100,16 @@ function create(ownerId, name) {
       return data;
     });
   } else {
-    dbManager
-      .execute('INSERT INTO vaults (id, owner_id, name, created_at) VALUES (?, ?, ?, ?)', [
+    try {
+      await dbManager.execute('INSERT INTO vaults (id, owner_id, name, created_at) VALUES (?, ?, ?, ?)', [
         vault.id,
         vault.ownerId,
         vault.name,
         vault.createdAt,
-      ])
-      .catch((err) => {
-        console.error('[Vaults] DB insert vault error:', err);
-      });
+      ]);
+    } catch (err) {
+      console.error('[Vaults] DB insert vault error:', err);
+    }
   }
 
   const root = vaultFilesRoot(vault.id);
@@ -118,25 +118,14 @@ function create(ownerId, name) {
 }
 
 async function ensureDefaultVaults(ownerId) {
-  const settingsManager = require('./settings');
-  const settings = settingsManager.getSystemSettings();
-
-  // 若此前已初始化播种过，或者当前已有笔记库，或者未指定所有者，则无需再次播种
-  if (settings.system_default_vaults_seeded) return;
-  if (vaultsCache.length > 0) {
-    try {
-      settingsManager.updateSystemSettings({ system_default_vaults_seeded: true });
-    } catch {}
-    return;
-  }
-  if (!ownerId) return;
+  if (vaultsCache.length > 0 || !ownerId) return;
 
   console.log('[Vaults] No vaults found in system. Initializing default test vaults...');
 
   const storage = require('./storage');
 
   // Vault 1: TestVault
-  const testVault = create(ownerId, 'TestVault');
+  const testVault = await create(ownerId, 'TestVault');
   if (testVault) {
     try {
       storage.writeFile(
@@ -166,7 +155,7 @@ async function ensureDefaultVaults(ownerId) {
   }
 
   // Vault 2: 工作笔记库
-  const workVault = create(ownerId, '工作笔记库');
+  const workVault = await create(ownerId, '工作笔记库');
   if (workVault) {
     try {
       storage.writeFile(
@@ -178,16 +167,9 @@ async function ensureDefaultVaults(ownerId) {
       console.error('[Vaults] Failed to seed files for WorkVault:', e.message);
     }
   }
-
-  try {
-    settingsManager.updateSystemSettings({ system_default_vaults_seeded: true });
-  } catch (err) {
-    console.error('[Vaults] Failed to record system_default_vaults_seeded in settings:', err.message);
-  }
 }
 
 async function remove(vaultId) {
-  if (!vaultId || typeof vaultId !== 'string') return;
   vaultsCache = vaultsCache.filter((v) => v.id !== vaultId);
 
   // 1. 显式删除 vault_members 关联成员记录 (SQL & JSON & 内存)
@@ -306,7 +288,6 @@ module.exports = {
   getById,
   create,
   remove,
-  deleteVault: remove,
   vaultRoot,
   vaultFilesRoot,
   userOwnsVault,

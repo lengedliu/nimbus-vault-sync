@@ -1,5 +1,4 @@
 const net = require('node:net');
-const dns = require('node:dns').promises;
 
 /**
  * 判断一个 IPv4/IPv6 地址是否落在内网/本机/链路本地/云主机元数据等
@@ -37,41 +36,4 @@ function isPrivateOrReservedIp(ip) {
   return true; // couldn't parse — fail closed
 }
 
-function assertSafePublicUrl(targetUrl, contextName = 'URL') {
-  let parsed;
-  try {
-    parsed = new URL(targetUrl);
-  } catch {
-    throw new Error(`无法解析的 ${contextName}: "${targetUrl}"`);
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error(`${contextName} 仅支持 http: 或 https: 协议`);
-  }
-  return parsed;
-}
-
-/**
- * 校验指定 hostname 的所有解析地址，确保均不为私有/内网/保留 IP。
- * 返回首个有效解析的 IP（可供直接发起网络请求，避免二次 DNS 解析产生 DNS Rebinding）。
- */
-async function resolveAndAssertSafeIp(hostname, targetUrlForError) {
-  let addresses;
-  try {
-    addresses = await dns.lookup(hostname, { all: true });
-  } catch (e) {
-    throw new Error(`无法解析主机 "${hostname}": ${e.message}`);
-  }
-  if (!addresses || addresses.length === 0) {
-    throw new Error(`主机 "${hostname}" 未解析到有效 IP 地址`);
-  }
-  for (const { address } of addresses) {
-    if (isPrivateOrReservedIp(address)) {
-      throw new Error(
-        `拒绝请求目标 "${targetUrlForError || hostname}": 目标地址解析到了私有/保留地址 (${address})。禁止向内网地址发送网络请求。`
-      );
-    }
-  }
-  return addresses[0].address;
-}
-
-module.exports = { isPrivateOrReservedIp, assertSafePublicUrl, resolveAndAssertSafeIp };
+module.exports = { isPrivateOrReservedIp };

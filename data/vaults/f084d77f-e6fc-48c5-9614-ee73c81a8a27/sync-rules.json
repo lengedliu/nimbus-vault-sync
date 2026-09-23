@@ -1,0 +1,9 @@
+{
+  "ignorePatterns": [
+    "*.tmp",
+    "secret.key"
+  ],
+  "maxFileSizeMb": 100,
+  "syncAttachments": true,
+  "syncConfig": true
+}

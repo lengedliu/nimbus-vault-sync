@@ -400,10 +400,6 @@ export function renderVaultList() {
     const quickBtn = emptyLi.querySelector('#sidebar-quick-create-vault-btn');
     if (quickBtn) {
       quickBtn.onclick = async () => {
-        if (quickBtn.disabled) return;
-        quickBtn.disabled = true;
-        const originalText = quickBtn.textContent;
-        quickBtn.textContent = '⏳ 创建中...';
         try {
           const res = await api('/api/vaults', {
             method: 'POST',
@@ -415,8 +411,6 @@ export function renderVaultList() {
           if (body.vault) openVault(body.vault.id);
         } catch (err) {
           console.error('[Nimbus] Failed to create test vault:', err);
-          quickBtn.disabled = false;
-          quickBtn.textContent = originalText;
         }
       };
     }

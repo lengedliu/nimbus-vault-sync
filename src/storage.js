@@ -171,7 +171,6 @@ function clearVaultCache(vaultId) {
 }
 
 function deleteVaultDirectory(vaultId) {
-  if (!vaultId || typeof vaultId !== 'string') return;
   const { DATA_DIR, VAULTS_DIR } = require('./config');
   clearVaultCache(vaultId);
 

@@ -49,6 +49,30 @@ if (JWT_SECRET_SOURCE === 'env') {
   console.log('[AUTH] JWT_SECRET 运行于内存临时高熵密钥模式。');
 }
 
+// Initialize database
+(async () => {
+  try {
+    await dbManager.init();
+    await users.loadFromDb();
+    await vaultsStore.loadFromDb();
+    await vaultMembers.loadFromDb();
+    await sharesStore.loadFromDb();
+    await syncRulesStore.loadFromDb();
+    await settingsManager.loadFromDb();
+    await syncLogger.loadFromDb();
+    await devicesStore.loadFromDb();
+
+    // 自动为系统初始化默认测试笔记库（当当前库数量为0时）
+    const allUsers = users.listAll();
+    const adminUser = allUsers.find((u) => u.role === 'admin') || allUsers[0];
+    if (adminUser) {
+      await vaultsStore.ensureDefaultVaults(adminUser.id);
+    }
+  } catch (err) {
+    console.error('[DB] Initial startup load error:', err);
+  }
+})();
+
 const app = express();
 app.set('fnsHub', fnsHub);
 if (TRUST_PROXY) {
@@ -150,21 +174,12 @@ app.get('/share/:shareId', (req, res) => {
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/admin', express.static(path.join(__dirname, 'public')));
 
-// SPA Dashboard 路由 fallback：对未命中静态资源的纯前端页面 GET 请求兜底返回 index.html
+// SPA Dashboard 路由 fallback：所有非 /api 的前端页面 GET 请求兜底返回 index.html
 app.get('*', (req, res, next) => {
-  // 1. 忽略所有 /api/ 与 /ws 接口
   if (req.path.startsWith('/api/') || req.path.startsWith('/ws')) {
     return next();
   }
-  // 2. 如果请求路径带静态文件扩展名（如 .js, .css, .png, .ico, .map 等），说明静态资源未找到，应正常返回 404 而不是 index.html
-  if (path.extname(req.path)) {
-    return res.status(404).send('Not Found');
-  }
-  // 3. 仅当客户端期望接收 HTML 时才兜底返回 index.html
-  if (req.accepts('html')) {
-    return res.sendFile(path.join(__dirname, 'public', 'index.html'));
-  }
-  next();
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // 全局错误处理中间件：兜底捕获所有路由抛出/reject 的异常（配合各路由用的
@@ -224,42 +239,15 @@ fnsHub.init(server);
 
 const scheme = usingTls ? 'https' : 'http';
 const wsScheme = usingTls ? 'wss' : 'ws';
-
-async function startServer() {
-  try {
-    await dbManager.init();
-    await users.loadFromDb();
-    await vaultsStore.loadFromDb();
-    await vaultMembers.loadFromDb();
-    await sharesStore.loadFromDb();
-    await syncRulesStore.loadFromDb();
-    await settingsManager.loadFromDb();
-    await syncLogger.loadFromDb();
-    await devicesStore.loadFromDb();
-
-    // 自动为系统初始化默认测试笔记库（具有持久化幂等性保障）
-    const allUsers = users.listAll();
-    const adminUser = allUsers.find((u) => u.role === 'admin') || allUsers[0];
-    if (adminUser) {
-      await vaultsStore.ensureDefaultVaults(adminUser.id);
-    }
-
-    server.listen(PORT, '0.0.0.0', () => {
-      console.log(`Nimbus server listening on ${scheme}://0.0.0.0:${PORT}`);
-      console.log(`Management dashboard: ${scheme}://0.0.0.0:${PORT}/admin`);
-      console.log(`WebSocket sync endpoint: ${wsScheme}://0.0.0.0:${PORT}/ws`);
-      console.log(`Data dir: ${DATA_DIR}`);
-      if (!usingTls) {
-        console.log('TLS not configured (TLS_CERT_PATH/TLS_KEY_PATH) — serving plain HTTP/WS.');
-      }
-    });
-  } catch (err) {
-    console.error('[Fatal] Server failed to start due to initialization error:', err);
-    process.exit(1);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Nimbus server listening on ${scheme}://0.0.0.0:${PORT}`);
+  console.log(`Management dashboard: ${scheme}://0.0.0.0:${PORT}/admin`);
+  console.log(`WebSocket sync endpoint: ${wsScheme}://0.0.0.0:${PORT}/ws`);
+  console.log(`Data dir: ${DATA_DIR}`);
+  if (!usingTls) {
+    console.log('TLS not configured (TLS_CERT_PATH/TLS_KEY_PATH) — serving plain HTTP/WS.');
   }
-}
-
-startServer();
+});
 
 // 优雅关闭：容器/进程被停止时，先停止接受新连接、给在飞请求（比如正在流式
 // 上传的一次大文件、正在 debounce 等待落盘的 Git 提交）一个窗口跑完，
