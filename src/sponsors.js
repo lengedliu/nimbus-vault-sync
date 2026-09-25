@@ -166,8 +166,12 @@ const DEFAULT_CONFIG = {
   kofiLabel: '请作者喝杯咖啡',
   wechatQrUrl: '/wechat-reward.jpg', // base64 or URL
   wechatLabel: '微信打赏支持',
-  alipayQrUrl: '',
-  descriptionText: '如果这个项目帮助到您，并且想要它继续开发，请在以下方式支持我们，感谢您对开源软件的支持！',
+  alipayQrUrl: '/alipay.png',
+  alipayAccount: 'lenged.liu@gmail.com',
+  alipayLabel: '支付宝扫码/转账',
+  usdtAddress: 'TXD8aYw9fK9vM1L3xP7qR4tB6sQ2zU5eWn',
+  usdtNetwork: 'TRC-20 (USDT)',
+  descriptionText: '如果您觉得 Nimbus Vault Sync 为您的 Obsidian 笔记多端同步与版本管理带来了便利与价值，欢迎请作者喝杯咖啡或提供赞助支持！您的每一份善意都是项目持续打磨与前行的最大动力。',
 };
 
 let data = {

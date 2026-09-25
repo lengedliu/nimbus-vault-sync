@@ -314,17 +314,17 @@ Nimbus 原生内置 **StreamableHTTP** 协议的 MCP 接口，AI 客户端无需
 
 ---
 
-## ☕ 赞助与支持
+## ☕ 赞助与支持 (Sponsorship & Support)
 
-- 如果觉得这个插件很有用，并且想要它继续开发，请在以下方式支持我：
+如果您觉得 **Nimbus Vault Sync** 为您的 Obsidian 笔记多端同步与知识库管理带来了便利与价值，欢迎赞助请作者喝杯咖啡！您的每一份善意都是项目持续打磨与维护的最大动力。❤️
 
-| Ko-fi *非中国地区* | 微信扫码打赏 *中国地区* |
-| :---: | :---: |
-| [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/lengedliu) | <img src="./public/wechat-reward.jpg" width="180" alt="微信赞赏码" /> |
+| 微信扫码打赏 *中国地区* | Ko-fi *非中国地区 / International* | 支付宝转账 *中国地区* |
+| :---: | :---: | :---: |
+| <img src="./public/wechat-reward.jpg" width="170" alt="微信赞赏码" /> | [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/lengedliu) | 支付宝账号：`lenged.liu@gmail.com`<br>（转账附言请备注昵称） |
 
-- 已支持名单：
-  - [Support.zh-CN.md](Support.zh-CN.md)
-  - [Support.zh-CN.md (cnb.cool 镜像库)](https://cnb.cool/lengedliu/nimbus-vault-sync/-/blob/main/Support.zh-CN.md)
+- **已支持鸣谢芳名录**：
+  - [📜 赞助者芳名录 (Support.zh-CN.md)](Support.zh-CN.md)
+  - [🌐 cnb.cool 镜像库芳名录](https://cnb.cool/lengedliu/nimbus-vault-sync/-/blob/main/Support.zh-CN.md)
 
 ---
 
