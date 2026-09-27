@@ -869,20 +869,26 @@ function renderSettingsSubTabContent(subTab, settings, tokensList, currentVault,
         </div>
 
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-          <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;">精选主题风格</div>
-          <button class="btn btn-outline" id="settings-open-theme-gallery-btn" style="padding:4px 10px;font-size:12px;">🎨 打开 13 款主题画廊</button>
+          <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;">精选推荐主题 (含全新4套工坊设计)</div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <a href="/ui-demo.html" target="_blank" class="btn btn-outline" style="padding:4px 10px;font-size:12px;text-decoration:none;">👁️ 静态对比 Demo</a>
+            <button class="btn btn-outline" id="settings-open-theme-gallery-btn" style="padding:4px 10px;font-size:12px;">🎨 打开全部 ${THEMES.length} 款主题画廊</button>
+          </div>
         </div>
 
-        <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(210px, 1fr));gap:10px;margin-bottom:24px;">
-          ${THEMES.slice(0, 6)
+        <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));gap:10px;margin-bottom:24px;">
+          ${THEMES.slice(0, 8)
             .map((th) => {
               const isSel = currentTheme === th.id;
               return `
-                <div class="theme-card-picker ${isSel ? 'selected' : ''}" data-val="${th.id}" style="cursor:pointer;padding:10px 12px;background:var(--panel-2);border:1px solid ${isSel ? 'var(--accent)' : 'var(--border)'};border-radius:var(--radius);display:flex;align-items:center;gap:10px;transition:all 0.15s;">
+                <div class="theme-card-picker ${isSel ? 'selected' : ''}" data-val="${th.id}" style="cursor:pointer;padding:10px 12px;background:var(--panel-2);border:1px solid ${isSel ? 'var(--accent)' : 'var(--border)'};border-radius:var(--radius);display:flex;align-items:center;gap:10px;transition:all 0.15s;${th.isFeatured ? 'box-shadow:0 1px 4px rgba(' + th.primaryRgb + ',0.15);' : ''}">
                   <span class="dot" style="width:14px;height:14px;border-radius:50%;background:${th.primaryColor};box-shadow:0 0 8px ${th.primaryColor};flex-shrink:0;"></span>
                   <div style="flex:1;min-width:0;">
-                    <div style="font-weight:600;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(th.name)}</div>
-                    <div style="font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(th.subtitle.split('，')[0])}</div>
+                    <div style="display:flex;align-items:center;gap:4px;">
+                      <span style="font-weight:600;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;${th.fontHeading ? 'font-family:' + th.fontHeading + ';' : ''}">${escapeHtml(th.name)}</span>
+                      ${th.isFeatured ? '<span style="font-size:9.5px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:0 3px;">NEW</span>' : ''}
+                    </div>
+                    <div style="font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(th.archetypeName || th.subtitle.split('，')[0])}</div>
                   </div>
                   ${isSel ? '<span style="color:var(--accent);font-weight:700;font-size:13px;">✓</span>' : ''}
                 </div>

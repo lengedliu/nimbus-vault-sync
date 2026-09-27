@@ -154,6 +154,7 @@ window.nimbusOpenFile = (vaultId, encPath) => {
 initLanguageDropdowns();
 initAuthForm();
 initFontSizeSwitcher();
+initThemeSwitcher();
 applyTheme(localStorage.getItem('nimbus_theme') || 'cyber-blue');
 applyFontSize(localStorage.getItem('nimbus_font_size') || 'normal');
 updateDateDisplays();

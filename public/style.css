@@ -443,6 +443,365 @@
   --success-bg: rgba(22, 163, 74, 0.12);
 }
 
+/* ===================================================
+   ⭐ 2026 全新设计工坊 (New 4 Design Archetypes)
+   1. 🖋️ 人文纸本 · 书卷学者风 (Editorial Monograph & Warm Parchment)
+   2. 📐 瑞士理性 · 极简网格风 (Swiss International Modernism)
+   3. 🌲 深林苔原 · 极客侘寂风 (Kyoto Forest & Zen Moss)
+   4. ⚡ 先锋工坊 · 极速开发者风 (Modern DevStudio)
+   =================================================== */
+
+/* 1.1 人文纸本 · 书卷学者 editorial-paper (Light) */
+[data-theme="editorial-paper"] {
+  --radius: 6px;
+  --radius-lg: 10px;
+  --font-heading: "Charter", "Georgia", "Songti SC", "SimSun", serif;
+  --primary: #b45309;
+  --primary-hover: #92400e;
+  --primary-rgb: 180, 83, 9;
+  --theme-primary: #b45309;
+  --theme-primary-rgb: 180, 83, 9;
+  --theme-secondary: #d97706;
+
+  --bg: #fcfbf7;
+  --bg-topbar: rgba(252, 251, 247, 0.98);
+  --bg-sidebar: #f5f2e9;
+  --bg-card: #ffffff;
+  --bg-card-hover: #faf8f2;
+  --bg-accent: rgba(180, 83, 9, 0.08);
+
+  --panel: #ffffff;
+  --panel-2: #f7f4ec;
+  --panel-3: #ede7d8;
+
+  --border: #e7e2d4;
+  --border-light: #d4c7ac;
+  --border-accent: rgba(180, 83, 9, 0.3);
+
+  --text: #26221d;
+  --text-secondary: #544d42;
+  --text-muted: #5e574d;
+  --text-dim: #8c8275;
+  --muted: #8c8275;
+
+  --accent: #b45309;
+  --accent-hover: #92400e;
+  --accent-bg: rgba(180, 83, 9, 0.12);
+  --shadow-sm: 0 1px 3px rgba(38, 34, 29, 0.06);
+  --shadow-md: 0 4px 14px rgba(38, 34, 29, 0.08);
+  --success: #15803d;
+  --success-bg: rgba(21, 128, 61, 0.12);
+}
+
+/* 1.2 人文纸本 · 深墨书斋 editorial-paper-dark (Dark) */
+[data-theme="editorial-paper-dark"] {
+  --radius: 6px;
+  --radius-lg: 10px;
+  --font-heading: "Charter", "Georgia", "Songti SC", "SimSun", serif;
+  --primary: #f59e0b;
+  --primary-hover: #fbbf24;
+  --primary-rgb: 245, 158, 11;
+  --theme-primary: #f59e0b;
+  --theme-primary-rgb: 245, 158, 11;
+  --theme-secondary: #fbbf24;
+
+  --bg: #181715;
+  --bg-topbar: rgba(24, 23, 21, 0.98);
+  --bg-sidebar: #1f1d19;
+  --bg-card: #24221e;
+  --bg-card-hover: #2c2924;
+  --bg-accent: rgba(217, 119, 6, 0.15);
+
+  --panel: #24221e;
+  --panel-2: #2c2924;
+  --panel-3: #1f1d19;
+
+  --border: #38342d;
+  --border-light: rgba(217, 119, 6, 0.35);
+  --border-accent: rgba(217, 119, 6, 0.4);
+
+  --text: #f0ebe1;
+  --text-secondary: #aba294;
+  --text-muted: #aba294;
+  --text-dim: #787063;
+  --muted: #787063;
+
+  --accent: #f59e0b;
+  --accent-hover: #fbbf24;
+  --accent-bg: rgba(245, 158, 11, 0.16);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.45);
+  --success: #4ade80;
+  --success-bg: rgba(74, 222, 128, 0.15);
+}
+
+/* 2.1 瑞士理性 · 极简网格 swiss-grid (Dark) */
+[data-theme="swiss-grid"] {
+  --radius: 2px;
+  --radius-lg: 4px;
+  --font-heading: "Helvetica Neue", "Arial", "PingFang SC", sans-serif;
+  --font-body: "Helvetica Neue", "Arial", "PingFang SC", sans-serif;
+  --primary: #f43f5e;
+  --primary-hover: #fb7185;
+  --primary-rgb: 244, 63, 94;
+  --theme-primary: #f43f5e;
+  --theme-primary-rgb: 244, 63, 94;
+  --theme-secondary: #fb7185;
+
+  --bg: #0c0d10;
+  --bg-topbar: rgba(12, 13, 15, 0.98);
+  --bg-sidebar: #121418;
+  --bg-card: #181a20;
+  --bg-card-hover: #20232b;
+  --bg-accent: rgba(225, 29, 72, 0.15);
+
+  --panel: #17181f;
+  --panel-2: #20222a;
+  --panel-3: #2b2e3b;
+
+  --border: #262933;
+  --border-light: #3f4455;
+  --border-accent: #f43f5e;
+
+  --text: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-muted: #a1a1aa;
+  --text-dim: #71717a;
+  --muted: #71717a;
+
+  --accent: #f43f5e;
+  --accent-hover: #fb7185;
+  --accent-bg: rgba(244, 63, 94, 0.18);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.6);
+  --success: #10b981;
+  --success-bg: rgba(16, 185, 129, 0.15);
+}
+
+/* 2.2 瑞士理性 · 极简白昼 swiss-grid-light (Light) */
+[data-theme="swiss-grid-light"] {
+  --radius: 2px;
+  --radius-lg: 4px;
+  --font-heading: "Helvetica Neue", "Arial", "PingFang SC", sans-serif;
+  --font-body: "Helvetica Neue", "Arial", "PingFang SC", sans-serif;
+  --primary: #e11d48;
+  --primary-hover: #be123c;
+  --primary-rgb: 225, 29, 72;
+  --theme-primary: #e11d48;
+  --theme-primary-rgb: 225, 29, 72;
+  --theme-secondary: #be123c;
+
+  --bg: #f4f4f5;
+  --bg-topbar: rgba(244, 244, 245, 0.98);
+  --bg-sidebar: #eaeaea;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f9f9fb;
+  --bg-accent: rgba(225, 29, 72, 0.08);
+
+  --panel: #ffffff;
+  --panel-2: #f9f9fb;
+  --panel-3: #eaeaea;
+
+  --border: #d4d4d8;
+  --border-light: #e11d48;
+  --border-accent: #e11d48;
+
+  --text: #09090b;
+  --text-secondary: #52525b;
+  --text-muted: #52525b;
+  --text-dim: #71717a;
+  --muted: #71717a;
+
+  --accent: #e11d48;
+  --accent-hover: #be123c;
+  --accent-bg: rgba(225, 29, 72, 0.12);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 10px rgba(0, 0, 0, 0.08);
+  --success: #059669;
+  --success-bg: rgba(5, 150, 105, 0.12);
+}
+
+/* 3.1 深林苔原 · 极客侘寂 kyoto-forest (Dark) */
+[data-theme="kyoto-forest"] {
+  --radius: 10px;
+  --radius-lg: 14px;
+  --font-heading: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --primary: #2dd4bf;
+  --primary-hover: #5eead4;
+  --primary-rgb: 45, 212, 191;
+  --theme-primary: #2dd4bf;
+  --theme-primary-rgb: 45, 212, 191;
+  --theme-secondary: #14b8a6;
+
+  --bg: #080d0b;
+  --bg-topbar: rgba(10, 15, 13, 0.98);
+  --bg-sidebar: #101815;
+  --bg-card: #15201c;
+  --bg-card-hover: #1b2924;
+  --bg-accent: rgba(45, 212, 191, 0.12);
+
+  --panel: #111916;
+  --panel-2: #17231e;
+  --panel-3: #1f302a;
+
+  --border: #22332c;
+  --border-light: rgba(45, 212, 191, 0.38);
+  --border-accent: rgba(45, 212, 191, 0.4);
+
+  --text: #e6f3ee;
+  --text-secondary: #9bbdb1;
+  --text-muted: #8caaa0;
+  --text-dim: #5c756c;
+  --muted: #5c7d71;
+
+  --accent: #2dd4bf;
+  --accent-hover: #5eead4;
+  --accent-bg: rgba(45, 212, 191, 0.16);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.5);
+  --success: #34d399;
+  --success-bg: rgba(52, 211, 153, 0.15);
+}
+
+/* 3.2 深林清泉 · 雨后青苔 kyoto-forest-light (Light) */
+[data-theme="kyoto-forest-light"] {
+  --radius: 10px;
+  --radius-lg: 14px;
+  --font-heading: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --primary: #0d9488;
+  --primary-hover: #0f766e;
+  --primary-rgb: 13, 148, 136;
+  --theme-primary: #0d9488;
+  --theme-primary-rgb: 13, 148, 136;
+  --theme-secondary: #0f766e;
+
+  --bg: #f2f6f4;
+  --bg-topbar: rgba(242, 246, 244, 0.98);
+  --bg-sidebar: #e5ece8;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f7faf8;
+  --bg-accent: rgba(13, 148, 136, 0.08);
+
+  --panel: #ffffff;
+  --panel-2: #f7faf8;
+  --panel-3: #e5ece8;
+
+  --border: #ccd8d1;
+  --border-light: rgba(13, 148, 136, 0.35);
+  --border-accent: rgba(13, 148, 136, 0.35);
+
+  --text: #13241e;
+  --text-secondary: #415951;
+  --text-muted: #415951;
+  --text-dim: #6b867c;
+  --muted: #6b867c;
+
+  --accent: #0d9488;
+  --accent-hover: #0f766e;
+  --accent-bg: rgba(13, 148, 136, 0.12);
+  --shadow-sm: 0 1px 3px rgba(19, 36, 30, 0.05);
+  --shadow-md: 0 4px 16px rgba(19, 36, 30, 0.08);
+  --success: #059669;
+  --success-bg: rgba(5, 150, 105, 0.12);
+}
+
+/* 4.1 先锋工坊 · 极速开发者 dev-studio (Dark) */
+[data-theme="dev-studio"] {
+  --radius: 8px;
+  --radius-lg: 12px;
+  --font-heading: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  --font-body: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  --primary: #818cf8;
+  --primary-hover: #a5b4fc;
+  --primary-rgb: 129, 140, 248;
+  --theme-primary: #818cf8;
+  --theme-primary-rgb: 129, 140, 248;
+  --theme-secondary: #6366f1;
+
+  --bg: #0d1117;
+  --bg-topbar: rgba(13, 17, 23, 0.98);
+  --bg-sidebar: #131821;
+  --bg-card: #18202c;
+  --bg-card-hover: #1f2937;
+  --bg-accent: rgba(99, 102, 241, 0.15);
+
+  --panel: #161b22;
+  --panel-2: #21262d;
+  --panel-3: #30363d;
+
+  --border: #283344;
+  --border-light: rgba(129, 140, 248, 0.35);
+  --border-accent: rgba(129, 140, 248, 0.4);
+
+  --text: #f0f6fc;
+  --text-secondary: #c9d1d9;
+  --text-muted: #94a3b8;
+  --text-dim: #64748b;
+  --muted: #8b949e;
+
+  --accent: #818cf8;
+  --accent-hover: #a5b4fc;
+  --accent-bg: rgba(129, 140, 248, 0.16);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.5);
+  --success: #3fb950;
+  --success-bg: rgba(63, 185, 80, 0.15);
+}
+
+/* 4.2 先锋工坊 · 极速白昼 dev-studio-light (Light) */
+[data-theme="dev-studio-light"] {
+  --radius: 8px;
+  --radius-lg: 12px;
+  --font-heading: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  --font-body: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  --primary: #4f46e5;
+  --primary-hover: #4338ca;
+  --primary-rgb: 79, 70, 229;
+  --theme-primary: #4f46e5;
+  --theme-primary-rgb: 79, 70, 229;
+  --theme-secondary: #4338ca;
+
+  --bg: #f8fafc;
+  --bg-topbar: rgba(248, 250, 252, 0.98);
+  --bg-sidebar: #f1f5f9;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f8fafc;
+  --bg-accent: rgba(99, 102, 241, 0.08);
+
+  --panel: #ffffff;
+  --panel-2: #f8fafc;
+  --panel-3: #f1f5f9;
+
+  --border: #e2e8f0;
+  --border-light: rgba(99, 102, 241, 0.35);
+  --border-accent: rgba(99, 102, 241, 0.35);
+
+  --text: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #475569;
+  --text-dim: #94a3b8;
+  --muted: #94a3b8;
+
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-bg: rgba(99, 102, 241, 0.12);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --success: #16a34a;
+  --success-bg: rgba(22, 163, 74, 0.12);
+}
+
+/* Heading Typography Adaption */
+h1, h2, h3, h4,
+.topbar-logo,
+.brand,
+.vault-title,
+.modal-title,
+.theme-gallery-title-group h3,
+.settings-card-header h3 {
+  font-family: var(--font-heading, inherit);
+}
+
 /* All Light Themes Global Polish */
 .theme-light body,
 .theme-light #login-view,
@@ -454,6 +813,10 @@
 [data-theme="nordic-sky"] body,
 [data-theme="matcha-light"] body,
 [data-theme="rose-blush"] body,
+[data-theme="editorial-paper"] body,
+[data-theme="swiss-grid-light"] body,
+[data-theme="kyoto-forest-light"] body,
+[data-theme="dev-studio-light"] body,
 [data-theme="light"] body {
   background-color: var(--bg);
   color: var(--text);
@@ -1369,7 +1732,7 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
   justify-content: space-between;
   padding: 10px 20px;
   border-bottom: 1px solid var(--border);
-  background: var(--panel);
+  background: var(--bg-topbar, var(--panel));
   flex-shrink: 0;
   height: 54px;
 }
@@ -1487,7 +1850,7 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
   width: 250px;
   flex-shrink: 0;
   border-right: 1px solid var(--border);
-  background: var(--panel);
+  background: var(--bg-sidebar, var(--panel));
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -1499,6 +1862,7 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
   padding: 16px 12px 12px;
   scrollbar-width: thin;
   scrollbar-color: rgba(140, 149, 159, 0.25) transparent;
+  background: var(--bg-sidebar, var(--panel));
 }
 .sidebar-body::-webkit-scrollbar {
   width: 4px;
@@ -1516,7 +1880,7 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
 .sidebar-footer {
   padding: 10px 14px;
   border-top: 1px solid var(--border);
-  background: var(--panel-2);
+  background: var(--bg-sidebar, var(--panel-2));
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1613,6 +1977,28 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
   padding: 0;
 }
 .vault-list li, .nav-menu li { margin-bottom: 3px; }
+/* Sidebar primary top button (看板总览) */
+.sidebar-primary-btn {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: var(--radius);
+  background: var(--bg-accent, var(--accent-bg));
+  color: var(--primary, var(--accent));
+  border: 1px solid var(--border-accent, var(--border));
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  margin-bottom: 14px;
+  transition: all 0.15s ease;
+}
+.sidebar-primary-btn:hover {
+  background: var(--primary, var(--accent));
+  color: #ffffff;
+}
+
 .vault-item, .nav-item, .tab-btn {
   display: flex;
   align-items: center;
@@ -1620,22 +2006,28 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
   width: 100%;
   text-align: left;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--text-muted, var(--text-secondary));
   font-weight: 500;
   padding: 7px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   font-size: 13px;
   border: 1px solid transparent;
+  transition: all 0.12s ease;
+  user-select: none;
 }
 .vault-item:hover, .nav-item:hover, .tab-btn:hover {
-  background: var(--panel-2);
+  background: var(--bg-card-hover, var(--panel-2));
   color: var(--text);
 }
 .vault-item.active, .tab-btn.active {
-  background: var(--accent-bg);
-  border-color: rgba(88, 166, 255, 0.3);
-  color: var(--accent);
-  font-weight: 600;
+  background: var(--bg-card, var(--panel));
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-weight: 700;
+  box-shadow: var(--shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.05));
+}
+.vault-item.active .del {
+  color: var(--text-dim, var(--muted));
 }
 .vault-item .del {
   color: var(--muted);

@@ -3,7 +3,248 @@ import { $, $$, escapeHtml } from './state.js';
 import { toast } from './dialogs.js';
 
 export const THEMES = [
-  // 🌙 Dark Geek Themes (7)
+  // ⭐ 2026 全新设计工坊 (New 4 Design Archetypes · 8 Variants)
+  // 1. 🖋️ 人文纸本 · 书卷学者风 (Editorial Monograph & Warm Parchment)
+  {
+    id: 'editorial-paper',
+    legacyKey: null,
+    name: '人文纸本 (Light)',
+    archetypeId: 'editorial-paper',
+    archetypeName: '人文纸本 · 书卷学者风',
+    subtitle: '暖象牙纸质基底，温润琥珀与沉木墨黑，极具人文书卷气，深度长文思考沉浸首选',
+    primaryColor: '#b45309',
+    secondaryColor: '#d97706',
+    primaryRgb: '180, 83, 9',
+    bgColor: '#fcfbf7',
+    topbarBg: 'rgba(252, 251, 247, 0.98)',
+    sidebarBg: '#f5f2e9',
+    cardBg: '#ffffff',
+    cardHover: '#faf8f2',
+    cardSubtle: '#ede7d8',
+    cardBorder: '#e7e2d4',
+    cardBorderHover: '#d4c7ac',
+    bgAccent: 'rgba(180, 83, 9, 0.08)',
+    borderAccent: 'rgba(180, 83, 9, 0.3)',
+    textTitle: '#26221d',
+    textBody: '#544d42',
+    textMuted: '#5e574d',
+    fontHeading: '"Charter", "Georgia", "Songti SC", "SimSun", serif',
+    radius: '6px',
+    radiusLg: '10px',
+    isLight: true,
+    isFeatured: true,
+  },
+  {
+    id: 'editorial-paper-dark',
+    legacyKey: null,
+    name: '人文纸本 (Dark)',
+    archetypeId: 'editorial-paper',
+    archetypeName: '人文纸本 · 书卷学者风',
+    subtitle: '深墨夜间书斋画布，暖琥珀流光与温润古雅炭黑，深夜沉浸式学术思绪流动',
+    primaryColor: '#f59e0b',
+    secondaryColor: '#fbbf24',
+    primaryRgb: '245, 158, 11',
+    bgColor: '#181715',
+    topbarBg: 'rgba(24, 23, 21, 0.98)',
+    sidebarBg: '#1f1d19',
+    cardBg: '#24221e',
+    cardHover: '#2c2924',
+    cardSubtle: '#1f1d19',
+    cardBorder: '#38342d',
+    cardBorderHover: 'rgba(217, 119, 6, 0.4)',
+    bgAccent: 'rgba(217, 119, 6, 0.15)',
+    borderAccent: 'rgba(217, 119, 6, 0.4)',
+    textTitle: '#f0ebe1',
+    textBody: '#aba294',
+    textMuted: '#aba294',
+    fontHeading: '"Charter", "Georgia", "Songti SC", "SimSun", serif',
+    radius: '6px',
+    radiusLg: '10px',
+    isLight: false,
+    isFeatured: true,
+  },
+
+  // 2. 📐 瑞士理性 · 极简网格风 (Swiss International Modernism)
+  {
+    id: 'swiss-grid',
+    legacyKey: null,
+    name: '瑞士理性 (Dark)',
+    archetypeId: 'swiss-grid',
+    archetypeName: '瑞士理性 · 极简网格风',
+    subtitle: '冷调岩灰与纯粹无衬线排版，经典包豪斯朱砂红点睛，克制高效，突出绝对功能主义',
+    primaryColor: '#f43f5e',
+    secondaryColor: '#fb7185',
+    primaryRgb: '244, 63, 94',
+    bgColor: '#0c0d10',
+    topbarBg: 'rgba(12, 13, 15, 0.98)',
+    sidebarBg: '#121418',
+    cardBg: '#181a20',
+    cardHover: '#20232b',
+    cardSubtle: '#121318',
+    cardBorder: '#262933',
+    cardBorderHover: '#f43f5e',
+    bgAccent: 'rgba(225, 29, 72, 0.15)',
+    borderAccent: '#f43f5e',
+    textTitle: '#f4f4f5',
+    textBody: '#a1a1aa',
+    textMuted: '#a1a1aa',
+    fontHeading: '"Helvetica Neue", "Arial", "PingFang SC", sans-serif',
+    radius: '2px',
+    radiusLg: '4px',
+    isLight: false,
+    isFeatured: true,
+  },
+  {
+    id: 'swiss-grid-light',
+    legacyKey: null,
+    name: '瑞士理性 (Light)',
+    archetypeId: 'swiss-grid',
+    archetypeName: '瑞士理性 · 极简网格风',
+    subtitle: '严谨包豪斯白昼网格，克制灰调与高纯度红宝石色点睛，极致清爽的现代主义排版',
+    primaryColor: '#e11d48',
+    secondaryColor: '#be123c',
+    primaryRgb: '225, 29, 72',
+    bgColor: '#f4f4f5',
+    topbarBg: 'rgba(244, 244, 245, 0.98)',
+    sidebarBg: '#eaeaea',
+    cardBg: '#ffffff',
+    cardHover: '#f9f9fb',
+    cardSubtle: '#eaeaea',
+    cardBorder: '#d4d4d8',
+    cardBorderHover: '#e11d48',
+    bgAccent: 'rgba(225, 29, 72, 0.08)',
+    borderAccent: '#e11d48',
+    textTitle: '#09090b',
+    textBody: '#52525b',
+    textMuted: '#52525b',
+    fontHeading: '"Helvetica Neue", "Arial", "PingFang SC", sans-serif',
+    radius: '2px',
+    radiusLg: '4px',
+    isLight: true,
+    isFeatured: true,
+  },
+
+  // 3. 🌲 深林苔原 · 极客侘寂风 (Kyoto Forest & Zen Moss)
+  {
+    id: 'kyoto-forest',
+    legacyKey: null,
+    name: '深林苔原 (Dark)',
+    archetypeId: 'kyoto-forest',
+    archetypeName: '深林苔原 · 极客侘寂风',
+    subtitle: '玄武岩深灰绿与柔和苔藓竹青，自然舒缓无蓝光刺眼，静水流深，夜间专注写作',
+    primaryColor: '#2dd4bf',
+    secondaryColor: '#14b8a6',
+    primaryRgb: '45, 212, 191',
+    bgColor: '#080d0b',
+    topbarBg: 'rgba(10, 15, 13, 0.98)',
+    sidebarBg: '#101815',
+    cardBg: '#15201c',
+    cardHover: '#1b2924',
+    cardSubtle: '#0b120f',
+    cardBorder: '#22332c',
+    cardBorderHover: 'rgba(45, 212, 191, 0.45)',
+    bgAccent: 'rgba(45, 212, 191, 0.12)',
+    borderAccent: 'rgba(45, 212, 191, 0.4)',
+    textTitle: '#e6f3ee',
+    textBody: '#9bbdb1',
+    textMuted: '#8caaa0',
+    fontHeading: '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif',
+    radius: '10px',
+    radiusLg: '14px',
+    isLight: false,
+    isFeatured: true,
+  },
+  {
+    id: 'kyoto-forest-light',
+    legacyKey: null,
+    name: '深林清泉 (Light)',
+    archetypeId: 'kyoto-forest',
+    archetypeName: '深林苔原 · 极客侘寂风',
+    subtitle: '雨后青苔与林间晨雾浅绿，清澈柔和如森林清泉，护眼静谧且生机盎然',
+    primaryColor: '#0d9488',
+    secondaryColor: '#0f766e',
+    primaryRgb: '13, 148, 136',
+    bgColor: '#f2f6f4',
+    topbarBg: 'rgba(242, 246, 244, 0.98)',
+    sidebarBg: '#e5ece8',
+    cardBg: '#ffffff',
+    cardHover: '#f7faf8',
+    cardSubtle: '#e5ece8',
+    cardBorder: '#ccd8d1',
+    cardBorderHover: 'rgba(13, 148, 136, 0.35)',
+    bgAccent: 'rgba(13, 148, 136, 0.08)',
+    borderAccent: 'rgba(13, 148, 136, 0.35)',
+    textTitle: '#13241e',
+    textBody: '#415951',
+    textMuted: '#415951',
+    fontHeading: '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif',
+    radius: '10px',
+    radiusLg: '14px',
+    isLight: true,
+    isFeatured: true,
+  },
+
+  // 4. ⚡ 先锋工坊 · 极速开发者风 (Modern DevStudio)
+  {
+    id: 'dev-studio',
+    legacyKey: null,
+    name: '先锋工坊 (Dark)',
+    archetypeId: 'dev-studio',
+    archetypeName: '先锋工坊 · 极速开发者风',
+    subtitle: '天鹅绒深炭灰与电光紫/靛蓝，致敬 Linear、Zed 与 Vercel，高信息密度与极致生产力',
+    primaryColor: '#818cf8',
+    secondaryColor: '#6366f1',
+    primaryRgb: '129, 140, 248',
+    bgColor: '#0d1117',
+    topbarBg: 'rgba(13, 17, 23, 0.98)',
+    sidebarBg: '#131821',
+    cardBg: '#18202c',
+    cardHover: '#1f2937',
+    cardSubtle: '#090d13',
+    cardBorder: '#283344',
+    cardBorderHover: 'rgba(129, 140, 248, 0.42)',
+    bgAccent: 'rgba(99, 102, 241, 0.15)',
+    borderAccent: 'rgba(129, 140, 248, 0.4)',
+    textTitle: '#f0f6fc',
+    textBody: '#c9d1d9',
+    textMuted: '#94a3b8',
+    fontHeading: '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif',
+    radius: '8px',
+    radiusLg: '12px',
+    isLight: false,
+    isFeatured: true,
+  },
+  {
+    id: 'dev-studio-light',
+    legacyKey: null,
+    name: '先锋工坊 (Light)',
+    archetypeId: 'dev-studio',
+    archetypeName: '先锋工坊 · 极速开发者风',
+    subtitle: '高信息密度白昼工程面板，电光靛蓝高亮，现代工程团队追求的高效与纯粹',
+    primaryColor: '#4f46e5',
+    secondaryColor: '#4338ca',
+    primaryRgb: '79, 70, 229',
+    bgColor: '#f8fafc',
+    topbarBg: 'rgba(248, 250, 252, 0.98)',
+    sidebarBg: '#f1f5f9',
+    cardBg: '#ffffff',
+    cardHover: '#f8fafc',
+    cardSubtle: '#f1f5f9',
+    cardBorder: '#e2e8f0',
+    cardBorderHover: 'rgba(99, 102, 241, 0.35)',
+    bgAccent: 'rgba(99, 102, 241, 0.08)',
+    borderAccent: 'rgba(99, 102, 241, 0.35)',
+    textTitle: '#0f172a',
+    textBody: '#475569',
+    textMuted: '#475569',
+    fontHeading: '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif',
+    radius: '8px',
+    radiusLg: '12px',
+    isLight: true,
+    isFeatured: true,
+  },
+
+  // 🌙 经典暗夜极客主题 (Classic Dark Geek Themes)
   {
     id: 'xiaomi-orange',
     legacyKey: null,
@@ -138,7 +379,7 @@ export const THEMES = [
     isLight: false,
   },
 
-  // ☀️ Daylight Fresh Themes (6)
+  // ☀️ 经典日间清爽主题 (Classic Daylight Fresh Themes)
   {
     id: 'bright-day',
     legacyKey: 'light',
@@ -280,7 +521,7 @@ export const THEME_LABELS = THEMES.reduce((acc, t) => {
 export function applyTheme(themeKey) {
   const rawKey = themeKey || localStorage.getItem('nimbus_theme') || 'cyber-blue';
   const activeId = resolveThemeId(rawKey);
-  const themeObj = THEMES.find((t) => t.id === activeId) || THEMES[1];
+  const themeObj = THEMES.find((t) => t.id === activeId) || THEMES[0];
 
   document.documentElement.setAttribute('data-theme', activeId);
   document.documentElement.setAttribute('data-theme-mode', themeObj.isLight ? 'light' : 'dark');
@@ -307,6 +548,13 @@ export function applyTheme(themeKey) {
   rootStyle.setProperty('--theme-text-muted', themeObj.textMuted);
 
   rootStyle.setProperty('--bg', themeObj.bgColor);
+  rootStyle.setProperty('--bg-sidebar', themeObj.sidebarBg || themeObj.cardSubtle || themeObj.bgColor);
+  rootStyle.setProperty('--bg-topbar', themeObj.topbarBg || themeObj.cardBg || themeObj.bgColor);
+  rootStyle.setProperty('--bg-card', themeObj.cardBg);
+  rootStyle.setProperty('--bg-card-hover', themeObj.cardHover);
+  rootStyle.setProperty('--bg-accent', themeObj.bgAccent || `rgba(${themeObj.primaryRgb}, 0.12)`);
+  rootStyle.setProperty('--border-accent', themeObj.borderAccent || themeObj.cardBorderHover);
+
   rootStyle.setProperty('--panel', themeObj.cardBg);
   rootStyle.setProperty('--panel-2', themeObj.cardHover);
   rootStyle.setProperty('--panel-3', themeObj.cardSubtle);
@@ -319,6 +567,20 @@ export function applyTheme(themeKey) {
   rootStyle.setProperty('--accent-hover', themeObj.secondaryColor);
   rootStyle.setProperty('--accent-bg', `rgba(${themeObj.primaryRgb}, 0.16)`);
 
+  if (themeObj.fontHeading) {
+    rootStyle.setProperty('--font-heading', themeObj.fontHeading);
+  } else {
+    rootStyle.removeProperty('--font-heading');
+  }
+
+  if (themeObj.radius) {
+    rootStyle.setProperty('--radius', themeObj.radius);
+    rootStyle.setProperty('--radius-lg', themeObj.radiusLg || themeObj.radius);
+  } else {
+    rootStyle.removeProperty('--radius');
+    rootStyle.removeProperty('--radius-lg');
+  }
+
   localStorage.setItem('nimbus_theme', activeId);
   updateThemeUI(activeId);
 }
@@ -326,7 +588,7 @@ export function applyTheme(themeKey) {
 export function updateThemeUI(themeKey) {
   const rawKey = themeKey || localStorage.getItem('nimbus_theme') || 'cyber-blue';
   const key = resolveThemeId(rawKey);
-  const themeObj = THEMES.find((t) => t.id === key) || THEMES[1];
+  const themeObj = THEMES.find((t) => t.id === key) || THEMES[0];
   const label = $('#theme-label-name');
   const dot = $('#theme-color-dot');
   const themeName = (window.t ? window.t(`theme.${key}`) : null) || themeObj.name;
@@ -349,7 +611,7 @@ export function formatCurrentDate(date = new Date()) {
 
   const zhWeekdays = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
   const jaWeekdays = ['日曜日', '月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日'];
-  const koWeekdays = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토曜日'];
+  const koWeekdays = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
   const enWeekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
   if (currentLang === 'en') {
@@ -478,10 +740,15 @@ export function initFontSizeSwitcher() {
 // 🎨 Visual Theme Gallery Modal
 export function openThemeSelectorModal() {
   const currentThemeId = resolveThemeId(localStorage.getItem('nimbus_theme'));
-  let activeFilter = 'all'; // 'all', 'dark', 'light'
+  let activeFilter = 'all'; // 'featured', 'all', 'dark', 'light'
 
   function renderModalContent() {
+    const featuredThemes = THEMES.filter((th) => th.isFeatured);
+    const darkThemes = THEMES.filter((th) => !th.isLight);
+    const lightThemes = THEMES.filter((th) => th.isLight);
+
     const filteredThemes = THEMES.filter((th) => {
+      if (activeFilter === 'featured') return th.isFeatured;
       if (activeFilter === 'dark') return !th.isLight;
       if (activeFilter === 'light') return th.isLight;
       return true;
@@ -492,15 +759,21 @@ export function openThemeSelectorModal() {
         <div class="theme-gallery-header">
           <div class="theme-gallery-title-group">
             <h3>🎨 ${window.t ? window.t('theme.gallery_title', '主题画廊与视觉风格') : '主题画廊与视觉风格'}</h3>
-            <p class="theme-gallery-subtitle">${window.t ? window.t('theme.gallery_subtitle', '参考 Tinglan 音乐发烧级双色调配色体系，提供 13 款匠心打造的暗夜极客与日间清爽主题') : '参考 Tinglan 音乐发烧级双色调配色体系，提供 13 款匠心打造的暗夜极客与日间清爽主题'}</p>
+            <p class="theme-gallery-subtitle">包含 4 套 2026 全新设计工坊方案（人文纸本、瑞士理性、深林苔原、先锋工坊）与多款经典双色调极客主题，共 ${THEMES.length} 款自由随心切换</p>
           </div>
-          <button class="btn btn-icon btn-close-modal" id="btn-close-theme-modal" title="关闭" style="background:transparent;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:4px 8px;">✕</button>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <a href="/ui-demo.html" target="_blank" class="theme-dropdown-gallery-btn" style="text-decoration:none;font-size:12px;padding:4px 12px;border:1px solid var(--accent);" title="在新标签页中打开静态高保真对比 Demo">
+              👁️ 静态对比 Demo
+            </a>
+            <button class="btn btn-icon btn-close-modal" id="btn-close-theme-modal" title="关闭" style="background:transparent;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:4px 8px;">✕</button>
+          </div>
         </div>
 
         <div class="theme-filter-nav">
-          <button class="theme-filter-pill ${activeFilter === 'all' ? 'active' : ''}" data-filter="all">${window.t ? window.t('theme.tab_all', '全部风格 (13)') : '全部风格 (13)'}</button>
-          <button class="theme-filter-pill ${activeFilter === 'dark' ? 'active' : ''}" data-filter="dark">${window.t ? window.t('theme.tab_dark', '🌙 暗夜深色 (7)') : '🌙 暗夜深色 (7)'}</button>
-          <button class="theme-filter-pill ${activeFilter === 'light' ? 'active' : ''}" data-filter="light">${window.t ? window.t('theme.tab_light', '☀️ 日间清爽 (6)') : '☀️ 日间清爽 (6)'}</button>
+          <button class="theme-filter-pill ${activeFilter === 'all' ? 'active' : ''}" data-filter="all">全部风格 (${THEMES.length})</button>
+          <button class="theme-filter-pill ${activeFilter === 'featured' ? 'active' : ''}" data-filter="featured" style="font-weight:600;">⭐ 4套全新设计 (${featuredThemes.length})</button>
+          <button class="theme-filter-pill ${activeFilter === 'dark' ? 'active' : ''}" data-filter="dark">🌙 暗夜深色 (${darkThemes.length})</button>
+          <button class="theme-filter-pill ${activeFilter === 'light' ? 'active' : ''}" data-filter="light">☀️ 日间清爽 (${lightThemes.length})</button>
         </div>
 
         <div class="theme-gallery-body">
@@ -510,30 +783,34 @@ export function openThemeSelectorModal() {
                 const isActive = th.id === currentThemeId;
                 const localizedName = (window.t ? window.t(`theme.${th.id}`) : null) || th.name;
                 return `
-                  <div class="theme-card-box ${isActive ? 'active' : ''}" data-theme-id="${th.id}">
+                  <div class="theme-card-box ${isActive ? 'active' : ''} ${th.isFeatured ? 'featured-theme-card' : ''}" data-theme-id="${th.id}" style="${th.isFeatured ? 'border-color:rgba(' + th.primaryRgb + ', 0.35);' : ''}">
                     <div class="theme-card-box-header">
                       <div class="theme-card-box-title">
                         <span class="theme-card-box-dot" style="background-color:${th.primaryColor};box-shadow:0 0 8px ${th.primaryColor};"></span>
-                        <span>${escapeHtml(localizedName)}</span>
+                        <span style="${th.fontHeading ? 'font-family:' + th.fontHeading + ';' : ''}">${escapeHtml(localizedName)}</span>
                       </div>
-                      <span class="theme-badge ${isActive ? 'active-badge' : 'type-badge'}">
-                        ${isActive ? (window.t ? window.t('theme.active_badge', '使用中 ✓') : '使用中 ✓') : th.isLight ? 'Light' : 'Dark'}
-                      </span>
+                      <div style="display:flex;align-items:center;gap:4px;">
+                        ${th.isFeatured ? `<span class="theme-badge" style="background:rgba(${th.primaryRgb}, 0.15);color:${th.primaryColor};border:1px solid rgba(${th.primaryRgb}, 0.3);font-size:10.5px;">⭐ 全新</span>` : ''}
+                        <span class="theme-badge ${isActive ? 'active-badge' : 'type-badge'}">
+                          ${isActive ? (window.t ? window.t('theme.active_badge', '使用中 ✓') : '使用中 ✓') : th.isLight ? 'Light' : 'Dark'}
+                        </span>
+                      </div>
                     </div>
 
+                    ${th.archetypeName ? `<div style="font-size:11px;font-weight:600;color:${th.primaryColor};margin-bottom:4px;">✦ ${escapeHtml(th.archetypeName)}</div>` : ''}
                     <div class="theme-card-desc">${escapeHtml(th.subtitle)}</div>
 
-                    <div class="theme-preview-simulation" style="background:${th.bgColor};border:1px solid ${th.cardBorder};border-radius:6px;padding:8px 10px;margin:8px 0;display:flex;flex-direction:column;gap:6px;">
+                    <div class="theme-preview-simulation" style="background:${th.bgColor};border:1px solid ${th.cardBorder};border-radius:${th.radius || '6px'};padding:8px 10px;margin:8px 0;display:flex;flex-direction:column;gap:6px;">
                       <div class="theme-sim-row" style="display:flex;justify-content:space-between;align-items:center;">
-                        <span style="display:inline-flex;align-items:center;gap:4px;color:${th.textTitle};font-weight:600;font-size:11px;">
-                          📓 Vault 同步
+                        <span style="display:inline-flex;align-items:center;gap:4px;color:${th.textTitle};font-weight:600;font-size:11px;${th.fontHeading ? 'font-family:' + th.fontHeading + ';' : ''}">
+                          📓 Vault 同步大盘
                         </span>
-                        <span class="theme-sim-badge" style="font-size:10px;padding:1px 6px;border-radius:4px;color:${th.primaryColor};background:rgba(${th.primaryRgb},0.15);border:1px solid ${th.cardBorder};">
-                          AES-256
+                        <span class="theme-sim-badge" style="font-size:10px;padding:1px 6px;border-radius:${th.radius || '4px'};color:${th.primaryColor};background:rgba(${th.primaryRgb},0.15);border:1px solid ${th.cardBorder};">
+                          ${th.radius ? 'Radius ' + th.radius : 'AES-256'}
                         </span>
                       </div>
                       <div class="theme-sim-bar" style="height:4px;width:100%;border-radius:2px;background:${th.cardSubtle};overflow:hidden;">
-                        <div class="theme-sim-progress" style="height:100%;width:76%;background:${th.primaryColor};border-radius:2px;"></div>
+                        <div class="theme-sim-progress" style="height:100%;width:80%;background:${th.primaryColor};border-radius:2px;"></div>
                       </div>
                     </div>
 
@@ -558,7 +835,7 @@ export function openThemeSelectorModal() {
         <div class="theme-gallery-footer">
           <div class="theme-gallery-footer-info">
             <span>✨</span>
-            <span>点击任意卡片即可无刷新全局热切换，系统会自动记忆您的偏好设置</span>
+            <span>点击任意卡片即可无刷新全局热切换，字体、圆角与色彩系统会自动同步并持久保存</span>
           </div>
           <button class="btn btn-primary" id="btn-theme-modal-done" style="padding:6px 20px;">
             ${window.t ? window.t('theme.close_modal', '完成并关闭') : '完成并关闭'}
@@ -612,8 +889,9 @@ export function initThemeSwitcher() {
   const menu = $('#theme-dropdown-menu');
   if (!menuBtn || !menu) return;
 
-  const darkThemes = THEMES.filter((t) => !t.isLight);
-  const lightThemes = THEMES.filter((t) => t.isLight);
+  const featuredThemes = THEMES.filter((t) => t.isFeatured);
+  const classicDarkThemes = THEMES.filter((t) => !t.isFeatured && !t.isLight);
+  const classicLightThemes = THEMES.filter((t) => !t.isFeatured && t.isLight);
   const currentTheme = resolveThemeId(localStorage.getItem('nimbus_theme'));
 
   menu.innerHTML = `
@@ -622,14 +900,34 @@ export function initThemeSwitcher() {
       <button id="topbar-open-gallery-btn" class="theme-dropdown-gallery-btn" style="padding:2px 8px;font-size:11px;border-radius:12px;background:var(--accent-bg);color:var(--accent);border:1px solid var(--accent);cursor:pointer;">🎨 画廊展厅</button>
     </div>
 
-    <div style="padding:4px 0;max-height:380px;overflow-y:auto;">
-      <div style="padding:4px 12px;font-size:10.5px;font-weight:700;color:var(--muted);text-transform:uppercase;">🌙 暗夜极客深色</div>
-      ${darkThemes
+    <div style="padding:4px 0;max-height:420px;overflow-y:auto;">
+      <!-- ⭐ 4套全新设计方案 -->
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 12px 3px 12px;">
+        <span style="font-size:10.5px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px;">⭐ 2026 全新设计 (4套/8款)</span>
+        <a href="/ui-demo.html" target="_blank" style="font-size:10px;color:var(--muted);text-decoration:none;" title="查看独立对比 Demo">对比 Demo ↗</a>
+      </div>
+      ${featuredThemes
         .map((th) => {
           const isActive = th.id === currentTheme;
           const localizedName = (window.t ? window.t(`theme.${th.id}`) : null) || th.name;
           return `
-            <button class="theme-opt-item ${isActive ? 'active' : ''}" data-theme-val="${th.id}" style="display:flex;align-items:center;gap:8px;width:100%;padding:6px 12px;background:transparent;border:none;cursor:pointer;color:var(--text);font-size:12px;text-align:left;">
+            <button class="theme-opt-item ${isActive ? 'active' : ''}" data-theme-val="${th.id}" style="display:flex;align-items:center;gap:8px;width:100%;padding:5px 12px;background:transparent;border:none;cursor:pointer;color:var(--text);font-size:12px;text-align:left;">
+              <span class="dot" style="width:10px;height:10px;border-radius:50%;background:${th.primaryColor};box-shadow:0 0 6px ${th.primaryColor};flex-shrink:0;"></span>
+              <span style="flex:1;${th.fontHeading ? 'font-family:' + th.fontHeading + ';' : ''}">${escapeHtml(localizedName)}</span>
+              ${isActive ? '<span style="color:var(--accent);font-size:11px;">✓</span>' : `<span style="font-size:9.5px;color:var(--muted);padding:1px 4px;border-radius:3px;background:var(--panel-3);">${th.isLight ? 'Light' : 'Dark'}</span>`}
+            </button>
+          `;
+        })
+        .join('')}
+
+      <!-- 🌙 经典暗夜深色 -->
+      <div style="padding:8px 12px 3px 12px;font-size:10.5px;font-weight:700;color:var(--muted);text-transform:uppercase;border-top:1px solid var(--border);margin-top:6px;">🌙 经典暗夜深色 (${classicDarkThemes.length})</div>
+      ${classicDarkThemes
+        .map((th) => {
+          const isActive = th.id === currentTheme;
+          const localizedName = (window.t ? window.t(`theme.${th.id}`) : null) || th.name;
+          return `
+            <button class="theme-opt-item ${isActive ? 'active' : ''}" data-theme-val="${th.id}" style="display:flex;align-items:center;gap:8px;width:100%;padding:5px 12px;background:transparent;border:none;cursor:pointer;color:var(--text);font-size:12px;text-align:left;">
               <span class="dot" style="width:10px;height:10px;border-radius:50%;background:${th.primaryColor};box-shadow:0 0 6px ${th.primaryColor};flex-shrink:0;"></span>
               <span style="flex:1;">${escapeHtml(localizedName)}</span>
               ${isActive ? '<span style="color:var(--accent);font-size:11px;">✓</span>' : ''}
@@ -638,20 +936,28 @@ export function initThemeSwitcher() {
         })
         .join('')}
 
-      <div style="padding:6px 12px 4px 12px;font-size:10.5px;font-weight:700;color:var(--muted);text-transform:uppercase;border-top:1px solid var(--border);margin-top:4px;">☀️ 日间清爽明亮</div>
-      ${lightThemes
+      <!-- ☀️ 经典日间明亮 -->
+      <div style="padding:8px 12px 3px 12px;font-size:10.5px;font-weight:700;color:var(--muted);text-transform:uppercase;border-top:1px solid var(--border);margin-top:6px;">☀️ 经典日间清爽 (${classicLightThemes.length})</div>
+      ${classicLightThemes
         .map((th) => {
           const isActive = th.id === currentTheme;
           const localizedName = (window.t ? window.t(`theme.${th.id}`) : null) || th.name;
           return `
-            <button class="theme-opt-item ${isActive ? 'active' : ''}" data-theme-val="${th.id}" style="display:flex;align-items:center;gap:8px;width:100%;padding:6px 12px;background:transparent;border:none;cursor:pointer;color:var(--text);font-size:12px;text-align:left;">
-              <span class="dot" style="width:10px;height:10px;border-radius:50%;background:${th.primaryColor};flex-shrink:0;"></span>
+            <button class="theme-opt-item ${isActive ? 'active' : ''}" data-theme-val="${th.id}" style="display:flex;align-items:center;gap:8px;width:100%;padding:5px 12px;background:transparent;border:none;cursor:pointer;color:var(--text);font-size:12px;text-align:left;">
+              <span class="dot" style="width:10px;height:10px;border-radius:50%;background:${th.primaryColor};box-shadow:0 0 6px ${th.primaryColor};flex-shrink:0;"></span>
               <span style="flex:1;">${escapeHtml(localizedName)}</span>
               ${isActive ? '<span style="color:var(--accent);font-size:11px;">✓</span>' : ''}
             </button>
           `;
         })
         .join('')}
+    </div>
+
+    <div style="padding:6px 12px;border-top:1px solid var(--border);background:var(--panel-2);display:flex;justify-content:space-between;align-items:center;">
+      <a href="/ui-demo.html" target="_blank" style="font-size:11px;color:var(--muted);text-decoration:none;display:inline-flex;align-items:center;gap:4px;">
+        <span>👁️</span> 打开静态对比工作台
+      </a>
+      <span style="font-size:10.5px;color:var(--muted);">共 ${THEMES.length} 款</span>
     </div>
   `;
 
@@ -693,4 +999,3 @@ export function initThemeSwitcher() {
 
   applyTheme(localStorage.getItem('nimbus_theme') || 'cyber-blue');
 }
-

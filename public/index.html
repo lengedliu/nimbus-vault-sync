@@ -239,34 +239,7 @@
           <span style="font-size:10px;opacity:0.7;">▼</span>
         </button>
         <div id="theme-dropdown-menu" class="theme-dropdown-menu hidden">
-          <button class="theme-opt-item" data-theme-val="default">
-            <span class="dot" style="background:#58a6ff;box-shadow:0 0 6px #58a6ff;"></span>
-            <span data-i18n="theme.default">经典科技蓝 (默认)</span>
-          </button>
-          <button class="theme-opt-item" data-theme-val="obsidian">
-            <span class="dot" style="background:#9d7cd8;box-shadow:0 0 6px #9d7cd8;"></span>
-            <span data-i18n="theme.obsidian">Obsidian 紫魅夜</span>
-          </button>
-          <button class="theme-opt-item" data-theme-val="emerald">
-            <span class="dot" style="background:#10b981;box-shadow:0 0 6px #10b981;"></span>
-            <span data-i18n="theme.emerald">翡翠极光绿</span>
-          </button>
-          <button class="theme-opt-item" data-theme-val="azure">
-            <span class="dot" style="background:#0284c7;box-shadow:0 0 6px #0284c7;"></span>
-            <span data-i18n="theme.azure">深海蔚蓝</span>
-          </button>
-          <button class="theme-opt-item" data-theme-val="rose">
-            <span class="dot" style="background:#e11d48;box-shadow:0 0 6px #e11d48;"></span>
-            <span data-i18n="theme.rose">琥珀丝绒红</span>
-          </button>
-          <button class="theme-opt-item" data-theme-val="mono">
-            <span class="dot" style="background:#ffffff;box-shadow:0 0 6px #ffffff;"></span>
-            <span data-i18n="theme.mono">OLED 纯黑极简</span>
-          </button>
-          <button class="theme-opt-item" data-theme-val="light">
-            <span class="dot" style="background:#2563eb;"></span>
-            <span data-i18n="theme.light">明亮白昼 (Light)</span>
-          </button>
+          <!-- Populated dynamically by initThemeSwitcher in themes.js -->
         </div>
       </div>
 
@@ -324,7 +297,7 @@
     <nav class="sidebar" id="sidebar">
       <div class="sidebar-body">
         <div style="margin-bottom: 14px;">
-          <button class="nav-item tab-btn" id="global-dashboard-btn" data-tab="dashboard" style="width:100%;font-weight:600;display:flex;align-items:center;gap:8px;padding:9px 12px;border-radius:var(--radius);background:var(--accent-bg);color:var(--accent);border:1px solid rgba(88,166,255,0.25);cursor:pointer;">
+          <button class="sidebar-primary-btn nav-item tab-btn" id="global-dashboard-btn" data-tab="dashboard">
             <span style="font-size:16px;">📊</span>
             <span data-i18n="sidebar.dashboard">📊 看板总览</span>
           </button>
