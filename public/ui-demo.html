@@ -735,12 +735,12 @@
 
     .sidebar-footer {
       margin-top: auto;
-      padding-top: 12px;
+      padding-top: 10px;
       border-top: 1px solid var(--border);
       font-size: 11px;
       color: var(--text-dim);
       display: flex;
-      justify-content: space-between;
+      flex-direction: column;
     }
 
     /* Content Area */
@@ -1318,8 +1318,14 @@
         </div>
 
         <div class="sidebar-footer">
-          <span>版本: v2.4.0-build</span>
-          <span>已同步</span>
+          <div class="sidebar-date-display" id="demo-sidebar-date" style="display:flex;align-items:center;gap:6px;background:var(--bg-sidebar);border:1px solid var(--border);border-radius:var(--radius);padding:5px 8px;font-size:11.5px;color:var(--text-muted);margin-bottom:8px;box-shadow:none;">
+            <span>📅</span>
+            <span id="demo-date-text">2026年09月29日 星期二</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;width:100%;">
+            <span>版本: v2.4.0-build</span>
+            <span style="color:var(--status-ok);font-weight:600;">已同步</span>
+          </div>
         </div>
       </aside>
 

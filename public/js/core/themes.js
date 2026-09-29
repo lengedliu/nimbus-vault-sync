@@ -759,6 +759,8 @@ export function updateDateDisplays() {
   const formatted = formatCurrentDate();
   const topbarDate = $('#topbar-date-text');
   if (topbarDate) topbarDate.textContent = formatted;
+  const sidebarDate = $('#sidebar-date-text');
+  if (sidebarDate) sidebarDate.textContent = formatted;
   const dashDate = $('#dashboard-date-text');
   if (dashDate) dashDate.textContent = formatted;
   const loginDate = $('#login-date-text');

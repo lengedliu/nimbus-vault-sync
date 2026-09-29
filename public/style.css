@@ -2276,14 +2276,54 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
   background: transparent;
 }
 .sidebar-footer {
-  padding: 10px 14px;
+  padding: 10px 12px;
   border-top: 1px solid var(--border);
   background: var(--bg-sidebar, var(--panel-2));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.sidebar-date-display {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-sidebar, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 5px 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  user-select: none;
+  width: 100%;
+  box-shadow: none;
+  transition: all 0.15s ease;
+}
+.sidebar-date-display:hover {
+  border-color: var(--border-accent, var(--primary));
+  color: var(--text);
+  background: var(--bg-sidebar, transparent);
+}
+.sidebar-date-display .date-icon {
+  font-size: 12px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.sidebar-date-display .date-text {
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-footer-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  flex-shrink: 0;
+  width: 100%;
 }
 .sidebar-github-link {
   display: inline-flex;
