@@ -27,12 +27,13 @@ export async function showObsidianConnectModal(vault, initialToken, initialDevic
     }
   } catch {}
 
+  const defaultMainDevice = state.user?.username ? `${state.user.username}-Obsidian` : 'Client-Obsidian';
   let currentToken = initialToken || state.token;
-  let currentDevice = initialDeviceName || (state.user?.username ? `${state.user.username}-Obsidian` : 'Client-Obsidian');
+  let currentDevice = initialDeviceName || defaultMainDevice;
 
   const tokenOptions = [
-    `<option value="${state.token}" ${currentToken === state.token ? 'selected' : ''}>🔑 当前主登录令牌 (${state.user?.username || 'Main User'})</option>`,
-    ...userTokens.map((t) => `<option value="${escapeHtml(t.token || state.token)}" ${currentToken === t.token ? 'selected' : ''}>📱 [专属设备] ${escapeHtml(t.label)} (${escapeHtml(t.maskedToken || '')})</option>`),
+    `<option value="${state.token}" data-devicename="${escapeHtml(defaultMainDevice)}" ${currentToken === state.token ? 'selected' : ''}>🔑 当前主登录令牌 (${state.user?.username || 'Main User'})</option>`,
+    ...userTokens.map((t) => `<option value="${escapeHtml(t.token || state.token)}" data-devicename="${escapeHtml(t.label || '')}" ${currentToken === t.token ? 'selected' : ''}>📱 [专属设备] ${escapeHtml(t.label)} (${escapeHtml(t.maskedToken || '')})</option>`),
   ].join('');
 
   function buildConfig(selectedToken, deviceName) {
@@ -173,6 +174,18 @@ export async function showObsidianConnectModal(vault, initialToken, initialDevic
       copyServerBtn.onclick = () => {
         if (navigator.clipboard?.writeText) {
           navigator.clipboard.writeText(serverUrl).then(() => toast('服务器地址已复制'));
+        }
+      };
+    }
+
+    const tokenSelect = dialog.querySelector('#modal-token-select');
+    const deviceInput = dialog.querySelector('#modal-device-input');
+    if (tokenSelect && deviceInput) {
+      tokenSelect.onchange = () => {
+        const opt = tokenSelect.options[tokenSelect.selectedIndex];
+        const devName = opt?.getAttribute('data-devicename');
+        if (devName) {
+          deviceInput.value = devName;
         }
       };
     }

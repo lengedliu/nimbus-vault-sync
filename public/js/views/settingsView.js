@@ -115,9 +115,10 @@ function renderSettingsSubTabContent(subTab, settings, tokensList, currentVault,
 
   if (subTab === 'plugin') {
     const vaultOptions = state.vaults.map((v) => `<option value="${v.id}" ${v.id === currentVault.id ? 'selected' : ''}>${escapeHtml(v.name)} (${v.id})</option>`).join('');
+    const defaultMainDevice = state.user?.username ? state.user.username + '-Device' : 'Obsidian-Client';
     const tokenOptions = [
-      `<option value="${state.token}">🔑 当前登录主令牌 (${state.user?.username || 'Main'})</option>`,
-      ...tokensList.map((t) => `<option value="${escapeHtml(t.token || '')}">📱 [专属设备] ${escapeHtml(t.label)} (${escapeHtml(t.maskedToken || '')})</option>`),
+      `<option value="${state.token}" data-type="main" data-devicename="${escapeHtml(defaultMainDevice)}">🔑 当前登录主令牌 (${state.user?.username || 'Main'})</option>`,
+      ...tokensList.map((t) => `<option value="${escapeHtml(t.token || '')}" data-type="device" data-tokenid="${t.id}" data-devicename="${escapeHtml(t.label || 'Obsidian-Device')}">📱 [专属设备] ${escapeHtml(t.label)} (${escapeHtml(t.maskedToken || '')})</option>`),
     ].join('');
     const bratRepoUrl = 'https://github.com/lengedliu/nimbus-vault-sync';
 
@@ -141,7 +142,7 @@ function renderSettingsSubTabContent(subTab, settings, tokensList, currentVault,
 
         <div class="settings-card-header" style="margin-top:20px;">
           <h3><span>⚙️</span> 第二步：生成专属同步配置 (data.json)</h3>
-          <p>选择您要绑定的笔记库与设备令牌：</p>
+          <p>选择您要绑定的笔记库与设备令牌（切换令牌自动联动设备名称与对应配置）：</p>
         </div>
 
         <div class="settings-form-grid" style="margin-bottom:16px;">
@@ -155,7 +156,7 @@ function renderSettingsSubTabContent(subTab, settings, tokensList, currentVault,
           </label>
           <label>
             <span>设备标识名称 (Device Name)</span>
-            <input type="text" id="cfg-device-name" value="${escapeHtml(state.user?.username ? state.user.username + '-Device' : 'Obsidian-Client')}" />
+            <input type="text" id="cfg-device-name" value="${escapeHtml(defaultMainDevice)}" />
           </label>
           <label>
             <span>服务器地址 (Server URL)</span>
@@ -177,7 +178,16 @@ function renderSettingsSubTabContent(subTab, settings, tokensList, currentVault,
     function updateConfigJson() {
       const selectedVaultId = container.querySelector('#cfg-select-vault')?.value || currentVault.id;
       const selectedVault = state.vaults.find((v) => v.id === selectedVaultId) || currentVault;
-      const selectedToken = container.querySelector('#cfg-select-token')?.value || state.token;
+      const selectTokenEl = container.querySelector('#cfg-select-token');
+      const selectedOption = selectTokenEl?.options[selectTokenEl.selectedIndex];
+      let selectedToken = selectTokenEl?.value;
+      if (!selectedToken && selectedOption) {
+        const tokenId = selectedOption.getAttribute('data-tokenid');
+        const matched = tokensList.find((t) => t.id === tokenId);
+        if (matched?.token) selectedToken = matched.token;
+      }
+      if (!selectedToken) selectedToken = state.token;
+
       const devName = container.querySelector('#cfg-device-name')?.value.trim() || 'Obsidian-Device';
       const srvUrl = (container.querySelector('#cfg-server-url')?.value.trim() || serverOrigin).replace(/\/+$/, '');
       const wsUrl = srvUrl.replace(/^http:\/\//i, 'ws://').replace(/^https:\/\//i, 'wss://') + '/ws';
@@ -202,7 +212,20 @@ function renderSettingsSubTabContent(subTab, settings, tokensList, currentVault,
     updateConfigJson();
 
     container.querySelector('#cfg-select-vault')?.addEventListener('change', updateConfigJson);
-    container.querySelector('#cfg-select-token')?.addEventListener('change', updateConfigJson);
+    
+    // 联动逻辑：选择不同令牌时，自动联动更新设备标识名称，并重新生成专属 data.json
+    container.querySelector('#cfg-select-token')?.addEventListener('change', (e) => {
+      const selectedOption = e.target.options[e.target.selectedIndex];
+      if (selectedOption) {
+        const linkedDeviceName = selectedOption.getAttribute('data-devicename');
+        const devNameInput = container.querySelector('#cfg-device-name');
+        if (linkedDeviceName && devNameInput) {
+          devNameInput.value = linkedDeviceName;
+        }
+      }
+      updateConfigJson();
+    });
+
     container.querySelector('#cfg-device-name')?.addEventListener('input', updateConfigJson);
     container.querySelector('#cfg-server-url')?.addEventListener('input', updateConfigJson);
 

@@ -225,6 +225,7 @@ router.get('/tokens', (req, res) => {
       expiresAt,
       durationText,
       isExpired,
+      token: d.token || '',
       maskedToken: d.token ? `${d.token.slice(0, 10)}...${d.token.slice(-6)}` : '',
     };
   });

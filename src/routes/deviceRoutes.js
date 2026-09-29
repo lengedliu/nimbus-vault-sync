@@ -83,10 +83,11 @@ router.get('/', (req, res) => {
       lastIp: dev.clientIp || clientIp,
       userAgent: dev.userAgent || userAgent,
       tokenPreview,
+      token: rawToken,
       createdAt: dev.createdAt,
       lastActiveAt: dev.lastActiveAt || dev.createdAt,
       status: dev.status || 'active',
-      username: u ? u.username : 'Unknown',
+      username: u ? u.username : (dev.username || 'admin'),
       isOnline,
     };
   });

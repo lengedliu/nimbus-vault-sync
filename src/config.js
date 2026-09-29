@@ -4,7 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const pkg = require('../package.json');
 
-const APP_VERSION = process.env.APP_VERSION || pkg.version || '1.3.0';
+const APP_VERSION = process.env.APP_VERSION || pkg.version || '1.3.2';
 const DATA_DIR = path.resolve(process.cwd(), process.env.DATA_DIR || './data');
 const INSECURE_DEFAULT_SECRET = 'dev-only-insecure-secret';
 
