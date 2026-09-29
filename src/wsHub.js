@@ -45,7 +45,24 @@ class FnsHub {
   }
 
   init(httpServer) {
-    this.wss = new WebSocketServer({ noServer: true });
+    this.wss = new WebSocketServer({
+      noServer: true,
+      perMessageDeflate: {
+        zlibDeflateOptions: {
+          chunkSize: 1024,
+          memLevel: 7,
+          level: 3,
+        },
+        zlibInflateOptions: {
+          chunkSize: 10 * 1024,
+        },
+        clientNoContextTakeover: true,
+        serverNoContextTakeover: true,
+        serverMaxWindowBits: 10,
+        concurrencyLimit: 10,
+        threshold: 1024, // Compress messages > 1KB for optimal throughput vs CPU tradeoff
+      },
+    });
 
     // Setup 30s heartbeat interval to detect stale/dead connections and kick revoked tokens
     if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);

@@ -372,6 +372,18 @@ router.post('/:vaultId/batch/move', express.json(), (req, res) => {
   res.json({ success: true, count: successCount, results });
 });
 
+// GET tags overview for vault
+router.get('/:vaultId/tags', (req, res) => {
+  if (!requireReadAccess(req, res)) return;
+  const { vaultId } = req.params;
+  try {
+    const tags = storage.getVaultTags(vaultId);
+    res.json({ success: true, tags, count: tags.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET / POST batch download selected files as ZIP
 router.get('/:vaultId/batch/download', (req, res) => {
   if (!requireReadAccess(req, res)) return;

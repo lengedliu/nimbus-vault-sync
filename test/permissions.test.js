@@ -20,7 +20,7 @@ function makeUser(id, role = 'user') {
 
 test('assertReadAccess/assertWriteAccess/assertOwnerAccess: 所有者三项权限全部通过', async () => {
   const owner = makeUser('owner-1');
-  const vault = vaults.create(owner.id, 'Owner Vault');
+  const vault = await vaults.create(owner.id, 'Owner Vault');
 
   assert.doesNotThrow(() => permissions.assertReadAccess(owner, vault.id));
   assert.doesNotThrow(() => permissions.assertWriteAccess(owner, vault.id));
@@ -30,7 +30,7 @@ test('assertReadAccess/assertWriteAccess/assertOwnerAccess: 所有者三项权�
 test('assertReadAccess/assertWriteAccess/assertOwnerAccess: read-write 协作者能读能写，但不是所有者', async () => {
   const owner = makeUser('owner-2');
   const collaborator = makeUser('collab-rw');
-  const vault = vaults.create(owner.id, 'Shared Vault RW');
+  const vault = await vaults.create(owner.id, 'Shared Vault RW');
   await vaultMembers.addOrUpdateMember(vault.id, collaborator.id, 'read-write');
 
   assert.doesNotThrow(() => permissions.assertReadAccess(collaborator, vault.id));
@@ -44,7 +44,7 @@ test('assertReadAccess/assertWriteAccess/assertOwnerAccess: read-write 协作者
 test('assertReadAccess/assertWriteAccess/assertOwnerAccess: read-only 协作者只能读，写和所有者都应该被拒绝', async () => {
   const owner = makeUser('owner-3');
   const viewer = makeUser('collab-ro');
-  const vault = vaults.create(owner.id, 'Shared Vault RO');
+  const vault = await vaults.create(owner.id, 'Shared Vault RO');
   await vaultMembers.addOrUpdateMember(vault.id, viewer.id, 'read-only');
 
   assert.doesNotThrow(() => permissions.assertReadAccess(viewer, vault.id));
@@ -55,7 +55,7 @@ test('assertReadAccess/assertWriteAccess/assertOwnerAccess: read-only 协作者�
 test('assertReadAccess: 完全无关的陌生人应该被拒绝', async () => {
   const owner = makeUser('owner-4');
   const stranger = makeUser('stranger-1');
-  const vault = vaults.create(owner.id, 'Private Vault');
+  const vault = await vaults.create(owner.id, 'Private Vault');
 
   assert.throws(() => permissions.assertReadAccess(stranger, vault.id), permissions.PermissionError);
 });
@@ -63,7 +63,7 @@ test('assertReadAccess: 完全无关的陌生人应该被拒绝', async () => {
 test('assertOwnerAccess: 管理员可以豁免所有者检查', async () => {
   const owner = makeUser('owner-5');
   const admin = makeUser('admin-1', 'admin');
-  const vault = vaults.create(owner.id, 'Vault Needing Admin Override');
+  const vault = await vaults.create(owner.id, 'Vault Needing Admin Override');
 
   assert.doesNotThrow(() => permissions.assertOwnerAccess(admin, vault.id));
 });

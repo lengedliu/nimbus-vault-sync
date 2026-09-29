@@ -42,7 +42,7 @@ test('Cascade Cleanup: deleting a vault completely purges members, changes, rule
   const testMember = 'u_test_cascade_member';
 
   // 1. Create a vault
-  const vault = vaults.create(testOwner, 'Cascade Test Vault');
+  const vault = await vaults.create(testOwner, 'Cascade Test Vault');
   const vaultId = vault.id;
   assert.ok(vaultId);
 

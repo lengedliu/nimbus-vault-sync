@@ -1875,12 +1875,13 @@ button:active, .btn:active {
 .btn-primary, button.primary, button[type="submit"] {
   background: var(--primary, #238636);
   border-color: var(--primary, #238636);
-  color: #ffffff;
+  color: #ffffff !important;
   font-weight: 600;
 }
 .btn-primary:hover, button.primary:hover, button[type="submit"]:hover {
   background: var(--primary-hover, #2ea043);
   border-color: var(--primary-hover, #2ea043);
+  color: #ffffff !important;
 }
 button.secondary {
   background: var(--panel-2);
@@ -4002,7 +4003,14 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
   color: var(--text);
 }
 .token-act-btn.primary {
-  color: var(--accent);
+  color: var(--primary);
+  background: var(--bg-accent, rgba(59, 130, 246, 0.1));
+  border: 1px solid var(--border-accent, rgba(59, 130, 246, 0.25));
+}
+.token-act-btn.primary:hover {
+  background: var(--primary);
+  color: #ffffff !important;
+  border-color: var(--primary);
 }
 /* ----------------- Topbar Search Button & KBD ----------------- */
 .topbar-search-btn {

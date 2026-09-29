@@ -35,7 +35,7 @@ test('Discovery 1: 设备令牌重新生成后旧令牌必须失效，被吊销�
 test('Discovery 3: 备份快照文件名安全净化与路径穿越防护', async () => {
   // 创建一个测试用的临时 vault
   const dummyOwner = 'u_sec_owner';
-  const dummyVault = vaults.create(dummyOwner, 'Test/../../Evil..Vault:Name');
+  const dummyVault = await vaults.create(dummyOwner, 'Test/../../Evil..Vault:Name');
   assert.ok(dummyVault.id);
 
   try {
@@ -65,7 +65,7 @@ test('Discovery 3: 备份快照文件名安全净化与路径穿越防护', asyn
 test('Discovery 4: 权限查询与协作者配置生成兼容性测试', async () => {
   const ownerId = 'u_perm_owner';
   const memberId = 'u_perm_member';
-  const vault = vaults.create(ownerId, 'PermTestVault');
+  const vault = await vaults.create(ownerId, 'PermTestVault');
 
   try {
     const vaultMembers = require('../src/vaultMembers');

@@ -14,6 +14,7 @@ import { renderVaultSyncLogsSubtab } from './syncLogsView.js';
 import { renderSharesSubtab } from './sharesSubtab.js';
 import { renderRulesSubtab } from './rulesSubtab.js';
 import { renderTrashSubtab } from './trashSubtab.js';
+import { renderTagsSubtab } from './tagsSubtab.js';
 
 export function scheduleDebouncedViewUpdate(vaultId) {
   if (state.activeVaultId !== vaultId) return;
@@ -232,6 +233,7 @@ export function renderVaultContainer(vaultId) {
   subtabsBar.className = 'subtabs-bar';
   subtabsBar.innerHTML = `
     <button class="subtab-btn ${state.activeSubtab === 'files' ? 'active' : ''}" data-sub="files">📄 笔记与文件</button>
+    <button class="subtab-btn ${state.activeSubtab === 'tags' ? 'active' : ''}" data-sub="tags">🏷️ 标签聚合</button>
     <button class="subtab-btn ${state.activeSubtab === 'conflicts' ? 'active' : ''}" data-sub="conflicts" id="subtab-conflicts-btn">⚔️ 冲突解决中心</button>
     <button class="subtab-btn ${state.activeSubtab === 'backups' ? 'active' : ''}" data-sub="backups">💾 快照与备份</button>
     <button class="subtab-btn ${state.activeSubtab === 'git' ? 'active' : ''}" data-sub="git">🚀 Git 自动备份</button>
@@ -281,6 +283,7 @@ export function renderVaultContainer(vaultId) {
   }
 
   if (state.activeSubtab === 'files') renderFilesSubtab(vaultId, contentBox);
+  else if (state.activeSubtab === 'tags') renderTagsSubtab(vaultId, contentBox);
   else if (state.activeSubtab === 'conflicts') renderConflictsSubtab(vaultId, contentBox, { openVault });
   else if (state.activeSubtab === 'backups') renderBackupsSubtab(vaultId, contentBox);
   else if (state.activeSubtab === 'git') renderGitSubtab(vaultId, contentBox);

@@ -10,7 +10,7 @@ const vaults = require('../src/vaults');
 const storage = require('../src/storage');
 
 test('Kanban: 初始状态下 .nimbus-kanban.json 不存在，写入后可原样读出', async () => {
-  const vault = vaults.create('user-test-1', 'Kanban Vault');
+  const vault = await vaults.create('user-test-1', 'Kanban Vault');
   const vaultId = vault.id;
 
   const rawBefore = storage.readFile(vaultId, '.nimbus-kanban.json');
@@ -44,7 +44,7 @@ test('Kanban: 初始状态下 .nimbus-kanban.json 不存在，写入后可原样
 });
 
 test('Task Scan: 能准确扫描 Markdown 中的 - [ ] 与 - [x] 待办', async () => {
-  const vault = vaults.create('user-test-2', 'Notes Vault');
+  const vault = await vaults.create('user-test-2', 'Notes Vault');
   const vaultId = vault.id;
 
   const mdContent = `

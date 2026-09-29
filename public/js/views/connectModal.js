@@ -2,6 +2,7 @@
 import { state, $, escapeHtml } from '../core/state.js';
 import { api } from '../core/api.js';
 import { showModal, toast } from '../core/dialogs.js';
+import { generateQRCodeSVG } from '../core/qrcode.js';
 
 export async function showObsidianConnectModal(vault, initialToken, initialDeviceName) {
   const serverUrl = state.serverBase.replace(/\/$/, '');
@@ -51,35 +52,71 @@ export async function showObsidianConnectModal(vault, initialToken, initialDevic
     };
   }
 
+  function buildDeepLink(selectedToken, deviceName) {
+    const params = new URLSearchParams({
+      server: serverUrl,
+      vaultId,
+      vaultName,
+      token: selectedToken,
+      device: deviceName,
+      autoSync: '1',
+    });
+    return `obsidian://nimbus-sync?${params.toString()}`;
+  }
+
   let pluginConfig = buildConfig(currentToken, currentDevice);
+  let deepLinkUrl = buildDeepLink(currentToken, currentDevice);
+  const qrSvg = generateQRCodeSVG(JSON.stringify(pluginConfig), { size: 160 });
 
   const html = `
     <div class="modal-header">
       <div style="display:flex;align-items:center;gap:10px;">
         <span style="font-size:20px;">⚡</span>
         <div>
-          <h3 style="margin:0;font-size:16px;">Obsidian 插件安装与对接配置</h3>
-          <div style="font-size:11.5px;color:var(--muted)">支持 BRAT 一键安装、手动安装与 data.json 快速导入</div>
+          <h3 style="margin:0;font-size:16px;">Obsidian 插件安装与多端对接</h3>
+          <div style="font-size:11.5px;color:var(--muted)">支持手机扫码直连、BRAT 一键安装与 data.json 快速导入</div>
         </div>
       </div>
       <button class="modal-close ghost">✕</button>
     </div>
 
-    <div class="modal-body" style="max-height:72vh;overflow-y:auto;padding:16px 20px;">
+    <div class="modal-body" style="max-height:74vh;overflow-y:auto;padding:16px 20px;">
+      <!-- STEP 1: Installation method selection -->
       <div style="background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;margin-bottom:16px;">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
           <div style="font-weight:600;font-size:13.5px;display:flex;align-items:center;gap:6px;">
             <span>📦 步骤 1：在 Obsidian 中安装同步插件</span>
           </div>
-          <span style="font-size:11px;background:rgba(88,166,255,0.15);color:#58a6ff;padding:2px 8px;border-radius:10px;font-weight:600;">首推 BRAT 安装</span>
+          <span style="font-size:11px;background:rgba(88,166,255,0.15);color:#58a6ff;padding:2px 8px;border-radius:10px;font-weight:600;">多端支持</span>
         </div>
 
-        <div style="display:flex;gap:6px;margin-bottom:12px;border-bottom:1px solid var(--border);padding-bottom:8px;">
-          <button id="modal-install-tab-brat" class="btn-sm primary" style="font-size:12px;padding:4px 12px;border-radius:4px;">✨ 方式一：通过 BRAT 一键安装 (推荐)</button>
-          <button id="modal-install-tab-manual" class="btn-sm secondary" style="font-size:12px;padding:4px 12px;border-radius:4px;">📁 方式二：手动解压安装</button>
+        <div style="display:flex;gap:6px;margin-bottom:12px;border-bottom:1px solid var(--border);padding-bottom:8px;flex-wrap:wrap;">
+          <button id="modal-install-tab-qr" class="btn-sm btn-primary" style="font-size:12px;padding:5px 12px;border-radius:6px;cursor:pointer;">📱 方式一：手机扫码一键配对 (极速)</button>
+          <button id="modal-install-tab-brat" class="btn-sm secondary" style="font-size:12px;padding:5px 12px;border-radius:6px;cursor:pointer;">✨ 方式二：通过 BRAT 一键安装</button>
+          <button id="modal-install-tab-manual" class="btn-sm secondary" style="font-size:12px;padding:5px 12px;border-radius:6px;cursor:pointer;">📁 方式三：手动解压安装</button>
         </div>
 
-        <div id="modal-install-panel-brat" style="font-size:12.5px;color:var(--text-secondary);line-height:1.7;">
+        <!-- Panel 1: QR Code Scanner -->
+        <div id="modal-install-panel-qr" style="font-size:12.5px;color:var(--text-secondary);line-height:1.7;">
+          <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap;">
+            <div id="modal-qr-container" style="background:#fff;padding:8px;border-radius:10px;border:1px solid var(--border);display:inline-block;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+              ${qrSvg}
+            </div>
+            <div style="flex:1;min-width:220px;">
+              <div style="font-weight:700;font-size:14px;color:var(--text);margin-bottom:6px;">📲 移动端扫码秒级接入</div>
+              <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">
+                在手机 / 平板端 Obsidian 打开 <b>Nimbus Sync</b> 插件设置，点击 <b>「扫描二维码配对」</b> 即可将服务器地址、令牌与库标识全自动注入！
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button id="modal-copy-deeplink-btn" class="btn-primary" style="padding:7px 14px;font-size:12px;border-radius:6px;color:#ffffff !important;font-weight:600;display:inline-flex;align-items:center;gap:6px;cursor:pointer;border:none;">🔗 复制 DeepLink (免输入直连)</button>
+                <button id="modal-download-datajson-btn" class="secondary" style="padding:7px 14px;font-size:12px;border-radius:6px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;">💾 下载 data.json 配置文件</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Panel 2: BRAT -->
+        <div id="modal-install-panel-brat" style="display:none;font-size:12.5px;color:var(--text-secondary);line-height:1.7;">
           <div style="background:rgba(46,204,113,0.08);border:1px solid rgba(46,204,113,0.25);border-radius:6px;padding:8px 12px;margin-bottom:10px;color:var(--text);font-size:12px;">
             💡 <b>什么是 BRAT？</b> Obsidian 官方社区最流行的插件测试与安装神器 (Beta Reviewers Auto-update Tester)，支持桌面端与手机端通过 GitHub 链接一键下载安装与自动更新，免去手动解压。
           </div>
@@ -89,13 +126,14 @@ export async function showObsidianConnectModal(vault, initialToken, initialDevic
             <li><b>添加插件仓库</b>：点击 <b>Add Beta plugin</b> 按钮，在弹出的输入框中粘贴下方 GitHub 仓库地址：
               <div style="display:flex;gap:6px;align-items:center;margin:6px 0;">
                 <input type="text" id="modal-brat-repo-input" readonly value="${escapeHtml(bratRepoUrl)}" style="margin:0;padding:5px 8px;font-size:12px;font-family:ui-monospace,monospace;flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);" />
-                <button id="modal-copy-brat-btn" class="token-act-btn primary" style="padding:4px 10px;font-size:12px;white-space:nowrap;">📋 复制仓库链接</button>
+                <button id="modal-copy-brat-btn" class="btn-primary" style="padding:5px 12px;font-size:12px;color:#ffffff !important;border-radius:4px;white-space:nowrap;cursor:pointer;border:none;">📋 复制仓库链接</button>
               </div>
             </li>
             <li><b>激活并配置</b>：点击 <b>Add Plugin</b> 确认，BRAT 将在几秒内自动下载并启用 <b>Nimbus Sync</b> 插件！</li>
           </ol>
         </div>
 
+        <!-- Panel 3: Manual -->
         <div id="modal-install-panel-manual" style="display:none;font-size:12.5px;color:var(--text-secondary);line-height:1.7;">
           <ol style="padding-left:20px;margin:0;display:flex;flex-direction:column;gap:6px;">
             <li>在本地电脑打开您的 Obsidian 笔记库根目录，进入 <code>.obsidian/plugins/</code> 文件夹。</li>
@@ -106,6 +144,7 @@ export async function showObsidianConnectModal(vault, initialToken, initialDevic
         </div>
       </div>
 
+      <!-- STEP 2: Parameters and Credentials -->
       <div style="background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;margin-bottom:16px;">
         <div style="font-weight:600;font-size:13.5px;margin-bottom:12px;display:flex;align-items:center;gap:6px;">
           <span>🔑 步骤 2：填入连接参数或导入配置</span>
@@ -121,7 +160,7 @@ export async function showObsidianConnectModal(vault, initialToken, initialDevic
           <span style="color:var(--muted)">服务器地址:</span>
           <div style="display:flex;gap:6px;align-items:center;">
             <input type="text" id="modal-server-preview" readonly value="${escapeHtml(serverUrl)}" style="margin:0;padding:5px 8px;font-size:12px;font-family:ui-monospace,monospace;flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);" />
-            <button id="modal-copy-server-btn" class="token-act-btn" style="padding:4px 8px;">📋 复制</button>
+            <button id="modal-copy-server-btn" class="secondary" style="padding:4px 10px;font-size:12px;border-radius:4px;cursor:pointer;">📋 复制</button>
           </div>
 
           <span style="color:var(--muted)">授权访问令牌:</span>
@@ -140,25 +179,75 @@ export async function showObsidianConnectModal(vault, initialToken, initialDevic
   `;
 
   showModal(html, (dialog) => {
+    const qrTab = dialog.querySelector('#modal-install-tab-qr');
     const bratTab = dialog.querySelector('#modal-install-tab-brat');
     const manualTab = dialog.querySelector('#modal-install-tab-manual');
+    const qrPanel = dialog.querySelector('#modal-install-panel-qr');
     const bratPanel = dialog.querySelector('#modal-install-panel-brat');
     const manualPanel = dialog.querySelector('#modal-install-panel-manual');
+    const qrContainer = dialog.querySelector('#modal-qr-container');
     const copyBratBtn = dialog.querySelector('#modal-copy-brat-btn');
     const copyServerBtn = dialog.querySelector('#modal-copy-server-btn');
+    const copyDeepLinkBtn = dialog.querySelector('#modal-copy-deeplink-btn');
+    const downloadDataJsonBtn = dialog.querySelector('#modal-download-datajson-btn');
+    const tokenSelect = dialog.querySelector('#modal-token-select');
+    const deviceInput = dialog.querySelector('#modal-device-input');
 
-    if (bratTab && manualTab) {
+    function updateLiveConfig() {
+      const selectedToken = tokenSelect ? tokenSelect.value : currentToken;
+      const deviceName = deviceInput ? deviceInput.value.trim() || defaultMainDevice : currentDevice;
+      pluginConfig = buildConfig(selectedToken, deviceName);
+      deepLinkUrl = buildDeepLink(selectedToken, deviceName);
+      if (qrContainer) {
+        qrContainer.innerHTML = generateQRCodeSVG(JSON.stringify(pluginConfig), { size: 160 });
+      }
+    }
+
+    if (qrTab && bratTab && manualTab) {
+      qrTab.onclick = () => {
+        qrTab.className = 'btn-sm btn-primary';
+        bratTab.className = 'btn-sm secondary';
+        manualTab.className = 'btn-sm secondary';
+        qrPanel.style.display = 'block';
+        bratPanel.style.display = 'none';
+        manualPanel.style.display = 'none';
+      };
       bratTab.onclick = () => {
-        bratTab.className = 'btn-sm primary';
+        bratTab.className = 'btn-sm btn-primary';
+        qrTab.className = 'btn-sm secondary';
         manualTab.className = 'btn-sm secondary';
         bratPanel.style.display = 'block';
+        qrPanel.style.display = 'none';
         manualPanel.style.display = 'none';
       };
       manualTab.onclick = () => {
-        manualTab.className = 'btn-sm primary';
+        manualTab.className = 'btn-sm btn-primary';
+        qrTab.className = 'btn-sm secondary';
         bratTab.className = 'btn-sm secondary';
-        bratPanel.style.display = 'none';
         manualPanel.style.display = 'block';
+        qrPanel.style.display = 'none';
+        bratPanel.style.display = 'none';
+      };
+    }
+
+    if (copyDeepLinkBtn) {
+      copyDeepLinkBtn.onclick = () => {
+        if (navigator.clipboard?.writeText) {
+          navigator.clipboard.writeText(deepLinkUrl).then(() => toast('已复制 Obsidian 直连 DeepLink'));
+        }
+      };
+    }
+
+    if (downloadDataJsonBtn) {
+      downloadDataJsonBtn.onclick = () => {
+        const blob = new Blob([JSON.stringify(pluginConfig, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'data.json';
+        a.click();
+        URL.revokeObjectURL(url);
+        toast('已下载 data.json 配置文件');
       };
     }
 
@@ -178,8 +267,6 @@ export async function showObsidianConnectModal(vault, initialToken, initialDevic
       };
     }
 
-    const tokenSelect = dialog.querySelector('#modal-token-select');
-    const deviceInput = dialog.querySelector('#modal-device-input');
     if (tokenSelect && deviceInput) {
       tokenSelect.onchange = () => {
         const opt = tokenSelect.options[tokenSelect.selectedIndex];
@@ -187,6 +274,10 @@ export async function showObsidianConnectModal(vault, initialToken, initialDevic
         if (devName) {
           deviceInput.value = devName;
         }
+        updateLiveConfig();
+      };
+      deviceInput.oninput = () => {
+        updateLiveConfig();
       };
     }
   });

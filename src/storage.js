@@ -433,6 +433,57 @@ function createUploadTempPath(vaultId) {
   return path.join(dir, `upload-${Date.now()}-${randomId()}.part`);
 }
 
+function getVaultTags(vaultId) {
+  const root = vaultFilesRoot(vaultId);
+  const manifest = getManifest(vaultId);
+  const tagMap = new Map();
+
+  for (const relPath of Object.keys(manifest)) {
+    if (!relPath.toLowerCase().endsWith('.md')) continue;
+    const full = safeJoin(root, relPath);
+    if (!fs.existsSync(full)) continue;
+    try {
+      const content = fs.readFileSync(full, 'utf8');
+      // Frontmatter tags
+      const frontmatterMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      if (frontmatterMatch) {
+        const fm = frontmatterMatch[1];
+        const yamlTagsMatch = fm.match(/tags:\s*\[(.*?)\]/);
+        if (yamlTagsMatch) {
+          const list = yamlTagsMatch[1].split(',').map((s) => s.trim().replace(/^['"#]|['"]$/g, '')).filter(Boolean);
+          for (const t of list) {
+            const cleanT = t.toLowerCase();
+            if (!tagMap.has(cleanT)) tagMap.set(cleanT, new Set());
+            tagMap.get(cleanT).add(relPath);
+          }
+        }
+      }
+
+      // Inline #tag and #nested/tag
+      const tagRegex = /(?:^|\s)#([a-zA-Z\u4e00-\u9fa5_][\w\u4e00-\u9fa5_\-/]*)/g;
+      let match;
+      while ((match = tagRegex.exec(content)) !== null) {
+        const tag = match[1].toLowerCase();
+        if (tag.length > 0 && !/^h[1-6]$/.test(tag) && !/^[0-9a-fA-F]{3,8}$/.test(tag)) {
+          if (!tagMap.has(tag)) tagMap.set(tag, new Set());
+          tagMap.get(tag).add(relPath);
+        }
+      }
+    } catch {}
+  }
+
+  const result = [];
+  for (const [tag, fileSet] of tagMap.entries()) {
+    result.push({
+      tag,
+      count: fileSet.size,
+      files: Array.from(fileSet).sort(),
+    });
+  }
+  result.sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
+  return result;
+}
+
 function touchMtime(full, mtimeMs) {
   if (!mtimeMs) return;
   const d = new Date(mtimeMs);
@@ -510,7 +561,7 @@ function snapshotBeforeOverwrite(vaultId, relPath, oldBuffer) {
       const dropIds = new Set(toDrop.map((e) => e.id));
       for (const e of toDrop) {
         const f = path.join(historyDir(vaultId), e.id);
-        if (fs.existsSync(f)) try { fs.unlinkSync(f); } catch {}
+        fs.promises.unlink(f).catch(() => {});
       }
       remaining = remaining.filter((e) => !dropIds.has(e.id));
     }
@@ -525,7 +576,7 @@ function snapshotBeforeOverwrite(vaultId, relPath, oldBuffer) {
       const dropIds = new Set(excess.map((e) => e.id));
       for (const e of excess) {
         const f = path.join(historyDir(vaultId), e.id);
-        if (fs.existsSync(f)) try { fs.unlinkSync(f); } catch {}
+        fs.promises.unlink(f).catch(() => {});
       }
       remaining = remaining.filter((e) => !dropIds.has(e.id));
     }
@@ -561,7 +612,7 @@ function pruneVaultHistory(vaultId, { maxAgeMs = MAX_HISTORY_AGE_MS, maxTotal = 
 
     for (const e of dropped) {
       const f = path.join(historyDir(vaultId), e.id);
-      if (fs.existsSync(f)) try { fs.unlinkSync(f); } catch {}
+      fs.promises.unlink(f).catch(() => {});
     }
 
     return kept;
@@ -588,7 +639,7 @@ function snapshotBeforeOverwriteFromFile(vaultId, relPath, existingFullPath, exi
       const dropIds = new Set(toDrop.map((e) => e.id));
       for (const e of toDrop) {
         const f = path.join(historyDir(vaultId), e.id);
-        if (fs.existsSync(f)) try { fs.unlinkSync(f); } catch {}
+        fs.promises.unlink(f).catch(() => {});
       }
       return entries.filter((e) => !dropIds.has(e.id));
     }
@@ -608,6 +659,18 @@ function readHistoryVersion(vaultId, versionId) {
   const full = path.join(historyDir(vaultId), versionId);
   if (!fs.existsSync(full)) return null;
   return { entry, buffer: fs.readFileSync(full) };
+}
+
+async function readHistoryVersionAsync(vaultId, versionId) {
+  const entry = loadIndex(historyIndexPath(vaultId)).find((e) => e.id === versionId);
+  if (!entry) return null;
+  const full = path.join(historyDir(vaultId), versionId);
+  try {
+    const buffer = await fs.promises.readFile(full);
+    return { entry, buffer };
+  } catch {
+    return null;
+  }
 }
 
 // ------------------------------------ trash --------------------------------------
@@ -1310,6 +1373,7 @@ module.exports = {
   purgeBatchTrash,
   purgeAllTrash,
   searchVault,
+  getVaultTags,
   getVaultStats,
   exportVaultZip,
   exportFilesZip,

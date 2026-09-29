@@ -13,7 +13,7 @@ test('WebSocket Token: 验证 token 提取、前缀清洗、authToken 引用兼�
   // Setup user and vault
   const username = 'wstest_' + Date.now();
   const user = await users.createUser(username, 'password123');
-  const vault = vaults.create(user.id, 'WS_Test_Vault_' + Date.now());
+  const vault = await vaults.create(user.id, 'WS_Test_Vault_' + Date.now());
 
   const testServer = http.createServer();
   wsHub.init(testServer);
