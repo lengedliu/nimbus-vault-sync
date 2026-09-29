@@ -167,7 +167,7 @@ const DEFAULT_CONFIG = {
   wechatQrUrl: '/wechat-reward.jpg', // base64 or URL
   wechatLabel: '微信打赏支持',
   alipayQrUrl: '/alipay.png',
-  alipayAccount: 'lenged.liu@gmail.com',
+  alipayAccount: 'lychuan_007@163.com',
   alipayLabel: '支付宝扫码/转账',
   usdtAddress: 'TXD8aYw9fK9vM1L3xP7qR4tB6sQ2zU5eWn',
   usdtNetwork: 'TRC-20 (USDT)',

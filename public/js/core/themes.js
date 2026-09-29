@@ -617,7 +617,7 @@ export const THEMES = [
 ];
 
 const THEME_LEGACY_MAP = {
-  default: 'cyber-blue',
+  default: 'titanium-studio',
   azure: 'cyber-blue',
   obsidian: 'amethyst-purple',
   emerald: 'emerald-forest',
@@ -634,10 +634,10 @@ const THEME_LEGACY_MAP = {
 };
 
 export function resolveThemeId(key) {
-  if (!key) return 'cyber-blue';
+  if (!key) return 'titanium-studio';
   if (THEME_LEGACY_MAP[key]) return THEME_LEGACY_MAP[key];
   const found = THEMES.find((t) => t.id === key);
-  return found ? found.id : 'cyber-blue';
+  return found ? found.id : 'titanium-studio';
 }
 
 export const THEME_LABELS = THEMES.reduce((acc, t) => {
@@ -646,7 +646,7 @@ export const THEME_LABELS = THEMES.reduce((acc, t) => {
 }, {});
 
 export function applyTheme(themeKey) {
-  const rawKey = themeKey || localStorage.getItem('nimbus_theme') || 'cyber-blue';
+  const rawKey = themeKey || localStorage.getItem('nimbus_theme') || 'titanium-studio';
   const activeId = resolveThemeId(rawKey);
   const themeObj = THEMES.find((t) => t.id === activeId) || THEMES[0];
 
@@ -713,7 +713,7 @@ export function applyTheme(themeKey) {
 }
 
 export function updateThemeUI(themeKey) {
-  const rawKey = themeKey || localStorage.getItem('nimbus_theme') || 'cyber-blue';
+  const rawKey = themeKey || localStorage.getItem('nimbus_theme') || 'titanium-studio';
   const key = resolveThemeId(rawKey);
   const themeObj = THEMES.find((t) => t.id === key) || THEMES[0];
   const label = $('#theme-label-name');
@@ -1126,5 +1126,5 @@ export function initThemeSwitcher() {
     };
   });
 
-  applyTheme(localStorage.getItem('nimbus_theme') || 'cyber-blue');
+  applyTheme(localStorage.getItem('nimbus_theme') || 'titanium-studio');
 }

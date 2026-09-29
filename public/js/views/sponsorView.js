@@ -130,7 +130,7 @@ export function renderSponsorUI() {
 
   const wechatQr = config.wechatQrUrl || '/wechat-reward.jpg';
   const alipayQr = config.alipayQrUrl || '/alipay.png';
-  const alipayAccount = config.alipayAccount || 'lenged.liu@gmail.com';
+  const alipayAccount = config.alipayAccount || 'lychuan_007@163.com';
   const kofiUrl = config.kofiUrl || 'https://ko-fi.com/lengedliu';
 
   mainPanel.innerHTML = `
@@ -236,9 +236,9 @@ export function renderSponsorUI() {
                     <img src="${escapeHtml(alipayQr)}" alt="支付宝赞赏码" class="sp-qr-image" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='/alipay.png';" />
                   </div>
                   <div class="sp-copy-action-row">
-                    <button class="sp-action-btn primary" id="sp-copy-alipay-btn">
-                      <span>📋</span>
-                      <span>${sponsorState.copiedKey === 'alipay' ? '已复制账号 ✅' : '复制支付宝账号 (' + escapeHtml(alipayAccount) + ')'}</span>
+                    <button class="sp-action-btn primary ${sponsorState.copiedKey === 'alipay' ? 'copied' : ''}" id="sp-copy-alipay-btn" title="点击复制支付宝账号">
+                      <span class="sp-btn-icon">${sponsorState.copiedKey === 'alipay' ? '✅' : '📋'}</span>
+                      <span class="sp-btn-label">${sponsorState.copiedKey === 'alipay' ? '已复制账号 ✅' : '复制支付宝账号 (' + escapeHtml(alipayAccount) + ')'}</span>
                     </button>
                   </div>
                   <div class="sp-qr-tip-box">
@@ -280,9 +280,9 @@ export function renderSponsorUI() {
                     </div>
                   </div>
                   <div class="sp-copy-action-row">
-                    <button class="sp-action-btn primary" id="sp-copy-usdt-btn">
-                      <span>📋</span>
-                      <span>${sponsorState.copiedKey === 'usdt' ? '已复制地址 ✅' : '复制 USDT 钱包地址'}</span>
+                    <button class="sp-action-btn primary ${sponsorState.copiedKey === 'usdt' ? 'copied' : ''}" id="sp-copy-usdt-btn" title="点击复制 USDT 钱包地址">
+                      <span class="sp-btn-icon">${sponsorState.copiedKey === 'usdt' ? '✅' : '📋'}</span>
+                      <span class="sp-btn-label">${sponsorState.copiedKey === 'usdt' ? '已复制地址 ✅' : '复制 USDT 钱包地址'}</span>
                     </button>
                   </div>
                   <div class="sp-qr-tip-box">
@@ -585,7 +585,7 @@ function bindEvents(mainPanel, config, isAdmin) {
   const copyAlipayBtn = mainPanel.querySelector('#sp-copy-alipay-btn');
   if (copyAlipayBtn) {
     copyAlipayBtn.onclick = () => {
-      const acc = config.alipayAccount || 'lenged.liu@gmail.com';
+      const acc = config.alipayAccount || 'lychuan_007@163.com';
       try {
         navigator.clipboard.writeText(acc);
         sponsorState.copiedKey = 'alipay';
@@ -890,7 +890,7 @@ export function openEditSponsorConfigModal(config) {
         <div class="form-row-2" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
           <div class="form-group">
             <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px;">支付宝收款账号 / 邮箱</label>
-            <input type="text" id="sp-cfg-alipay-acc" value="${escapeHtml(config.alipayAccount || 'lenged.liu@gmail.com')}" placeholder="lenged.liu@gmail.com" style="width:100%;" />
+            <input type="text" id="sp-cfg-alipay-acc" value="${escapeHtml(config.alipayAccount || 'lychuan_007@163.com')}" placeholder="lychuan_007@163.com" style="width:100%;" />
           </div>
           <div class="form-group">
             <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px;">Ko-fi 赞助主页链接</label>

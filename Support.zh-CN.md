@@ -10,7 +10,7 @@
 
 | 微信扫码打赏 *中国地区* | Ko-fi *非中国地区 / International* | 支付宝转账 *中国地区* |
 | :---: | :---: | :---: |
-| <img src="./public/wechat-reward.jpg" width="170" alt="微信赞赏码" /> | [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/lengedliu) | 支付宝账号：`lenged.liu@gmail.com`<br>（转账附言请备注昵称） |
+| <img src="./public/wechat-reward.jpg" width="170" alt="微信赞赏码" /> | [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/lengedliu) | 支付宝账号：`lychuan_007@163.com`<br>（转账附言请备注昵称） |
 
 ---
 

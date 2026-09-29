@@ -161,7 +161,7 @@ initLanguageDropdowns();
 initAuthForm();
 initFontSizeSwitcher();
 initThemeSwitcher();
-applyTheme(localStorage.getItem('nimbus_theme') || 'cyber-blue');
+applyTheme(localStorage.getItem('nimbus_theme') || 'titanium-studio');
 applyFontSize(localStorage.getItem('nimbus_font_size') || 'normal');
 updateDateDisplays();
 setInterval(updateDateDisplays, 10000);

@@ -11,6 +11,8 @@
   --accent: #58a6ff;
   --accent-hover: #79b8ff;
   --accent-bg: rgba(56, 139, 253, 0.15);
+  --primary: var(--theme-primary, var(--accent, #58a6ff));
+  --primary-hover: var(--accent-hover, #79b8ff);
   --success: #3fb950;
   --success-bg: rgba(46, 160, 67, 0.15);
   --warning: #d29922;
@@ -2491,12 +2493,23 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
   background: var(--danger-bg);
 }
 
-.main {
+.main,
+#main-panel {
   flex: 1;
   overflow-y: auto;
   padding: 24px 28px;
   min-width: 0;
   background: var(--bg);
+  /* 隐藏滚动条，保留滚轮和手势滚动 */
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE / Edge */
+}
+
+.main::-webkit-scrollbar,
+#main-panel::-webkit-scrollbar {
+  display: none; /* Chrome / Safari / Chromium Edge */
+  width: 0;
+  height: 0;
 }
 .empty-state {
   color: var(--muted);
@@ -5318,31 +5331,76 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
 
 .sp-copy-action-row {
   width: 100%;
+  display: flex;
+  justify-content: center;
+  margin: 2px 0 6px;
 }
 
 .sp-action-btn {
-  width: 100%;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 10px 16px;
-  border-radius: 10px;
-  font-size: 12.5px;
+  padding: 10px 22px;
+  border-radius: 9999px; /* 精致胶囊圆角 */
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  border: none;
-  transition: all var(--trans);
+  border: 1px solid transparent;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.08);
+  white-space: nowrap;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .sp-action-btn.primary {
-  background: var(--primary);
-  color: #ffffff;
+  background: var(--primary, var(--accent, #1677ff)) !important;
+  color: #ffffff !important;
 }
 
 .sp-action-btn.primary:hover {
-  filter: brightness(1.1);
-  transform: translateY(-1px);
+  filter: brightness(1.08);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.15);
+}
+
+.sp-action-btn.primary:active {
+  transform: translateY(0);
+}
+
+/* 支付宝专属复制胶囊标签 */
+#sp-copy-alipay-btn {
+  background: linear-gradient(135deg, #1677ff 0%, #0958d9 100%) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(22, 119, 255, 0.4) !important;
+  box-shadow: 0 4px 14px rgba(22, 119, 255, 0.3) !important;
+}
+
+#sp-copy-alipay-btn:hover {
+  background: linear-gradient(135deg, #3b82f6 0%, #1677ff 100%) !important;
+  box-shadow: 0 6px 18px rgba(22, 119, 255, 0.45) !important;
+}
+
+/* USDT 复制胶囊标签 */
+#sp-copy-usdt-btn {
+  background: linear-gradient(135deg, #0d9488 0%, #0f766e 100%) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(13, 148, 136, 0.4) !important;
+  box-shadow: 0 4px 14px rgba(13, 148, 136, 0.3) !important;
+}
+
+#sp-copy-usdt-btn:hover {
+  background: linear-gradient(135deg, #14b8a6 0%, #0d9488 100%) !important;
+  box-shadow: 0 6px 18px rgba(13, 148, 136, 0.45) !important;
+}
+
+/* 复制成功绿色胶囊状态 */
+.sp-action-btn.copied {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(16, 185, 129, 0.5) !important;
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35) !important;
 }
 
 .sp-qr-tip-box {

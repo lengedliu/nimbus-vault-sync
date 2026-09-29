@@ -858,7 +858,7 @@ function renderSettingsSubTabContent(subTab, settings, tokensList, currentVault,
       }
     });
   } else if (subTab === 'account') {
-    const currentTheme = localStorage.getItem('nimbus_theme') || 'cyber-blue';
+    const currentTheme = localStorage.getItem('nimbus_theme') || 'titanium-studio';
     const currentFontSize = localStorage.getItem('nimbus_font_size') || 'normal';
 
     container.innerHTML = `

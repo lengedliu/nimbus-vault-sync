@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-demo-theme="nordic-glass" data-demo-layout="classic" data-mode="light">
+<html lang="zh-CN" data-demo-theme="titanium-studio" data-demo-layout="classic" data-mode="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -752,6 +752,15 @@
       display: flex;
       flex-direction: column;
       min-width: 0;
+      /* 隐藏滚动条，保留滚轮和手势滚动 */
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+
+    .content-area::-webkit-scrollbar {
+      display: none;
+      width: 0;
+      height: 0;
     }
 
     .view-container {
@@ -1188,7 +1197,7 @@
       <!-- 2. Visual Theme Archetypes (6 Unique Aesthetic Styles) -->
       <div class="demo-selector-group">
         <span class="demo-group-label">🎨 视觉风格：</span>
-        <button class="demo-btn demo-theme-btn active" data-theme="nordic-glass">
+        <button class="demo-btn demo-theme-btn" data-theme="nordic-glass">
           <span>❄️ 北欧微光玻璃</span>
         </button>
         <button class="demo-btn demo-theme-btn" data-theme="warm-parchment">
@@ -1203,7 +1212,7 @@
         <button class="demo-btn demo-theme-btn" data-theme="kyoto-moss">
           <span>🍃 禅意古都苔原</span>
         </button>
-        <button class="demo-btn demo-theme-btn" data-theme="titanium-studio">
+        <button class="demo-btn demo-theme-btn active" data-theme="titanium-studio">
           <span>🏭 工业精工钛银</span>
         </button>
       </div>

@@ -12,8 +12,17 @@
   <script>
     (function() {
       try {
-        var savedTheme = localStorage.getItem('nimbus_theme');
-        if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
+        var savedTheme = localStorage.getItem('nimbus_theme') || 'titanium-studio';
+        document.documentElement.setAttribute('data-theme', savedTheme);
+        var isLight = (savedTheme === 'titanium-studio' || savedTheme.indexOf('light') !== -1 || savedTheme === 'nordic-sky' || savedTheme === 'bright-day' || savedTheme === 'pure-light' || savedTheme === 'pearl-light' || savedTheme === 'matcha-light' || savedTheme === 'rose-blush' || savedTheme === 'nordic-glass' || savedTheme === 'warm-parchment' || savedTheme === 'swiss-grid' || savedTheme === 'swiss-grid-light' || savedTheme === 'kyoto-moss');
+        document.documentElement.setAttribute('data-theme-mode', isLight ? 'light' : 'dark');
+        if (isLight) {
+          document.documentElement.classList.add('theme-light');
+          document.documentElement.classList.remove('theme-dark');
+        } else {
+          document.documentElement.classList.remove('theme-light');
+          document.documentElement.classList.add('theme-dark');
+        }
         var savedFontSize = localStorage.getItem('nimbus_font_size') || 'normal';
         document.documentElement.setAttribute('data-font-size', savedFontSize);
       } catch (e) {}
