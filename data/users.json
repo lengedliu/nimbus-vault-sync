@@ -20,6 +20,20 @@
       "passwordHash": "$2a$10$deX96YmBegaF.hmc4IUPVuvd1jHwjt4bGfQBobJoSz3nBIExYN8fu",
       "role": "user",
       "createdAt": "2026-09-29T15:27:27.974Z"
+    },
+    {
+      "id": "d418caf2-9817-4c41-ac86-127cbdc98256",
+      "username": "tag_tester_1790702388919",
+      "passwordHash": "$2a$10$a4gOZADBb1PoNmaZ1YOQLeCif42ufKQWpLEpE1pPQLlxZ87IBWK8W",
+      "role": "user",
+      "createdAt": "2026-09-29T17:19:49.032Z"
+    },
+    {
+      "id": "461549ab-2c91-4cf1-b2be-91cad61ee926",
+      "username": "tag_tester_1790702557451",
+      "passwordHash": "$2a$10$.WCBitiZJyYgeQSIrbOFVek/lEu5zzpaWjrzjQlJLdb.0VqKZ/6Sm",
+      "role": "user",
+      "createdAt": "2026-09-29T17:22:37.563Z"
     }
   ]
 }

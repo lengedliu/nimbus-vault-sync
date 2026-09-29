@@ -41,7 +41,7 @@ class DeltaSyncService {
       if (dbManager.type !== 'json') {
         try {
           const row = await dbManager.queryOne(
-            'SELECT MAX(cursor) as maxCursor FROM vault_changes WHERE vault_id = ?',
+            'SELECT MAX(`cursor`) as maxCursor FROM vault_changes WHERE vault_id = ?',
             [vaultId]
           );
           if (row) {
@@ -52,7 +52,7 @@ class DeltaSyncService {
           }
 
           const rows = await dbManager.queryAll(
-            'SELECT cursor, path, action, size, mtime, hash, created_at as createdAt FROM vault_changes WHERE vault_id = ? ORDER BY cursor DESC LIMIT 500',
+            'SELECT `cursor`, path, action, size, mtime, hash, created_at as createdAt FROM vault_changes WHERE vault_id = ? ORDER BY `cursor` DESC LIMIT 500',
             [vaultId]
           );
           if (rows && rows.length > 0) {
@@ -199,7 +199,7 @@ class DeltaSyncService {
           db.serialize(() => {
             db.run('BEGIN TRANSACTION');
             const stmt = db.prepare(
-              `INSERT INTO vault_changes (vault_id, cursor, path, action, size, mtime, hash, created_at)
+              `INSERT INTO vault_changes (vault_id, \`cursor\`, path, action, size, mtime, hash, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
             );
             for (const change of changeItems) {
@@ -228,7 +228,7 @@ class DeltaSyncService {
       for (let i = 0; i < changeItems.length; i += BATCH_SIZE) {
         const batch = changeItems.slice(i, i + BATCH_SIZE);
         const placeholders = batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
-        const sql = `INSERT INTO vault_changes (vault_id, cursor, path, action, size, mtime, hash, created_at) VALUES ${placeholders}`;
+        const sql = `INSERT INTO vault_changes (vault_id, \`cursor\`, path, action, size, mtime, hash, created_at) VALUES ${placeholders}`;
         const params = [];
         for (const item of batch) {
           params.push(
@@ -263,7 +263,7 @@ class DeltaSyncService {
     if (dbManager.type !== 'json') {
       try {
         await dbManager.execute(
-          `INSERT INTO vault_changes (vault_id, cursor, path, action, size, mtime, hash, created_at)
+          `INSERT INTO vault_changes (vault_id, \`cursor\`, path, action, size, mtime, hash, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             vaultId,
@@ -308,8 +308,8 @@ class DeltaSyncService {
           `DELETE FROM vault_changes
            WHERE vault_id = ?
              AND (
-               cursor <= ?
-               OR (created_at < ? AND cursor <= (? - 1000))
+               \`cursor\` <= ?
+               OR (created_at < ? AND \`cursor\` <= (? - 1000))
              )`,
           [vaultId, cursorCutoff, timeCutoff, currentCursor]
         );
@@ -437,10 +437,10 @@ class DeltaSyncService {
     if (dbManager.type !== 'json') {
       try {
         const rows = await dbManager.queryAll(
-          `SELECT cursor, path, action, size, mtime, hash, created_at as createdAt
+          `SELECT \`cursor\`, path, action, size, mtime, hash, created_at as createdAt
            FROM vault_changes
-           WHERE vault_id = ? AND cursor > ?
-           ORDER BY cursor ASC
+           WHERE vault_id = ? AND \`cursor\` > ?
+           ORDER BY \`cursor\` ASC
            LIMIT ?`,
           [vaultId, since, maxLimit + 1]
         );
@@ -562,7 +562,7 @@ class DeltaSyncService {
     if (dbManager.type !== 'json') {
       try {
         const rows = await dbManager.queryAll(
-          'SELECT vault_id as vaultId, cursor, path, action, size, mtime, hash, created_at as createdAt FROM vault_changes ORDER BY cursor ASC'
+          'SELECT vault_id as vaultId, `cursor`, path, action, size, mtime, hash, created_at as createdAt FROM vault_changes ORDER BY `cursor` ASC'
         );
         return rows.map((r) => ({
           vaultId: r.vaultid || r.vaultId || r.vault_id,

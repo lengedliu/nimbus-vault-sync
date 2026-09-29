@@ -1,0 +1,14 @@
+{
+  "latestCursor": 1,
+  "changes": [
+    {
+      "cursor": 1,
+      "path": "note2.md",
+      "action": "UPSERT",
+      "size": 93,
+      "mtime": 1790702389038,
+      "hash": "3478b9cc30281b899447a2a2412e0443bd7c1838141bcea91072cf4298daa27a",
+      "createdAt": 1790702389038
+    }
+  ]
+}

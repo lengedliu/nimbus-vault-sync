@@ -1,0 +1,10 @@
+{
+  "ignorePatterns": [
+    "*.bak",
+    "private/**",
+    ".obsidian/workspace.json"
+  ],
+  "maxFileSizeMb": 100,
+  "syncAttachments": true,
+  "syncConfig": true
+}
