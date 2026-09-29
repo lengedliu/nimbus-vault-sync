@@ -185,11 +185,41 @@ export async function showMcpModal(defaultVaultName) {
   try {
     const res = await api('/api/mcp/tools');
     const data = await res.json();
-    if (data && data.tools) {
+    if (data && Array.isArray(data.tools)) {
       toolsData = data.tools;
+    } else if (data && data.data && Array.isArray(data.data.tools)) {
+      toolsData = data.data.tools;
     }
-  } catch {
-    toolsData = [];
+  } catch (err) {
+    console.warn('[Nimbus] Failed to fetch MCP tools:', err);
+  }
+
+  // Fallback default tools if network is unreachable
+  if (!toolsData || toolsData.length === 0) {
+    toolsData = [
+      { name: 'list_vaults', category: '库管理与统计', description: '获取当前用户账户下所有 Obsidian 笔记库列表（包含库ID、名称、文件数、容量及权限信息）。', parameters: {} },
+      { name: 'get_vault_stats', category: '库管理与统计', description: '获取笔记库的全面统计信息（Markdown笔记数、HTML网页数、附件容量、热门标签 Top 20 及最近修改文件）。', parameters: { vaultId: '可选，笔记库ID' } },
+      { name: 'list_notes', category: '笔记与文件检索', description: '多维度检索笔记与文件，支持文件夹过滤、文件扩展名（md/html/media/config）、时间排序（创建时间/修改时间）及元数据模式。', parameters: { vaultId: '可选', folder: '可选目录前缀', extension: 'all | md | html | media | config', sortBy: 'ctime | mtime | name | size', sortOrder: 'desc | asc', limit: '默认100', includeMetadata: '布尔值' } },
+      { name: 'get_note_metadata', category: '笔记与文件检索', description: '提取单篇笔记的深层结构元数据，包含字数、阅读时长、YAML Frontmatter、Obsidian标签(#tag)、双向链接([[Link]])及大纲目录。', parameters: { path: '必填，笔记相对路径', vaultId: '可选' } },
+      { name: 'read_note', category: '读取与写入', description: '读取笔记或文件的完整 UTF-8 文本内容。', parameters: { path: '必填，笔记路径，如 "Projects/idea.md"', vaultId: '可选' } },
+      { name: 'write_note', category: '读取与写入', description: '创建或覆盖笔记，具备冲突检测与历史版本快照，保存后实时通过 WebSocket 广播推送到所有连接的 Obsidian 客户端。', parameters: { path: '必填', content: '必填，完整内容', baseHash: '可选，乐观锁防冲突', vaultId: '可选' } },
+      { name: 'append_note', category: '读取与写入', description: '向已有笔记末尾（或指定标题下方）追加内容，支持自动追加时间戳，常用于 AI 会议记录、随手记、文献摘要或待办增补。', parameters: { path: '必填', content: '必填', heading: '可选标题（如 "## AI 记录"）', withTimestamp: '可选布尔值', vaultId: '可选' } },
+      { name: 'prepend_note', category: '读取与写入', description: '在笔记顶部（保持 YAML Frontmatter 结构不变）插入内容，常用于插入 AI 生成的核心摘要或置顶提醒。', parameters: { path: '必填', content: '必填', withTimestamp: '可选布尔值', vaultId: '可选' } },
+      { name: 'patch_note', category: '读取与写入', description: '精准局部搜索并替换笔记文本，无需重传整篇文件，修改即时广播同步。', parameters: { path: '必填', search: '待查找文本', replace: '替换文本', replaceAll: '可选布尔值', vaultId: '可选' } },
+      { name: 'upload_attachment', category: '附件与多媒体', description: '上传图片、PDF、音频或二进制附件到笔记库（支持 Base64 数据或指定网络图片 URL 自动下载存储），自动广播同步并返回 ![[附件名]] 双链语法。', parameters: { path: '必填相对路径（如 "_resources/image.png"）', contentBase64: '可选 Base64 字符串', sourceUrl: '可选网络下载 URL', overwrite: '可选布尔值', vaultId: '可选' } },
+      { name: 'get_attachment_base64', category: '附件与多媒体', description: '将笔记库中的图片/附件读取为 Base64 编码，供 AI 视觉分析或多模态理解。', parameters: { path: '必填附件路径', vaultId: '可选' } },
+      { name: 'get_daily_note', category: '日记与日志 (Daily Note)', description: '获取今日（或指定日期）的 Obsidian 日记。若日记不存在可自动按规范初始化。', parameters: { date: '可选 "YYYY-MM-DD"', folder: '可选 "Daily"', createIfMissing: '默认 true', vaultId: '可选' } },
+      { name: 'append_daily_note', category: '日记与日志 (Daily Note)', description: '快速将思考碎片、任务或会议纪要追加记录到今日（或指定日期）的日记中，默认附加 [HH:mm:ss] 时间戳。', parameters: { content: '必填记录文本', date: '可选', folder: '可选', heading: '可选分类标题', withTimestamp: '默认 true', vaultId: '可选' } },
+      { name: 'search_notes', category: '全文检索与标签', description: '在所有 Markdown 与 HTML 笔记中执行全文搜索，返回匹配上下文片段、行号及文件路径，支持正则搜索与大小写匹配。', parameters: { query: '必填关键词或正则表达式', folder: '可选', limit: '默认20', useRegex: '可选布尔值', caseSensitive: '可选布尔值', vaultId: '可选' } },
+      { name: 'list_tags', category: '全文检索与标签', description: '自动扫描并聚合笔记库中所有 Obsidian 标签（#tag 及 #父/子 嵌套标签），统计词频与关联笔记路径。', parameters: { folder: '可选目录过滤', vaultId: '可选' } },
+      { name: 'move_note', category: '组织与管理', description: '重命名或移动笔记/附件至新目录，自动维护索引并广播实时同步。', parameters: { oldPath: '原路径', newPath: '新路径', overwrite: '可选布尔值', vaultId: '可选' } },
+      { name: 'delete_note', category: '组织与管理', description: '安全删除笔记（自动移入笔记库回收站，可随时还原），即时推送到 Obsidian。', parameters: { path: '必填路径', vaultId: '可选' } },
+      { name: 'get_note_history', category: '版本历史', description: '查询单篇笔记的所有历史备份快照列表与时间戳。', parameters: { path: '必填路径', vaultId: '可选' } },
+      { name: 'read_history_version', category: '版本历史', description: '读取笔记特定历史版本快照的原始内容。', parameters: { versionId: '必填版本ID', vaultId: '可选' } },
+      { name: 'create_share_link', category: '外链分享', description: '直接通过 AI 为笔记生成公开外链分享地址（支持密码保护与有效期设定）。', parameters: { path: '必填笔记路径', title: '可选标题', password: '可选密码', expiresDays: '可选天数', allowCopy: '默认 true', vaultId: '可选' } },
+      { name: 'get_vault_git_status', category: 'Git 自动化备份', description: '自省当前笔记库的 Git 版本控制与远端同步状态（当前分支、未提交文件数、未推送提交、最近提交快照及远端仓库地址）。', parameters: { vaultId: '可选笔记库ID' } },
+      { name: 'git_sync_vault', category: 'Git 自动化备份', description: '执行 Git 仓库自动化操作：提交并推送到远端 Git 仓库 (GitHub/Gitee/GitLab)、从远端拉取更新或测试连通性。', parameters: { vaultId: '可选', action: 'commit_and_push | pull | test_connection', commitMessage: '可选自定义提交信息' } },
+    ];
   }
 
   function generateConfig(vaultName) {
@@ -208,47 +238,215 @@ export async function showMcpModal(defaultVaultName) {
     };
   }
 
-  const initialConfig = JSON.stringify(generateConfig(selectedVaultName), null, 2);
+  let currentVaultName = selectedVaultName;
+  let currentConfigText = JSON.stringify(generateConfig(currentVaultName), null, 2);
+
+  const categories = [...new Set(toolsData.map((t) => t.category || '通用工具'))];
+
+  const toolsHtml = toolsData.map((t) => {
+    const paramsEntries = t.parameters ? Object.entries(t.parameters) : [];
+    const paramsHtml = paramsEntries.length > 0
+      ? `<div class="mcp-tool-params" style="margin-top:8px;">
+           <div style="font-weight:600;margin-bottom:4px;color:var(--text);font-size:11.5px;">入参声明 (Parameters)：</div>
+           <div style="display:flex;flex-direction:column;gap:3px;">
+             ${paramsEntries.map(([k, v]) => `<div><code style="font-family:ui-monospace,monospace;font-weight:600;color:var(--primary);">${escapeHtml(k)}</code>: <span style="color:var(--text-muted);">${escapeHtml(String(v))}</span></div>`).join('')}
+           </div>
+         </div>`
+      : `<div class="mcp-tool-params" style="margin-top:8px;color:var(--text-dim);font-style:italic;">无必填入参 (无需参数即可调用)</div>`;
+
+    return `
+      <div class="mcp-tool-card" data-name="${escapeHtml(t.name.toLowerCase())}" data-category="${escapeHtml((t.category || '').toLowerCase())}" data-desc="${escapeHtml((t.description || '').toLowerCase())}">
+        <div class="mcp-tool-header">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span class="mcp-tool-name">${escapeHtml(t.name)}</span>
+            <span class="mcp-tool-category">${escapeHtml(t.category || 'MCP 工具')}</span>
+          </div>
+          <button type="button" class="copy-tool-name-btn ghost" data-tool="${escapeHtml(t.name)}" title="复制工具名" style="font-size:11.5px;padding:2px 8px;border-radius:4px;border:1px solid var(--border);cursor:pointer;background:var(--panel);color:var(--text-secondary);">📋 复制名称</button>
+        </div>
+        <div class="mcp-tool-desc">${escapeHtml(t.description)}</div>
+        ${paramsHtml}
+      </div>
+    `;
+  }).join('');
 
   const html = `
     <div class="modal-header">
-      <div style="display:flex;align-items:center;gap:8px">
-        <span style="font-size:18px">🤖</span>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="font-size:22px;">🤖</span>
         <div>
-          <h3 style="margin:0;font-size:16px">Model Context Protocol (MCP) 服务与工具接口</h3>
-          <div style="font-size:11.5px;color:var(--muted)">支持 Cursor、Cherry Studio、Claude Desktop、Cline 等 AI 客户端实时读写 Obsidian 笔记</div>
+          <h3 style="margin:0;font-size:16px;">Model Context Protocol (MCP) 服务与工具接口</h3>
+          <div style="font-size:11.5px;color:var(--text-muted);">支持 Cursor、Cherry Studio、Claude Desktop、Cline 等 AI 客户端实时读写 Obsidian 笔记</div>
         </div>
       </div>
       <button class="modal-close ghost">✕</button>
     </div>
+
     <div class="mcp-nav-tabs">
-      <button class="mcp-nav-tab active" id="mcp-tab-config-btn">⚙️ 客户端连接配置</button>
-      <button class="mcp-nav-tab" id="mcp-tab-tools-btn">🛠️ 18 个 MCP 工具清单 (${toolsData.length || 18})</button>
+      <button type="button" class="mcp-nav-tab active" id="mcp-tab-config-btn">⚙️ 客户端连接配置</button>
+      <button type="button" class="mcp-nav-tab" id="mcp-tab-tools-btn">🛠️ MCP 工具清单 (${toolsData.length})</button>
     </div>
+
     <div class="modal-body" style="max-height:65vh;overflow-y:auto;padding:16px 20px;">
+      <!-- TAB 1: Config View -->
       <div id="mcp-tab-config-view">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
-          <div style="font-size:13px;color:var(--text-secondary)">选择绑定的默认笔记库：</div>
-          <select id="mcp-vault-select" style="padding:4px 10px;font-size:12.5px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);">
-            ${(state.vaults || []).map((v) => `<option value="${escapeHtml(v.name)}" ${v.name === selectedVaultName ? 'selected' : ''}>${escapeHtml(v.name)}</option>`).join('')}
+          <div style="font-size:13px;color:var(--text-secondary);font-weight:500;">选择绑定的默认笔记库：</div>
+          <select id="mcp-vault-select" style="padding:5px 12px;font-size:12.5px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);">
+            ${(state.vaults || []).map((v) => `<option value="${escapeHtml(v.name)}" ${v.name === currentVaultName ? 'selected' : ''}>📓 ${escapeHtml(v.name)}</option>`).join('')}
           </select>
         </div>
-        <pre class="code-snippet" id="mcp-config-code" style="max-height:220px">${escapeHtml(initialConfig)}</pre>
+        <pre class="code-snippet" id="mcp-config-code" style="max-height:220px;overflow-x:auto;">${escapeHtml(currentConfigText)}</pre>
+        
+        <div style="margin-top:14px;background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;font-size:12px;color:var(--text-secondary);line-height:1.6;">
+          <div style="font-weight:600;margin-bottom:6px;color:var(--text);display:flex;align-items:center;gap:6px;">
+            <span>💡 接入步骤指引：</span>
+          </div>
+          <ol style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px;">
+            <li>点击下方「<b>📋 复制当前 MCP 配置</b>」按钮复制完整 JSON 结构。</li>
+            <li>打开 <b>Cursor</b> ➔ <code>Settings</code> ➔ <code>Features</code> ➔ <code>MCP Servers</code> ➔ 粘贴保存，或编辑 <code>~/.cursor/mcp.json</code>。</li>
+            <li>若使用 <b>Claude Desktop</b>，将配置粘贴至其 <code>claude_desktop_config.json</code> 的 <code>mcpServers</code> 字段中。</li>
+            <li>配置完成后，AI 客户端将直接具备全部 <b>${toolsData.length} 个 MCP 工具</b>，支持实时读写、智能追加、全文检索与 Git 远端备份！</li>
+          </ol>
+        </div>
+      </div>
+
+      <!-- TAB 2: Tools View -->
+      <div id="mcp-tab-tools-view" style="display:none;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;flex-wrap:wrap;">
+          <div style="position:relative;flex:1;min-width:220px;">
+            <input type="text" id="mcp-tools-search" placeholder="🔍 快速搜索工具名称、分类或功能说明..." style="width:100%;padding:6px 12px;font-size:12.5px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);" />
+          </div>
+          <div style="font-size:12px;color:var(--text-muted);white-space:nowrap;" id="mcp-tools-count-badge">
+            共计 <b style="color:var(--primary);">${toolsData.length}</b> 个标准工具
+          </div>
+        </div>
+
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;" id="mcp-tools-category-filters">
+          <button type="button" class="btn-xs primary mcp-category-pill" data-category="all" style="font-size:11px;padding:3px 10px;border-radius:12px;border:1px solid var(--border);cursor:pointer;">全部 (${toolsData.length})</button>
+          ${categories.map((c) => `<button type="button" class="btn-xs secondary mcp-category-pill" data-category="${escapeHtml(c.toLowerCase())}" style="font-size:11px;padding:3px 10px;border-radius:12px;border:1px solid var(--border);cursor:pointer;">${escapeHtml(c)}</button>`).join('')}
+        </div>
+
+        <div id="mcp-tools-list-container" style="display:flex;flex-direction:column;gap:10px;">
+          ${toolsHtml}
+        </div>
       </div>
     </div>
-    <div class="modal-footer">
-      <button id="copy-mcp-btn" class="btn-primary">📋 复制当前 MCP 配置</button>
-      <button class="modal-close secondary">关闭</button>
+
+    <div class="modal-footer" style="display:flex;align-items:center;justify-content:space-between;">
+      <div style="font-size:11.5px;color:var(--text-muted);">
+        ✨ 支持 Cursor / Claude Desktop / Cherry Studio / Cline
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button id="copy-mcp-btn" class="btn-primary">📋 复制当前 MCP 配置</button>
+        <button class="modal-close secondary">关闭</button>
+      </div>
     </div>
   `;
 
   showModal(html, (dialog) => {
+    const configTabBtn = dialog.querySelector('#mcp-tab-config-btn');
+    const toolsTabBtn = dialog.querySelector('#mcp-tab-tools-btn');
+    const configView = dialog.querySelector('#mcp-tab-config-view');
+    const toolsView = dialog.querySelector('#mcp-tab-tools-view');
     const copyBtn = dialog.querySelector('#copy-mcp-btn');
+    const vaultSelect = dialog.querySelector('#mcp-vault-select');
+    const codeElem = dialog.querySelector('#mcp-config-code');
+    const searchInput = dialog.querySelector('#mcp-tools-search');
+    const countBadge = dialog.querySelector('#mcp-tools-count-badge');
+    const categoryPills = dialog.querySelectorAll('.mcp-category-pill');
+    let activeCategory = 'all';
+
+    // Tab switching
+    if (configTabBtn && toolsTabBtn) {
+      configTabBtn.onclick = () => {
+        configTabBtn.classList.add('active');
+        toolsTabBtn.classList.remove('active');
+        if (configView) configView.style.display = 'block';
+        if (toolsView) toolsView.style.display = 'none';
+        if (copyBtn) {
+          copyBtn.textContent = '📋 复制当前 MCP 配置';
+        }
+      };
+
+      toolsTabBtn.onclick = () => {
+        toolsTabBtn.classList.add('active');
+        configTabBtn.classList.remove('active');
+        if (configView) configView.style.display = 'none';
+        if (toolsView) toolsView.style.display = 'block';
+        if (copyBtn) {
+          copyBtn.textContent = `📋 复制全部 ${toolsData.length} 个工具清单 (JSON)`;
+        }
+      };
+    }
+
+    // Vault select change
+    if (vaultSelect && codeElem) {
+      vaultSelect.onchange = () => {
+        currentVaultName = vaultSelect.value;
+        currentConfigText = JSON.stringify(generateConfig(currentVaultName), null, 2);
+        codeElem.textContent = currentConfigText;
+      };
+    }
+
+    // Filter tools
+    function filterTools() {
+      const q = (searchInput?.value || '').trim().toLowerCase();
+      const cards = dialog.querySelectorAll('.mcp-tool-card');
+      let visible = 0;
+      cards.forEach((card) => {
+        const name = card.dataset.name || '';
+        const cat = card.dataset.category || '';
+        const desc = card.dataset.desc || '';
+        const matchesCategory = activeCategory === 'all' || cat === activeCategory;
+        const matchesQuery = !q || name.includes(q) || cat.includes(q) || desc.includes(q);
+        const show = matchesCategory && matchesQuery;
+        card.style.display = show ? 'block' : 'none';
+        if (show) visible++;
+      });
+      if (countBadge) {
+        countBadge.innerHTML = (q || activeCategory !== 'all')
+          ? `筛选出 <b style="color:var(--primary);">${visible}</b> / ${toolsData.length} 个工具`
+          : `共计 <b style="color:var(--primary);">${toolsData.length}</b> 个标准工具`;
+      }
+    }
+
+    if (searchInput) {
+      searchInput.oninput = filterTools;
+    }
+
+    categoryPills.forEach((pill) => {
+      pill.onclick = () => {
+        categoryPills.forEach((p) => {
+          p.className = 'btn-xs secondary mcp-category-pill';
+        });
+        pill.className = 'btn-xs primary mcp-category-pill';
+        activeCategory = pill.dataset.category || 'all';
+        filterTools();
+      };
+    });
+
+    // Copy individual tool name
+    dialog.querySelectorAll('.copy-tool-name-btn').forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const toolName = btn.dataset.tool;
+        if (navigator.clipboard?.writeText) {
+          navigator.clipboard.writeText(toolName).then(() => toast(`已复制工具名「${toolName}」`));
+        }
+      };
+    });
+
+    // Main Copy button
     if (copyBtn) {
       copyBtn.onclick = () => {
-        const text = initialConfig;
+        const isToolsTab = toolsTabBtn?.classList.contains('active');
+        const textToCopy = isToolsTab
+          ? JSON.stringify(toolsData, null, 2)
+          : currentConfigText;
         if (navigator.clipboard?.writeText) {
-          navigator.clipboard.writeText(text).then(() => toast('MCP JSON 配置已复制到剪贴板'));
+          navigator.clipboard.writeText(textToCopy).then(() => {
+            toast(isToolsTab ? `已复制全部 ${toolsData.length} 个 MCP 工具接口定义 (JSON)` : 'MCP JSON 配置已复制到剪贴板');
+          });
         }
       };
     }

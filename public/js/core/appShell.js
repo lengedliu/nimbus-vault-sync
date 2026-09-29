@@ -5,7 +5,7 @@ import { showConfirm, showPrompt } from './dialogs.js';
 import { initThemeSwitcher, initFontSizeSwitcher, updateThemeUI, updateFontSizeUI, updateDateDisplays, applyTheme } from './themes.js';
 import { showObsidianConnectModal, showMcpModal } from '../views/connectModal.js';
 import { showDocsModal } from '../views/docsModal.js';
-import { setupGlobalSearch } from '../views/searchModal.js';
+import { setupGlobalSearch, openGlobalSearchModal } from '../views/searchModal.js';
 import { openVault, renderVaultContainer } from '../views/vaultView.js';
 import { renderDashboardPanel } from '../views/kanbanSubtab.js';
 import { renderSettingsPanel } from '../views/settingsView.js';
@@ -249,6 +249,7 @@ export async function enterApp() {
   setupGlobalSearch();
   setupCollapsibleSections();
   initMobileNavigation();
+  initThreeColumnArchitecture();
 
   await loadVaults();
 
@@ -463,6 +464,13 @@ export function showTab(tab) {
   state.activeVaultId = null;
   state.activeTab = tab;
   document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.activity-icon-btn').forEach((b) => {
+    if (b.dataset.tab) {
+      b.classList.toggle('active', b.dataset.tab === tab);
+    } else {
+      b.classList.remove('active');
+    }
+  });
 
   const adminSpecificTabs = ['database', 'webhooks', 'synclogs', 'users', 'all-vaults'];
   if (adminSpecificTabs.includes(tab)) {
@@ -482,6 +490,7 @@ export function showTab(tab) {
   if (globalDashboardBtn) globalDashboardBtn.classList.toggle('active', tab === 'dashboard');
 
   renderVaultList();
+  updateInspectorTelemetry();
   const mainPanel = $('#main-panel');
   if (!mainPanel) return;
 
@@ -566,4 +575,188 @@ export function initLanguageDropdowns() {
       showTab(state.activeTab);
     }
   });
+}
+
+// ----------------- Three-Column Layout: Activity Bar & Telemetry Inspector -----------------
+export function updateInspectorTelemetry() {
+  const wsStatusEl = document.getElementById('insp-ws-status');
+  const wsChannelEl = document.getElementById('insp-ws-channel');
+  const wsRttEl = document.getElementById('insp-ws-rtt');
+  const vaultNameEl = document.getElementById('insp-vault-name');
+  const filesCountEl = document.getElementById('insp-vault-files-count');
+  const vaultPermEl = document.getElementById('insp-vault-perm');
+
+  const currentVault = state.activeVaultId
+    ? state.vaults.find((v) => v.id === state.activeVaultId)
+    : null;
+
+  if (vaultNameEl) {
+    vaultNameEl.textContent = currentVault ? currentVault.name : (state.activeTab === 'dashboard' ? '看板总览' : '系统导航');
+  }
+
+  if (filesCountEl) {
+    if (currentVault && state.manifest) {
+      filesCountEl.textContent = `${Object.keys(state.manifest).length} 篇文档`;
+    } else {
+      filesCountEl.textContent = `${state.vaults.length} 个库`;
+    }
+  }
+
+  if (vaultPermEl) {
+    if (state.user?.role === 'admin') {
+      vaultPermEl.textContent = '系统管理员 (最高权限)';
+    } else if (currentVault?.isOwner) {
+      vaultPermEl.textContent = '笔记库所有者 (可读写)';
+    } else if (currentVault?.myPermission === 'read-only') {
+      vaultPermEl.textContent = '受限只读协作';
+    } else {
+      vaultPermEl.textContent = '成员协作读写';
+    }
+  }
+
+  if (wsStatusEl) {
+    const isConn = state.wsConnected || (window.Nimbus?.ws && window.Nimbus.ws.readyState === 1);
+    wsStatusEl.textContent = isConn ? '🟢 实时同步中' : '🟢 正常在线';
+  }
+
+  if (wsChannelEl) {
+    wsChannelEl.textContent = currentVault ? `/ws?vault=${encodeURIComponent(currentVault.name)}` : '/ws';
+  }
+}
+
+export function toggleInspector(forceOpen) {
+  const panel = document.getElementById('inspector-panel');
+  if (!panel) return;
+  const isCurrentlyCollapsed = panel.classList.contains('collapsed');
+  const shouldOpen = forceOpen !== undefined ? forceOpen : isCurrentlyCollapsed;
+
+  if (shouldOpen) {
+    panel.classList.remove('collapsed');
+    panel.classList.add('user-forced-open');
+    localStorage.setItem('nimbus_inspector_collapsed', 'false');
+  } else {
+    panel.classList.add('collapsed');
+    panel.classList.remove('user-forced-open');
+    localStorage.setItem('nimbus_inspector_collapsed', 'true');
+  }
+
+  const actInspBtn = document.getElementById('act-btn-inspector');
+  if (actInspBtn) actInspBtn.classList.toggle('active', shouldOpen);
+
+  const topbarInspBtn = document.getElementById('topbar-inspector-toggle-btn');
+  if (topbarInspBtn) topbarInspBtn.classList.toggle('active', shouldOpen);
+
+  updateInspectorTelemetry();
+}
+
+export function initThreeColumnArchitecture() {
+  // Restore saved inspector state
+  const isCollapsed = localStorage.getItem('nimbus_inspector_collapsed') === 'true';
+  const panel = document.getElementById('inspector-panel');
+  if (panel && isCollapsed) {
+    panel.classList.add('collapsed');
+  }
+
+  // Activity Bar button listeners
+  const actDashboardBtn = document.getElementById('act-btn-dashboard');
+  if (actDashboardBtn) {
+    actDashboardBtn.onclick = () => showTab('dashboard');
+  }
+
+  const actVaultsBtn = document.getElementById('act-btn-vaults');
+  if (actVaultsBtn) {
+    actVaultsBtn.onclick = () => {
+      if (state.activeVaultId) {
+        openVault(state.activeVaultId);
+      } else if (state.vaults.length > 0) {
+        openVault(state.vaults[0].id);
+      } else {
+        showTab('dashboard');
+      }
+    };
+  }
+
+  const actSearchBtn = document.getElementById('act-btn-search');
+  if (actSearchBtn) {
+    actSearchBtn.onclick = () => openGlobalSearchModal();
+  }
+
+  const actDevicesBtn = document.getElementById('act-btn-devices');
+  if (actDevicesBtn) {
+    actDevicesBtn.onclick = () => showTab('devices');
+  }
+
+  const actMcpBtn = document.getElementById('act-btn-mcp');
+  if (actMcpBtn) {
+    actMcpBtn.onclick = () => {
+      const v = state.vaults.find((item) => item.id === state.activeVaultId) || state.vaults[0];
+      showMcpModal(v ? v.name : 'Default');
+    };
+  }
+
+  const actConnectBtn = document.getElementById('act-btn-connect');
+  if (actConnectBtn) {
+    actConnectBtn.onclick = () => {
+      const v = state.vaults.find((item) => item.id === state.activeVaultId) || state.vaults[0];
+      showObsidianConnectModal(v);
+    };
+  }
+
+  const actSponsorBtn = document.getElementById('act-btn-sponsor');
+  if (actSponsorBtn) {
+    actSponsorBtn.onclick = () => showTab('sponsor');
+  }
+
+  const actSettingsBtn = document.getElementById('act-btn-settings');
+  if (actSettingsBtn) {
+    actSettingsBtn.onclick = () => showTab('settings');
+  }
+
+  const actInspectorBtn = document.getElementById('act-btn-inspector');
+  if (actInspectorBtn) {
+    actInspectorBtn.onclick = () => toggleInspector();
+  }
+
+  // Topbar and Panel toggle buttons
+  const topbarInspBtn = document.getElementById('topbar-inspector-toggle-btn');
+  if (topbarInspBtn) {
+    topbarInspBtn.onclick = () => toggleInspector();
+  }
+
+  const closeInspBtn = document.getElementById('inspector-close-btn');
+  if (closeInspBtn) {
+    closeInspBtn.onclick = () => toggleInspector(false);
+  }
+
+  // Shortcut Ctrl+J / Cmd+J to toggle inspector
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'j' || e.key === 'J')) {
+      e.preventDefault();
+      toggleInspector();
+    }
+  });
+
+  // Action buttons inside inspector card
+  const inspBtnConnect = document.getElementById('insp-btn-connect');
+  if (inspBtnConnect) {
+    inspBtnConnect.onclick = () => {
+      const v = state.vaults.find((item) => item.id === state.activeVaultId) || state.vaults[0];
+      showObsidianConnectModal(v);
+    };
+  }
+
+  const inspBtnMcp = document.getElementById('insp-btn-mcp');
+  if (inspBtnMcp) {
+    inspBtnMcp.onclick = () => {
+      const v = state.vaults.find((item) => item.id === state.activeVaultId) || state.vaults[0];
+      showMcpModal(v ? v.name : 'Default');
+    };
+  }
+
+  const inspManageDevBtn = document.getElementById('insp-manage-devices-btn');
+  if (inspManageDevBtn) {
+    inspManageDevBtn.onclick = () => showTab('devices');
+  }
+
+  updateInspectorTelemetry();
 }

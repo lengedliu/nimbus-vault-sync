@@ -174,6 +174,12 @@ export async function openVault(vaultId, subtab = 'files') {
   state.activeSubtab = subtab;
   state.activeTab = null;
   document.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
+  document.querySelectorAll('.activity-icon-btn').forEach((b) => b.classList.remove('active'));
+  const actVaultBtn = document.getElementById('act-btn-vaults');
+  if (actVaultBtn) actVaultBtn.classList.add('active');
+  if (window.Nimbus?.updateInspectorTelemetry) {
+    window.Nimbus.updateInspectorTelemetry();
+  }
   if (window.Nimbus?.renderVaultList) {
     window.Nimbus.renderVaultList();
   }

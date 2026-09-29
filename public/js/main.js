@@ -18,6 +18,9 @@ import {
   toggleMobileSidebar,
   setupCollapsibleSections,
   initLanguageDropdowns,
+  updateInspectorTelemetry,
+  toggleInspector,
+  initThreeColumnArchitecture,
 } from './core/appShell.js';
 
 import { showObsidianConnectModal, showMcpModal } from './views/connectModal.js';
@@ -95,6 +98,9 @@ window.Nimbus = {
   showTab,
   closeMobileSidebar,
   toggleMobileSidebar,
+  updateInspectorTelemetry,
+  toggleInspector,
+  initThreeColumnArchitecture,
   // Editor & Preview & Diff
   openFile,
   renderMediaViewer,

@@ -286,6 +286,11 @@
         </div>
       </div>
 
+      <button type="button" id="topbar-inspector-toggle-btn" class="ghost" data-i18n-title="topbar.inspector_title" title="切换右侧系统遥测检查器 (Ctrl+J)" style="padding:4px 8px;font-size:12px;display:inline-flex;align-items:center;gap:4px;border-radius:6px;border:1px solid var(--border);background:var(--panel-2);color:var(--text-secondary);cursor:pointer;">
+        <span>📡</span>
+        <span class="inspector-btn-label">遥测</span>
+      </button>
+
       <span id="who-username" class="user-pill"></span>
       <span id="who-role" class="badge"></span>
       <button id="logout-btn" class="ghost" data-i18n="topbar.logout">退出</button>
@@ -293,6 +298,43 @@
   </header>
 
   <div class="layout">
+    <!-- 1. Activity Bar (Narrow 52px Icon Bar for Three-Column Architecture) -->
+    <aside class="activity-bar" id="activity-bar">
+      <div class="activity-btn-group">
+        <button type="button" class="activity-icon-btn active" id="act-btn-dashboard" data-tab="dashboard" title="📊 看板总览">
+          <span>📊</span>
+        </button>
+        <button type="button" class="activity-icon-btn" id="act-btn-vaults" title="📂 我的笔记库 (定位/展开)">
+          <span>📂</span>
+        </button>
+        <button type="button" class="activity-icon-btn" id="act-btn-search" title="🔍 全局快捷检索 (Ctrl+K)">
+          <span>🔍</span>
+        </button>
+        <button type="button" class="activity-icon-btn" id="act-btn-devices" data-tab="devices" title="📱 接入设备管理">
+          <span>📱</span>
+        </button>
+        <button type="button" class="activity-icon-btn" id="act-btn-mcp" title="🤖 MCP / AI 接口配置">
+          <span>🤖</span>
+        </button>
+        <button type="button" class="activity-icon-btn" id="act-btn-connect" title="⚡ Obsidian 连接指引">
+          <span>⚡</span>
+        </button>
+      </div>
+
+      <div class="activity-bar-bottom">
+        <button type="button" class="activity-icon-btn" id="act-btn-sponsor" data-tab="sponsor" title="❤️ 支持该项目">
+          <span>❤️</span>
+        </button>
+        <button type="button" class="activity-icon-btn" id="act-btn-settings" data-tab="settings" title="⚙️ 系统设置">
+          <span>⚙️</span>
+        </button>
+        <div class="activity-divider"></div>
+        <button type="button" class="activity-icon-btn" id="act-btn-inspector" title="📡 切换右侧系统遥测面板">
+          <span>📡</span>
+        </button>
+      </div>
+    </aside>
+
     <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
     <nav class="sidebar" id="sidebar">
       <div class="sidebar-body">
@@ -358,6 +400,82 @@
         <p data-i18n="empty.welcome_desc">从左侧选择一个 Vault 开始管理，或新建一个 Vault 进行 Obsidian 同步</p>
       </div>
     </main>
+
+    <!-- 4. Inspector / Telemetry Drawer (Right Column) -->
+    <aside class="inspector-panel" id="inspector-panel">
+      <div class="inspector-header">
+        <div class="inspector-title">
+          <span>📡</span>
+          <span>系统遥测与监控</span>
+        </div>
+        <button type="button" class="inspector-close-btn" id="inspector-close-btn" title="折叠遥测面板">✕</button>
+      </div>
+
+      <div class="inspector-body">
+        <!-- WebSocket Card -->
+        <div class="inspector-card">
+          <div class="inspector-card-title">
+            <span>WebSocket 实时链路</span>
+            <span class="inspector-badge-ok" id="insp-ws-status">🟢 正常</span>
+          </div>
+          <div class="inspector-card-body">
+            <div>信道: <code>/ws</code></div>
+            <div>往返延迟: <b id="insp-ws-rtt" style="color:var(--primary)">24 ms</b></div>
+            <div>协议: <code>JSON Streamable Delta</code></div>
+          </div>
+        </div>
+
+        <!-- Vault Status Card -->
+        <div class="inspector-card">
+          <div class="inspector-card-title">
+            <span>当前笔记库摘要</span>
+            <span style="font-size:11px;color:var(--text-dim);" id="insp-vault-files-count">--</span>
+          </div>
+          <div class="inspector-card-body" id="insp-vault-info">
+            <div>活跃库: <b id="insp-vault-name" style="color:var(--primary)">未选定</b></div>
+            <div>权限: <span id="insp-vault-perm">读写就绪</span></div>
+            <div>加密: <span>AES-256 GCM</span></div>
+          </div>
+        </div>
+
+        <!-- Devices Card -->
+        <div class="inspector-card">
+          <div class="inspector-card-title">
+            <span>活跃接入设备</span>
+            <button type="button" id="insp-manage-devices-btn" class="ghost" style="font-size:11px;padding:1px 5px;cursor:pointer;">管理</button>
+          </div>
+          <div class="inspector-card-body" id="insp-devices-list">
+            <div class="inspector-device-item">
+              <span>💻 Web 仪表盘 (当前)</span>
+              <span class="inspector-badge-ok">在线</span>
+            </div>
+            <div class="inspector-device-item">
+              <span>📱 Obsidian 客户端</span>
+              <span style="color:var(--text-dim);font-size:10.5px;">已就绪</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick Actions Card -->
+        <div class="inspector-card" style="margin-top:auto;">
+          <div class="inspector-card-title">
+            <span>快捷操作通道</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px;margin-top:4px;">
+            <button type="button" id="insp-btn-connect" class="token-act-btn" style="padding:6px 10px;font-size:12px;border-radius:4px;border:1px solid var(--border);background:var(--panel-2);color:var(--text);cursor:pointer;text-align:left;display:flex;align-items:center;gap:6px;">
+              <span>⚡</span> <span>Obsidian 快速连接</span>
+            </button>
+            <button type="button" id="insp-btn-mcp" class="token-act-btn" style="padding:6px 10px;font-size:12px;border-radius:4px;border:1px solid var(--border);background:var(--panel-2);color:var(--text);cursor:pointer;text-align:left;display:flex;align-items:center;gap:6px;">
+              <span>🤖</span> <span>打开 MCP AI 接口</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="inspector-footer">
+        <span>Nimbus Telemetry Engine</span>
+      </div>
+    </aside>
   </div>
 </div>
 
