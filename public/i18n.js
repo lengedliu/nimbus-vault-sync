@@ -2609,6 +2609,7 @@
     '⚔️ 冲突解决中心': { en: '⚔️ Conflict Resolver', 'zh-TW': '⚔️ 衝突解決中心', ko: '⚔️ 충돌 해결 센터', ja: '⚔️ 競合解決センター' },
     '💾 快照与备份': { en: '💾 Snapshots & Backups', 'zh-TW': '💾 快照與備份', ko: '💾 스냅샷 및 백업', ja: '💾 スナップショットとバックアップ' },
     '🚀 Git 自动备份': { en: '🚀 Git Auto-Backup', 'zh-TW': '🚀 Git 自動備份', ko: '🚀 Git 자동 백업', ja: '🚀 Git 自動バックアップ' },
+    '☁️ 多云异地容灾': { en: '☁️ Multi-Cloud DR', 'zh-TW': '☁️ 多雲異地容災', ko: '☁️ 멀티 클라우드 DR', ja: '☁️ マルチクラウド DR' },
     '👥 成员与权限': { en: '👥 Members & Access', 'zh-TW': '👥 成員與權限', ko: '👥 멤버 및 권한', ja: '👥 メンバーと権限' },
     '📊 统计与监控': { en: '📊 Stats & Analytics', 'zh-TW': '📊 統計與監控', ko: '📊 통계 및 모니터링', ja: '📊 統計とモニタリング' },
     '📋 同步日志': { en: '📋 Sync Logs', 'zh-TW': '📋 同步日誌', ko: '📋 동기화 로그', ja: '📋 同期ログ' },

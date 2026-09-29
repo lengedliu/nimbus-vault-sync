@@ -20,6 +20,8 @@ const deviceRoutes = require('./src/routes/deviceRoutes');
 const docsRoutes = require('./src/routes/docsRoutes');
 const sponsorRoutes = require('./src/routes/sponsorRoutes');
 const dashboardRoutes = require('./src/routes/dashboardRoutes');
+const pairRoutes = require('./src/routes/pairRoutes');
+const cloudBackupRoutes = require('./src/routes/cloudBackupRoutes');
 const { apiResponseMiddleware } = require('./src/utils/apiResponse');
 const { getHealthStatus } = require('./src/health');
 const fnsHub = require('./src/wsHub');
@@ -143,6 +145,7 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/vaults', vaultRoutes);
 app.use('/api/vaults', fileRoutes);
 app.use('/api/vaults', vaultExtrasRoutes);
+app.use('/api/vaults/:vaultId/cloud-backup', cloudBackupRoutes);
 app.use('/api/admin', adminRoutes);
 // 兼容性路由别名：/api/users -> /api/admin/users
 app.use('/api/users', (req, res, next) => {
@@ -153,6 +156,7 @@ app.use('/api/mcp', mcpRoutes);
 app.use('/api/docs', docsRoutes);
 app.use('/api/sponsors', sponsorRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/pair', pairRoutes);
 
 // API 路由 404 兜底：未匹配到的 /api 请求返回标准 JSON 错误，防止泄漏静态 HTML 页面
 app.all('/api/*', (req, res) => {
@@ -168,6 +172,11 @@ app.all('/api/*', (req, res) => {
 // Public share page
 app.get('/share/:shareId', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'share.html'));
+});
+
+// Short pairing mobile bridge URL
+app.get('/c/:code', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'connect.html'));
 });
 
 // Web management dashboard (login, browse/edit vaults, admin panel).

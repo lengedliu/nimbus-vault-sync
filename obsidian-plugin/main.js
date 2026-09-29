@@ -94,6 +94,45 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     // Setting Tab
     this.addSettingTab(new NimbusSettingTab(this.app, this));
 
+    // 🔗 注册 Obsidian 原生 URI 协议处理器: obsidian://nimbus-sync?...
+    this.registerObsidianProtocolHandler('nimbus-sync', async (params) => {
+      try {
+        const server = params.server || params.serverUrl;
+        const token = params.token || params.authToken;
+        const vaultId = params.vaultId;
+        const vaultName = params.vaultName || '';
+        const device = params.device || params.deviceId;
+        const autoSync = params.autoSync === '1' || params.autoSync === 'true';
+
+        if (!server || !token) {
+          new Notice('❌ Nimbus DeepLink 缺少必要的服务器地址或 Token 授权参数');
+          return;
+        }
+
+        this.settings.serverUrl = server.replace(/\/+$/, '');
+        this.settings.token = token.trim().replace(/^Bearer\s+/i, '');
+        this.settings.authToken = this.settings.token;
+        this.settings.authMode = 'token';
+        if (vaultId) this.settings.vaultId = vaultId;
+        if (vaultName) this.settings.vaultName = vaultName;
+        if (device) this.settings.deviceId = device;
+        if (params.autoSync !== undefined) this.settings.autoSync = autoSync;
+
+        await this.saveSettings();
+        new Notice(`✅ 已成功通过 DeepLink 导入 Nimbus 同步配置！\n目标库: ${vaultName || vaultId || '默认库'}`);
+
+        this.disconnectWebSocket();
+        if (this.settings.vaultId) {
+          this.connectWebSocket();
+        } else {
+          await this.autoMatchOrCreateVault();
+          if (this.settings.vaultId) this.connectWebSocket();
+        }
+      } catch (err) {
+        new Notice('❌ 解析 Nimbus DeepLink 参数失败: ' + err.message);
+      }
+    });
+
     // Vault Event Listeners (protected by isVaultReady)
     this.registerEvent(this.app.vault.on('modify', (file) => this.onLocalFileChange('modify', file)));
     this.registerEvent(this.app.vault.on('create', (file) => this.onLocalFileChange('create', file)));
@@ -1410,6 +1449,83 @@ class NimbusSettingTab extends PluginSettingTab {
 
     containerEl.createEl('h2', { text: '☁️ Nimbus 同步插件设置' });
     containerEl.createEl('p', { text: '连接您的私有 Nimbus 服务端，实现多设备极速双向无缝同步。', cls: 'setting-item-description' });
+
+    // ⚡ Quick Import from Clipboard (DeepLink / data.json / JSON)
+    new Setting(containerEl)
+      .setName('⚡ 快速导入与扫码直连')
+      .setDesc('一键从系统剪贴板导入网页端复制的 DeepLink 直连链接或 JSON 配置')
+      .addButton(btn => btn
+        .setButtonText('📋 从剪贴板一键导入')
+        .setCta()
+        .onClick(async () => {
+          try {
+            let clipboardText = '';
+            if (navigator.clipboard && navigator.clipboard.readText) {
+              clipboardText = await navigator.clipboard.readText();
+            } else {
+              new Notice('❌ 浏览器安全限制，无法直接读取剪贴板，请在下方手动填入');
+              return;
+            }
+
+            clipboardText = (clipboardText || '').trim();
+            if (!clipboardText) {
+              new Notice('⚠️ 剪贴板为空，请先在 Nimbus 网页端点击「复制 DeepLink」或「复制配置」');
+              return;
+            }
+
+            // Case A: obsidian://nimbus-sync?... URI
+            if (clipboardText.startsWith('obsidian://nimbus-sync')) {
+              const url = new URL(clipboardText);
+              const params = url.searchParams;
+              const server = params.get('server') || params.get('serverUrl');
+              const token = params.get('token') || params.get('authToken');
+              const vaultId = params.get('vaultId');
+              const vaultName = params.get('vaultName');
+              const device = params.get('device') || params.get('deviceId');
+
+              if (server) this.plugin.settings.serverUrl = server.replace(/\/+$/, '');
+              if (token) {
+                this.plugin.settings.token = token.trim().replace(/^Bearer\s+/i, '');
+                this.plugin.settings.authToken = this.plugin.settings.token;
+              }
+              if (vaultId) this.plugin.settings.vaultId = vaultId;
+              if (vaultName) this.plugin.settings.vaultName = vaultName;
+              if (device) this.plugin.settings.deviceId = device;
+              this.plugin.settings.authMode = 'token';
+
+              await this.plugin.saveSettings();
+              new Notice('✅ 成功从剪贴板导入 Nimbus DeepLink 直连配置！');
+              await this.display();
+              this.plugin.connectWebSocket();
+              return;
+            }
+
+            // Case B: JSON format
+            if (clipboardText.startsWith('{') && clipboardText.endsWith('}')) {
+              const parsed = JSON.parse(clipboardText);
+              if (parsed.serverUrl) this.plugin.settings.serverUrl = parsed.serverUrl.replace(/\/+$/, '');
+              if (parsed.token || parsed.authToken) {
+                const t = parsed.token || parsed.authToken;
+                this.plugin.settings.token = t.trim().replace(/^Bearer\s+/i, '');
+                this.plugin.settings.authToken = this.plugin.settings.token;
+              }
+              if (parsed.vaultId) this.plugin.settings.vaultId = parsed.vaultId;
+              if (parsed.vaultName) this.plugin.settings.vaultName = parsed.vaultName;
+              if (parsed.deviceId || parsed.deviceName) this.plugin.settings.deviceId = parsed.deviceId || parsed.deviceName;
+              this.plugin.settings.authMode = 'token';
+
+              await this.plugin.saveSettings();
+              new Notice('✅ 成功从剪贴板导入 Nimbus JSON 配置！');
+              await this.display();
+              this.plugin.connectWebSocket();
+              return;
+            }
+
+            new Notice('⚠️ 剪贴板内容不是有效的 Nimbus DeepLink 或 JSON 配置');
+          } catch (e) {
+            new Notice('❌ 导入失败: ' + e.message);
+          }
+        }));
 
     // 1. Auth Mode Switch
     new Setting(containerEl)

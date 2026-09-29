@@ -64,9 +64,21 @@ export async function showObsidianConnectModal(vault, initialToken, initialDevic
     return `obsidian://nimbus-sync?${params.toString()}`;
   }
 
+  function buildConnectWebUrl(selectedToken, deviceName) {
+    const params = new URLSearchParams({
+      server: serverUrl,
+      vaultId,
+      vaultName,
+      token: selectedToken,
+      device: deviceName,
+    });
+    return `${serverUrl}/connect.html?${params.toString()}`;
+  }
+
   let pluginConfig = buildConfig(currentToken, currentDevice);
   let deepLinkUrl = buildDeepLink(currentToken, currentDevice);
-  const qrSvg = generateQRCodeSVG(JSON.stringify(pluginConfig), { size: 160 });
+  let webConnectUrl = buildConnectWebUrl(currentToken, currentDevice);
+  const qrSvg = generateQRCodeSVG(webConnectUrl, { size: 160 });
 
   const html = `
     <div class="modal-header">
@@ -99,13 +111,15 @@ export async function showObsidianConnectModal(vault, initialToken, initialDevic
         <!-- Panel 1: QR Code Scanner -->
         <div id="modal-install-panel-qr" style="font-size:12.5px;color:var(--text-secondary);line-height:1.7;">
           <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap;">
-            <div id="modal-qr-container" style="background:#fff;padding:8px;border-radius:10px;border:1px solid var(--border);display:inline-block;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+            <div id="modal-qr-container" style="background:#ffffff;padding:8px;border-radius:10px;border:1px solid var(--border);display:inline-flex;align-items:center;justify-content:center;width:180px;height:180px;min-width:180px;min-height:180px;box-shadow:0 2px 8px rgba(0,0,0,0.08);overflow:hidden;">
               ${qrSvg}
             </div>
             <div style="flex:1;min-width:220px;">
-              <div style="font-weight:700;font-size:14px;color:var(--text);margin-bottom:6px;">📲 移动端扫码秒级接入</div>
-              <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">
-                在手机 / 平板端 Obsidian 打开 <b>Nimbus Sync</b> 插件设置，点击 <b>「扫描二维码配对」</b> 即可将服务器地址、令牌与库标识全自动注入！
+              <div style="font-weight:700;font-size:14px;color:var(--text);margin-bottom:6px;">📲 移动端 HTTPS 扫码 ➔ DeepLink 唤醒连接</div>
+              <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;line-height:1.6;">
+                1. <b>HTTPS 安全扫码</b>：二维码编码 HTTPS 短链接，手机相机/相机/微信均可 100% 顺畅识别打开；<br>
+                2. <b>DeepLink 自动跳转</b>：HTTPS 落地页加载后，自动跳转 <code>obsidian://</code> 协议唤醒 Obsidian 完成配对；<br>
+                3. <b>一键复制备用</b>：若在微信沙箱内，亦可一键复制 <code>data.json</code> 到 Obsidian 插件设置中粘贴。
               </div>
               <div style="display:flex;gap:8px;flex-wrap:wrap;">
                 <button id="modal-copy-deeplink-btn" class="btn-primary" style="padding:7px 14px;font-size:12px;border-radius:6px;color:#ffffff !important;font-weight:600;display:inline-flex;align-items:center;gap:6px;cursor:pointer;border:none;">🔗 复制 DeepLink (免输入直连)</button>
@@ -193,15 +207,40 @@ export async function showObsidianConnectModal(vault, initialToken, initialDevic
     const tokenSelect = dialog.querySelector('#modal-token-select');
     const deviceInput = dialog.querySelector('#modal-device-input');
 
-    function updateLiveConfig() {
+    async function updateLiveConfig() {
       const selectedToken = tokenSelect ? tokenSelect.value : currentToken;
       const deviceName = deviceInput ? deviceInput.value.trim() || defaultMainDevice : currentDevice;
       pluginConfig = buildConfig(selectedToken, deviceName);
       deepLinkUrl = buildDeepLink(selectedToken, deviceName);
+      webConnectUrl = buildConnectWebUrl(selectedToken, deviceName);
+
+      try {
+        const res = await api('/api/pair/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            vaultId,
+            token: selectedToken,
+            deviceName,
+            serverUrl,
+          }),
+        });
+        const pairData = await res.json();
+        if (pairData && pairData.qrSvg) {
+          if (qrContainer) {
+            qrContainer.innerHTML = pairData.qrSvg;
+          }
+          return;
+        }
+      } catch {}
+
       if (qrContainer) {
-        qrContainer.innerHTML = generateQRCodeSVG(JSON.stringify(pluginConfig), { size: 160 });
+        qrContainer.innerHTML = generateQRCodeSVG(webConnectUrl, { size: 170, margin: 4, darkColor: '#000000', lightColor: '#ffffff' });
       }
     }
+
+    // Trigger initial pairing code creation
+    updateLiveConfig();
 
     if (qrTab && bratTab && manualTab) {
       qrTab.onclick = () => {

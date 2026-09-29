@@ -4,6 +4,7 @@ import { formatCurrentDate } from '../core/themes.js';
 import { api } from '../core/api.js';
 import { showModal, closeModal, showConfirm, toast } from '../core/dialogs.js';
 import { showObsidianConnectModal, showMcpModal } from './connectModal.js';
+import { openFile } from './editorView.js';
 
 let currentDashboardSubtab = 'overview';
 let currentKanbanVaultId = null;
@@ -69,6 +70,10 @@ export async function renderDashboardPanel(mainPanel, { openVault, showTab, setA
             <span>📊</span>
             <span>${escapeHtml(t('dashboard.tab_overview', '运行与同步大盘'))}</span>
           </button>
+          <button class="dashboard-view-btn ${currentDashboardSubtab === 'review' ? 'active' : ''}" id="dash-btn-review">
+            <span>🌱</span>
+            <span>${escapeHtml(t('dashboard.tab_review', '知识复习与灵感热力'))}</span>
+          </button>
           <button class="dashboard-view-btn ${currentDashboardSubtab === 'kanban' ? 'active' : ''}" id="dash-btn-kanban">
             <span>📋</span>
             <span>${escapeHtml(t('dashboard.tab_kanban', '任务便签看板'))}</span>
@@ -84,6 +89,15 @@ export async function renderDashboardPanel(mainPanel, { openVault, showTab, setA
   mainPanel.querySelector('#dash-btn-overview')?.addEventListener('click', () => {
     currentDashboardSubtab = 'overview';
     mainPanel.querySelector('#dash-btn-overview')?.classList.add('active');
+    mainPanel.querySelector('#dash-btn-review')?.classList.remove('active');
+    mainPanel.querySelector('#dash-btn-kanban')?.classList.remove('active');
+    renderDashboardSubView(overviewData, mainPanel, { openVault, showTab });
+  });
+
+  mainPanel.querySelector('#dash-btn-review')?.addEventListener('click', () => {
+    currentDashboardSubtab = 'review';
+    mainPanel.querySelector('#dash-btn-review')?.classList.add('active');
+    mainPanel.querySelector('#dash-btn-overview')?.classList.remove('active');
     mainPanel.querySelector('#dash-btn-kanban')?.classList.remove('active');
     renderDashboardSubView(overviewData, mainPanel, { openVault, showTab });
   });
@@ -92,6 +106,7 @@ export async function renderDashboardPanel(mainPanel, { openVault, showTab, setA
     currentDashboardSubtab = 'kanban';
     mainPanel.querySelector('#dash-btn-kanban')?.classList.add('active');
     mainPanel.querySelector('#dash-btn-overview')?.classList.remove('active');
+    mainPanel.querySelector('#dash-btn-review')?.classList.remove('active');
     renderDashboardSubView(overviewData, mainPanel, { openVault, showTab });
   });
 
@@ -108,6 +123,8 @@ function renderDashboardSubView(overviewData, mainPanel, handlers) {
 
   if (currentDashboardSubtab === 'overview') {
     renderOverviewSubView(overviewData, area, mainPanel, handlers);
+  } else if (currentDashboardSubtab === 'review') {
+    renderReviewSubView(overviewData, area, mainPanel, handlers);
   } else {
     renderKanbanSubView(overviewData, area);
   }
@@ -990,6 +1007,246 @@ async function showScanTasksModal(vaultId, boardData, onDone) {
       closeModal();
       toast(`成功导入 ${importedCount} 条笔记待办到看板！`);
       if (onDone) onDone();
+    };
+  });
+}
+
+// --------------------------- Daily Review & Heatmap Subview ---------------------------
+export async function renderReviewSubView(overviewData, container, mainPanel, { openVault }) {
+  const { vaults } = overviewData || {};
+  if (!vaults || vaults.length === 0) {
+    container.innerHTML = '<div class="empty-state">暂无可用的笔记库 (Vault)</div>';
+    return;
+  }
+
+  const activeVaultId = currentKanbanVaultId || vaults[0].id;
+
+  container.innerHTML = `
+    <div style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;background:var(--panel-2);border:1px solid var(--border);padding:10px 16px;border-radius:10px;">
+      <div style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
+        <span style="font-weight:600;font-size:13.5px;color:var(--text);white-space:nowrap;flex-shrink:0;">📓 当前笔记库:</span>
+        <select id="review-vault-select" style="padding:5px 12px;font-size:13px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);max-width:320px;">
+          ${vaults.map((v) => `<option value="${v.id}" ${v.id === activeVaultId ? 'selected' : ''}>${escapeHtml(v.name)} (${v.id})</option>`).join('')}
+        </select>
+      </div>
+      <div style="font-size:12px;color:var(--muted)">
+        💡 知识复习与灵感热力：打破知识沉睡，查看 365 天产出轨迹与随机漫游复盘
+      </div>
+    </div>
+
+    <div id="review-main-area"><div class="empty-state">正在计算知识沉淀数据…</div></div>
+  `;
+
+  const vaultSel = container.querySelector('#review-vault-select');
+  if (vaultSel) {
+    vaultSel.onchange = () => {
+      currentKanbanVaultId = vaultSel.value;
+      loadReviewData(currentKanbanVaultId);
+    };
+  }
+
+  async function loadReviewData(vaultId) {
+    const mainArea = container.querySelector('#review-main-area');
+    if (!mainArea) return;
+    mainArea.innerHTML = '<div class="empty-state">正在计算知识沉淀数据…</div>';
+
+    try {
+      const res = await api(`/api/dashboard/review/${vaultId}`);
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || '加载失败');
+
+      renderReviewBentoGrid(data, vaultId, mainArea, openVault);
+    } catch (err) {
+      mainArea.innerHTML = `<div class="empty-state error">加载失败: ${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  loadReviewData(activeVaultId);
+}
+
+function renderReviewBentoGrid(data, vaultId, container, openVault) {
+  const { totalNotes, heatmap, onThisDay, randomNote } = data;
+
+  // Calculate Heatmap Stats
+  const now = new Date();
+  let activeDays = 0;
+  let total365Count = 0;
+  let last30Count = 0;
+
+  const dates365 = [];
+  for (let i = 363; i >= 0; i--) {
+    const d = new Date(now.getTime() - i * 86400000);
+    const dateStr = d.toISOString().slice(0, 10);
+    const count = heatmap[dateStr] || 0;
+    if (count > 0) activeDays++;
+    total365Count += count;
+    if (i < 30) last30Count += count;
+    dates365.push({ dateStr, count, dayOfWeek: d.getDay() });
+  }
+
+  // Build SVG Heatmap Grid
+  let heatmapSvgSquares = '';
+  const cols = 52;
+  const rows = 7;
+  const squareSize = 11;
+  const gap = 3;
+
+  dates365.forEach((item, idx) => {
+    const col = Math.floor(idx / 7);
+    const row = item.dayOfWeek;
+    const x = col * (squareSize + gap);
+    const y = row * (squareSize + gap);
+
+    let fillColor = 'rgba(255,255,255,0.06)';
+    if (item.count >= 10) fillColor = '#2ecc71';
+    else if (item.count >= 6) fillColor = '#27ae60';
+    else if (item.count >= 3) fillColor = 'rgba(46,204,113,0.7)';
+    else if (item.count >= 1) fillColor = 'rgba(46,204,113,0.35)';
+
+    heatmapSvgSquares += `<rect x="${x}" y="${y}" width="${squareSize}" height="${squareSize}" rx="2" fill="${fillColor}"><title>${item.dateStr}: ${item.count} 篇改动</title></rect>`;
+  });
+
+  const svgWidth = cols * (squareSize + gap);
+  const svgHeight = rows * (squareSize + gap);
+
+  container.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr;gap:16px;">
+      <!-- Heatmap Card -->
+      <div class="content-card" style="padding:16px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+          <div style="font-weight:700;font-size:14px;color:var(--text);display:flex;align-items:center;gap:6px;">
+            <span>🟢</span>
+            <span>365 天知识沉淀热力图 (Contribution Grid)</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:16px;font-size:12px;color:var(--muted);">
+            <span>活动天数: <b style="color:var(--primary)">${activeDays}</b> 天</span>
+            <span>近30天沉淀: <b style="color:var(--text)">${last30Count}</b> 次</span>
+            <span>累计笔记: <b style="color:var(--text)">${totalNotes}</b> 篇</span>
+          </div>
+        </div>
+
+        <div style="overflow-x:auto;padding-bottom:6px;">
+          <svg width="${svgWidth}" height="${svgHeight}" style="display:block;">
+            ${heatmapSvgSquares}
+          </svg>
+        </div>
+
+        <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;font-size:11px;color:var(--muted);margin-top:8px;">
+          <span>Less</span>
+          <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(255,255,255,0.06);"></span>
+          <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(46,204,113,0.35);"></span>
+          <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(46,204,113,0.7);"></span>
+          <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#27ae60;"></span>
+          <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#2ecc71;"></span>
+          <span>More</span>
+        </div>
+      </div>
+
+      <!-- Two-Column Grid: Random Note & On This Day -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(320px, 1fr));gap:16px;">
+        <!-- Card 2: Random Note Discovery -->
+        <div class="content-card" style="padding:16px;display:flex;flex-direction:column;justify-space:between;">
+          <div>
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+              <div style="font-weight:700;font-size:14px;color:var(--text);display:flex;align-items:center;gap:6px;">
+                <span>🎲</span>
+                <span>随机漫游 (Random Note)</span>
+              </div>
+              <button class="secondary" id="random-next-btn" style="padding:3px 10px;font-size:11.5px;">🎲 换一篇</button>
+            </div>
+
+            <div id="random-card-body">
+              ${renderRandomNoteHtml(randomNote, vaultId)}
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 3: On This Day -->
+        <div class="content-card" style="padding:16px;">
+          <div style="font-weight:700;font-size:14px;color:var(--text);margin-bottom:12px;display:flex;align-items:center;gap:6px;">
+            <span>📅</span>
+            <span>历史上的今天 (On This Day)</span>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:10px;max-height:280px;overflow-y:auto;">
+            ${
+              onThisDay && onThisDay.length > 0
+                ? onThisDay
+                    .map(
+                      (item) => `
+              <div class="content-card" style="padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+                  <span style="font-weight:600;font-size:13px;color:var(--text);">${escapeHtml(item.title)}</span>
+                  <span class="badge primary" style="font-size:10px;">${item.yearsAgo > 0 ? item.yearsAgo + ' 年前' : '今天'}</span>
+                </div>
+                <div style="font-size:12px;color:var(--muted);line-height:1.5;margin-bottom:6px;">
+                  ${escapeHtml(item.excerpt || '无摘要内容')}
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--muted);">
+                  <span>${new Date(item.mtime).toLocaleDateString()}</span>
+                  <button class="secondary open-otd-btn" data-path="${escapeHtml(item.path)}" style="padding:2px 8px;font-size:11px;">📖 打开</button>
+                </div>
+              </div>
+            `
+                    )
+                    .join('')
+                : '<div style="font-size:12.5px;color:var(--muted);text-align:center;padding:30px 0;">📅 历史上的今天没有修改过笔记。<br>试着去「🎲 随机漫游」摇出一篇沉睡灵感吧！</div>'
+            }
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Attach Random Next Click Handler
+  const nextBtn = container.querySelector('#random-next-btn');
+  if (nextBtn) {
+    nextBtn.onclick = async () => {
+      const cardBody = container.querySelector('#random-card-body');
+      if (!cardBody) return;
+      cardBody.style.opacity = '0.5';
+      try {
+        const res = await api(`/api/dashboard/review/${vaultId}/random`);
+        const result = await res.json();
+        cardBody.innerHTML = renderRandomNoteHtml(result.randomNote, vaultId);
+        bindNoteOpenButtons(container, vaultId, openVault);
+      } catch (e) {
+        toast('获取随机笔记失败: ' + e.message, 'error');
+      } finally {
+        cardBody.style.opacity = '1';
+      }
+    };
+  }
+
+  bindNoteOpenButtons(container, vaultId, openVault);
+}
+
+function renderRandomNoteHtml(note, vaultId) {
+  if (!note) {
+    return '<div style="font-size:12.5px;color:var(--muted);padding:20px 0;text-align:center;">当前 Vault 暂无 Markdown 笔记</div>';
+  }
+  return `
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px;">
+      <div style="font-weight:700;font-size:14px;color:var(--text);margin-bottom:6px;">📄 ${escapeHtml(note.title)}</div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:10px;">
+        ${escapeHtml(note.excerpt || '无摘要信息')}
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--muted);">
+        <span>修改时间: ${new Date(note.mtime).toLocaleString()}</span>
+        <code style="font-size:10px;">${escapeHtml(note.path)}</code>
+      </div>
+    </div>
+    <button class="btn-primary open-random-btn" data-path="${escapeHtml(note.path)}" style="width:100%;padding:8px;font-size:12.5px;">📖 阅读与编辑此笔记</button>
+  `;
+}
+
+function bindNoteOpenButtons(container, vaultId, openVault) {
+  container.querySelectorAll('.open-random-btn, .open-otd-btn').forEach((btn) => {
+    btn.onclick = () => {
+      const p = btn.dataset.path;
+      if (p) {
+        openFile(vaultId, p);
+      }
     };
   });
 }

@@ -367,18 +367,19 @@ export class QRCodeModel {
  */
 export function generateQRCodeSVG(text, options = {}) {
   const size = options.size || 200;
-  const margin = options.margin !== undefined ? options.margin : 2;
-  const darkColor = options.darkColor || '#111827';
+  const margin = options.margin !== undefined ? options.margin : 4; // 4 modules quiet zone required by ISO/IEC 18004
+  const darkColor = options.darkColor || '#000000';
   const lightColor = options.lightColor || '#ffffff';
 
   // Automatically determine the minimum QR version needed
   const bytesLength = new TextEncoder().encode(text).length;
-  let typeNumber = 4;
+  let typeNumber = 3;
   if (bytesLength > 180) typeNumber = 10;
   else if (bytesLength > 120) typeNumber = 8;
   else if (bytesLength > 70) typeNumber = 6;
   else if (bytesLength > 32) typeNumber = 4;
-  else typeNumber = 3;
+  else if (bytesLength > 18) typeNumber = 3;
+  else typeNumber = 2;
 
   const qr = new QRCodeModel(typeNumber, 1); // Level L/M
   qr.addData(text);

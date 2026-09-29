@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path');
 const { requireAuth } = require('../auth');
 const { asyncHandler } = require('../utils/asyncHandler');
 const { requireReadAccess, requireWriteAccess, isAdminUser } = require('../permissions');
@@ -254,6 +255,135 @@ router.get('/kanban/:vaultId/scan-tasks', asyncHandler(async (req, res) => {
   }
 
   res.json({ ok: true, count: tasks.length, tasks });
+}));
+
+/**
+ * GET /api/dashboard/review/:vaultId
+ * 获取知识复习与灵感热力图数据：
+ * 1. 365 天知识沉淀热力图 (Contribution Grid)
+ * 2. 历史上的今天 (On This Day)
+ * 3. 随机漫游卡片 (Random Note)
+ */
+router.get('/review/:vaultId', asyncHandler(async (req, res) => {
+  const { vaultId } = req.params;
+  if (!requireReadAccess(req, res)) return;
+
+  const manifest = storage.getManifest(vaultId);
+  const mdPaths = Object.keys(manifest).filter((p) => p.toLowerCase().endsWith('.md'));
+
+  // 1. Calculate 365 days Heatmap
+  const today = new Date();
+  const heatmap = {}; // "YYYY-MM-DD" -> count
+
+  for (const relPath of Object.keys(manifest)) {
+    const meta = manifest[relPath];
+    if (meta && meta.mtime) {
+      const dateStr = new Date(meta.mtime).toISOString().slice(0, 10);
+      heatmap[dateStr] = (heatmap[dateStr] || 0) + 1;
+    }
+  }
+
+  // 2. On This Day (历史上的今天)
+  const currentMMDD = `${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  const onThisDay = [];
+
+  for (const relPath of mdPaths) {
+    const meta = manifest[relPath];
+    if (!meta || !meta.mtime) continue;
+
+    const fileDate = new Date(meta.mtime);
+    const fileMMDD = `${String(fileDate.getMonth() + 1).padStart(2, '0')}-${String(fileDate.getDate()).padStart(2, '0')}`;
+
+    if (fileMMDD === currentMMDD) {
+      const yearsAgo = today.getFullYear() - fileDate.getFullYear();
+      let excerpt = '';
+      try {
+        const text = storage.getTextContent(vaultId, relPath, meta);
+        if (text) {
+          excerpt = text.replace(/^#+\s+.*$/gm, '').replace(/\s+/g, ' ').trim().slice(0, 150);
+        }
+      } catch {}
+
+      onThisDay.push({
+        path: relPath,
+        title: path.basename(relPath, '.md'),
+        mtime: meta.mtime,
+        size: meta.size,
+        yearsAgo,
+        excerpt,
+      });
+    }
+  }
+
+  // Sort onThisDay by mtime desc
+  onThisDay.sort((a, b) => b.mtime - a.mtime);
+
+  // 3. Random Note (随机漫游)
+  let randomNote = null;
+  if (mdPaths.length > 0) {
+    const randomPath = mdPaths[Math.floor(Math.random() * mdPaths.length)];
+    const meta = manifest[randomPath];
+    let excerpt = '';
+    try {
+      const text = storage.getTextContent(vaultId, randomPath, meta);
+      if (text) {
+        excerpt = text.replace(/^#+\s+.*$/gm, '').replace(/\s+/g, ' ').trim().slice(0, 180);
+      }
+    } catch {}
+
+    randomNote = {
+      path: randomPath,
+      title: path.basename(randomPath, '.md'),
+      mtime: meta.mtime,
+      size: meta.size,
+      excerpt,
+    };
+  }
+
+  res.json({
+    ok: true,
+    totalNotes: mdPaths.length,
+    heatmap,
+    onThisDay,
+    randomNote,
+  });
+}));
+
+/**
+ * GET /api/dashboard/review/:vaultId/random
+ * 获取下一篇随机漫游笔记
+ */
+router.get('/review/:vaultId/random', asyncHandler(async (req, res) => {
+  const { vaultId } = req.params;
+  if (!requireReadAccess(req, res)) return;
+
+  const manifest = storage.getManifest(vaultId);
+  const mdPaths = Object.keys(manifest).filter((p) => p.toLowerCase().endsWith('.md'));
+
+  if (mdPaths.length === 0) {
+    return res.json({ ok: true, randomNote: null });
+  }
+
+  const randomPath = mdPaths[Math.floor(Math.random() * mdPaths.length)];
+  const meta = manifest[randomPath];
+  let excerpt = '';
+  try {
+    const text = storage.getTextContent(vaultId, randomPath, meta);
+    if (text) {
+      excerpt = text.replace(/^#+\s+.*$/gm, '').replace(/\s+/g, ' ').trim().slice(0, 180);
+    }
+  } catch {}
+
+  res.json({
+    ok: true,
+    randomNote: {
+      path: randomPath,
+      title: path.basename(randomPath, '.md'),
+      mtime: meta.mtime,
+      size: meta.size,
+      excerpt,
+    },
+  });
 }));
 
 module.exports = router;

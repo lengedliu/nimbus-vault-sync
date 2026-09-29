@@ -15,6 +15,7 @@ import { renderSharesSubtab } from './sharesSubtab.js';
 import { renderRulesSubtab } from './rulesSubtab.js';
 import { renderTrashSubtab } from './trashSubtab.js';
 import { renderTagsSubtab } from './tagsSubtab.js';
+import { renderCloudBackupSubtab } from './cloudBackupSubtab.js';
 
 export function scheduleDebouncedViewUpdate(vaultId) {
   if (state.activeVaultId !== vaultId) return;
@@ -237,6 +238,7 @@ export function renderVaultContainer(vaultId) {
     <button class="subtab-btn ${state.activeSubtab === 'conflicts' ? 'active' : ''}" data-sub="conflicts" id="subtab-conflicts-btn">⚔️ 冲突解决中心</button>
     <button class="subtab-btn ${state.activeSubtab === 'backups' ? 'active' : ''}" data-sub="backups">💾 快照与备份</button>
     <button class="subtab-btn ${state.activeSubtab === 'git' ? 'active' : ''}" data-sub="git">🚀 Git 自动备份</button>
+    <button class="subtab-btn ${state.activeSubtab === 'cloudbackup' ? 'active' : ''}" data-sub="cloudbackup">☁️ 多云异地容灾</button>
     <button class="subtab-btn ${state.activeSubtab === 'permissions' ? 'active' : ''}" data-sub="permissions">👥 成员与权限</button>
     <button class="subtab-btn ${state.activeSubtab === 'stats' ? 'active' : ''}" data-sub="stats">📊 统计与监控</button>
     <button class="subtab-btn ${state.activeSubtab === 'synclogs' ? 'active' : ''}" data-sub="synclogs">📋 同步日志</button>
@@ -287,6 +289,7 @@ export function renderVaultContainer(vaultId) {
   else if (state.activeSubtab === 'conflicts') renderConflictsSubtab(vaultId, contentBox, { openVault });
   else if (state.activeSubtab === 'backups') renderBackupsSubtab(vaultId, contentBox);
   else if (state.activeSubtab === 'git') renderGitSubtab(vaultId, contentBox);
+  else if (state.activeSubtab === 'cloudbackup') renderCloudBackupSubtab(vaultId, contentBox);
   else if (state.activeSubtab === 'permissions') renderPermissionsSubtab(vaultId, contentBox);
   else if (state.activeSubtab === 'stats') renderStatsSubtab(vaultId, contentBox);
   else if (state.activeSubtab === 'synclogs') renderVaultSyncLogsSubtab(vaultId, contentBox);

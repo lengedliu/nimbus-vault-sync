@@ -1,0 +1,24 @@
+{
+  "vaults": {
+    "test_vault_dr_1": {
+      "enabled": true,
+      "provider": "s3",
+      "s3": {
+        "endpoint": "https://oss-cn-hangzhou.aliyuncs.com",
+        "bucket": "my-nimbus-bucket",
+        "region": "cn-hangzhou",
+        "accessKeyId": "LTAI5testKey",
+        "secretAccessKey": "testSecretKey123",
+        "pathPrefix": "vault-backups"
+      },
+      "webdav": {
+        "url": "https://dav.jianguoyun.com/dav/",
+        "username": "user@example.com",
+        "password": "app-password",
+        "pathPrefix": "/nimbus-backups"
+      },
+      "lastBackupAt": null,
+      "lastBackupStatus": null
+    }
+  }
+}

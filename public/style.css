@@ -2650,12 +2650,12 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
 .subtabs-bar, .view-tabs {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 6px 8px;
+  flex-wrap: wrap;
   border-bottom: 1px solid var(--border);
   margin-bottom: 20px;
   padding-bottom: 10px;
-  overflow-x: auto;
-  scrollbar-width: thin;
+  overflow: visible;
 }
 .subtab-btn, .view-tab-btn, .dashboard-view-btn {
   padding: 7px 14px;
@@ -7193,17 +7193,12 @@ button.block { width: 100%; margin-top: 12px; justify-content: center; }
     min-width: 0;
   }
 
-  /* Subtabs bar responsive scroll */
+  /* Subtabs bar responsive wrapping */
   .subtabs-bar {
-    overflow-x: auto;
-    flex-wrap: nowrap;
-    -webkit-overflow-scrolling: touch;
-    padding-bottom: 4px;
-    scrollbar-width: none;
-  }
-
-  .subtabs-bar::-webkit-scrollbar {
-    display: none;
+    overflow: visible;
+    flex-wrap: wrap;
+    padding-bottom: 8px;
+    gap: 6px 6px;
   }
 
   .subtab-btn {
