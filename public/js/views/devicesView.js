@@ -16,20 +16,20 @@ export async function renderDevicesPanel() {
     const onlineCount = devices.filter((d) => d.isOnline).length;
 
     mainPanel.innerHTML = `
-      <div class="panel-header" style="margin-bottom:16px;">
+      <div class="panel-header" style="margin-bottom:20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:14px;">
         <div>
-          <h2 style="margin:0 0 4px;font-size:20px;display:flex;align-items:center;gap:10px;">
+          <h2 style="margin:0 0 6px;font-size:22px;font-weight:800;letter-spacing:-0.01em;display:flex;align-items:center;gap:10px;">
             <span>📱</span>
             <span>接入设备与多端令牌管理</span>
-            <span class="badge ${onlineCount > 0 ? 'success' : 'primary'}" style="font-size:11.5px;font-weight:600;">
-              ${onlineCount} 台在线 / 共 ${devices.length} 台设备
+            <span class="badge ${onlineCount > 0 ? 'success' : 'primary'}" style="font-size:11.5px;font-weight:600;border-radius:12px;padding:3px 10px;">
+              ${onlineCount} 台在线 / 共 ${devices.length} 台已就绪
             </span>
           </h2>
-          <div style="font-size:13px;color:var(--muted)">
-            监控与管理连接至 Obsidian Nimbus 同步服务的客户端设备、在线状态、专用授权 Token 及最后活动记录
+          <div style="font-size:13.5px;line-height:1.6;color:var(--text-secondary)">
+            实时监控与调度连接至 Obsidian Nimbus 同步服务的客户端设备、在线长连状态、专属授权 Token 及多端审计
           </div>
         </div>
-        <div style="display:flex;gap:8px;">
+        <div style="display:flex;gap:10px;align-items:center;">
           <button class="btn-primary" id="add-device-btn">➕ 生成新设备令牌</button>
           <button class="secondary" id="refresh-devices-btn">🔄 刷新列表</button>
         </div>
@@ -87,47 +87,51 @@ export async function renderDevicesPanel() {
       
       const platform = (dev.platform || '').toLowerCase();
       const platformIcon = platform.includes('ios') ? '🍎' : platform.includes('android') ? '🤖' : platform.includes('win') ? '🪟' : platform.includes('mac') ? '🍏' : platform.includes('linux') ? '🐧' : (platform.includes('app') || platform.includes('应用')) ? '📦' : '💻';
+      const platformName = platform.includes('ios') ? 'iOS' : platform.includes('android') ? 'Android' : platform.includes('win') ? 'Windows' : platform.includes('mac') ? 'macOS' : platform.includes('linux') ? 'Linux' : (platform.includes('app') ? 'App Client' : 'Desktop');
       const lastActiveText = dev.lastActiveAt ? new Date(dev.lastActiveAt).toLocaleString() : '刚刚活跃';
       const devName = dev.name || dev.deviceName || dev.deviceId || 'Obsidian Client';
 
       card.innerHTML = `
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px;">
-          <div style="display:flex;align-items:center;gap:10px;min-width:0;flex:1;">
-            <span style="font-size:26px;flex-shrink:0;">${platformIcon}</span>
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px;">
+          <div style="display:flex;align-items:center;gap:12px;min-width:0;flex:1;">
+            <div style="width:44px;height:44px;border-radius:12px;background:var(--accent-bg);color:var(--accent);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;box-shadow:0 1px 3px rgba(0,0,0,0.05);">
+              ${platformIcon}
+            </div>
             <div style="min-width:0;flex:1;">
-              <div style="font-weight:600;font-size:14.5px;color:var(--text);display:flex;align-items:center;gap:6px;">
-                <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;" title="${escapeHtml(devName)}">${escapeHtml(devName)}</span>
-                ${dev.isOnline ? '<span class="badge success" style="font-size:10.5px;white-space:nowrap;flex-shrink:0;">🟢 在线活跃</span>' : '<span class="badge" style="font-size:10.5px;color:var(--muted);white-space:nowrap;flex-shrink:0;">⚪ 离线就绪</span>'}
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <span style="font-weight:700;font-size:15px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;" title="${escapeHtml(devName)}">${escapeHtml(devName)}</span>
+                ${dev.isOnline ? '<span class="badge success" style="font-size:11px;border-radius:12px;padding:2px 8px;">🟢 在线活跃</span>' : '<span class="badge" style="font-size:11px;color:var(--muted);border-radius:12px;padding:2px 8px;">⚪ 离线就绪</span>'}
+                <span class="badge" style="font-size:11px;background:var(--panel-2);color:var(--muted);border-radius:12px;padding:2px 8px;">${platformName}</span>
               </div>
-              <div style="font-size:11.5px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-                设备 ID: <code>${escapeHtml(dev.id || dev.deviceId)}</code>
+              <div style="font-size:11.5px;color:var(--muted);margin-top:3px;font-family:ui-monospace,SFMono-Regular,monospace;">
+                设备 ID: <span>${escapeHtml(dev.id || dev.deviceId)}</span>
               </div>
             </div>
           </div>
-          ${isAdmin && dev.username ? `<span class="badge primary" style="font-size:10.5px;white-space:nowrap;flex-shrink:0;">👤 ${escapeHtml(dev.username)}</span>` : ''}
+          ${isAdmin && dev.username ? `<span class="badge primary" style="font-size:11px;border-radius:12px;padding:2px 8px;flex-shrink:0;">👤 ${escapeHtml(dev.username)}</span>` : ''}
         </div>
 
-        <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 12px;font-size:12.5px;margin-bottom:14px;display:flex;flex-direction:column;gap:7px;">
+        <div style="background:var(--panel-2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;font-size:12.5px;margin-bottom:14px;display:flex;flex-direction:column;gap:8px;">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-            <span style="color:var(--muted);white-space:nowrap;flex-shrink:0;">最后同步活跃:</span>
-            <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;" title="${lastActiveText}">${lastActiveText}</span>
+            <span style="color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:0.02em;font-weight:600;">最后同步活跃</span>
+            <span style="font-size:12px;font-family:ui-monospace,monospace;color:var(--text);" title="${lastActiveText}">${lastActiveText}</span>
           </div>
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-            <span style="color:var(--muted);white-space:nowrap;flex-shrink:0;">客户端 IP:</span>
-            <code style="font-size:11.5px;font-family:ui-monospace,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:210px;text-align:right;" title="${escapeHtml(dev.lastIp || dev.clientIp || '127.0.0.1')}">${escapeHtml(dev.lastIp || dev.clientIp || '127.0.0.1')}</code>
+            <span style="color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:0.02em;font-weight:600;">客户端 IP</span>
+            <code style="font-size:12px;font-family:ui-monospace,monospace;color:var(--text);">${escapeHtml(dev.lastIp || dev.clientIp || '127.0.0.1')}</code>
           </div>
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-            <span style="color:var(--muted);white-space:nowrap;flex-shrink:0;">专属 Token:</span>
-            <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;white-space:nowrap;">
-              <code style="font-size:11px;font-family:ui-monospace,monospace;white-space:nowrap;">${escapeHtml(dev.tokenPreview || (dev.token ? dev.token.slice(0, 10) + '...' : '••••••••••••'))}</code>
-              <button class="secondary copy-token-btn" style="padding:2px 8px;font-size:11px;white-space:nowrap;flex-shrink:0;cursor:pointer;">📋 复制 Token</button>
+            <span style="color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:0.02em;font-weight:600;">专属 Token</span>
+            <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
+              <code style="font-size:11.5px;font-family:ui-monospace,monospace;color:var(--accent);">${escapeHtml(dev.tokenPreview || (dev.token ? dev.token.slice(0, 10) + '...' : '••••••••••••'))}</code>
+              <button class="secondary copy-token-btn" style="padding:2px 8px;font-size:11px;border-radius:12px;cursor:pointer;">📋 复制</button>
             </div>
           </div>
         </div>
 
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-          <button class="secondary get-config-btn" style="font-size:12px;padding:6px 10px;flex:1;white-space:nowrap;cursor:pointer;">⚡ 查看连接配置</button>
-          <button class="danger revoke-dev-btn" data-id="${dev.id || dev.deviceId}" style="font-size:12px;padding:6px 12px;white-space:nowrap;flex-shrink:0;cursor:pointer;">🚫 撤销令牌</button>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+          <button class="secondary get-config-btn" style="font-size:12.5px;padding:6px 14px;flex:1;border-radius:20px;cursor:pointer;">⚡ 连接指引与配置</button>
+          <button class="danger revoke-dev-btn" data-id="${dev.id || dev.deviceId}" style="font-size:12.5px;padding:6px 14px;border-radius:20px;cursor:pointer;">🚫 撤销</button>
         </div>
       `;
 

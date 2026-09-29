@@ -253,8 +253,8 @@ function renderOverviewSubView(overviewData, container, mainPanel, { openVault, 
         <div class="metric-box">
           <div class="metric-icon-wrap" style="background:rgba(88,166,255,0.15);color:var(--accent);">📚</div>
           <div class="metric-content">
-            <div class="metric-val">${stats.totalVaults || 0}</div>
             <div class="metric-lbl">笔记库总数 (Vaults)</div>
+            <div class="metric-val" style="color:var(--accent);">${stats.totalVaults || 0} 个就绪</div>
             <div class="metric-sub">多端隔离存储与独立配置</div>
           </div>
         </div>
@@ -262,27 +262,27 @@ function renderOverviewSubView(overviewData, container, mainPanel, { openVault, 
         <div class="metric-box">
           <div class="metric-icon-wrap" style="background:rgba(63,185,80,0.15);color:#3fb950;">📄</div>
           <div class="metric-content">
-            <div class="metric-val">${stats.totalNotes || 0}</div>
             <div class="metric-lbl">Markdown 笔记总计</div>
-            <div class="metric-sub">文件总数 ${stats.totalFiles || 0} · ${formatBytes(stats.totalBytes || 0)}</div>
+            <div class="metric-val" style="color:#3fb950;">${stats.totalNotes || 0} 篇文档</div>
+            <div class="metric-sub">总文件 ${stats.totalFiles || 0} · ${formatBytes(stats.totalBytes || 0)}</div>
           </div>
         </div>
 
         <div class="metric-box">
           <div class="metric-icon-wrap" style="background:rgba(163,113,247,0.15);color:#a371f7;">📱</div>
           <div class="metric-content">
-            <div class="metric-val">${stats.onlineClients || 0}</div>
             <div class="metric-lbl">当前在线客户端</div>
-            <div class="metric-sub">已绑定接入设备 ${stats.totalDevices || 0} 台</div>
+            <div class="metric-val" style="color:#a371f7;">${stats.onlineClients || 0} 台活跃</div>
+            <div class="metric-sub">已授权设备 ${stats.totalDevices || 0} 台</div>
           </div>
         </div>
 
         <div class="metric-box">
           <div class="metric-icon-wrap" style="background:rgba(210,153,34,0.15);color:#d29922;">⚡</div>
           <div class="metric-content">
-            <div class="metric-val">${stats.dbType ? stats.dbType.toUpperCase() : 'SQLITE'}</div>
             <div class="metric-lbl">数据库引擎状态</div>
-            <div class="metric-sub">未决冲突 ${stats.totalConflicts || 0} · 历史快照 ${stats.totalHistory || 0}</div>
+            <div class="metric-val" style="color:var(--text);">${stats.dbType ? stats.dbType.toUpperCase() : 'SQLITE'}</div>
+            <div class="metric-sub">未决冲突 ${stats.totalConflicts || 0} · 快照 ${stats.totalHistory || 0}</div>
           </div>
         </div>
       </div>
