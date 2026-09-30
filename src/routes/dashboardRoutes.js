@@ -318,27 +318,33 @@ router.get('/review/:vaultId', asyncHandler(async (req, res) => {
   // Sort onThisDay by mtime desc
   onThisDay.sort((a, b) => b.mtime - a.mtime);
 
-  // 3. Random Note (随机漫游)
-  let randomNote = null;
+  // 3. Random Notes (随机漫游：最多随机抽选 3 篇不重复笔记)
+  const randomNotes = [];
   if (mdPaths.length > 0) {
-    const randomPath = mdPaths[Math.floor(Math.random() * mdPaths.length)];
-    const meta = manifest[randomPath];
-    let excerpt = '';
-    try {
-      const text = storage.getTextContent(vaultId, randomPath, meta);
-      if (text) {
-        excerpt = text.replace(/^#+\s+.*$/gm, '').replace(/\s+/g, ' ').trim().slice(0, 180);
-      }
-    } catch {}
+    const shuffled = [...mdPaths].sort(() => Math.random() - 0.5);
+    const sampledPaths = shuffled.slice(0, Math.min(3, shuffled.length));
 
-    randomNote = {
-      path: randomPath,
-      title: path.basename(randomPath, '.md'),
-      mtime: meta.mtime,
-      size: meta.size,
-      excerpt,
-    };
+    for (const randomPath of sampledPaths) {
+      const meta = manifest[randomPath];
+      let excerpt = '';
+      try {
+        const text = storage.getTextContent(vaultId, randomPath, meta);
+        if (text) {
+          excerpt = text.replace(/^#+\s+.*$/gm, '').replace(/\s+/g, ' ').trim().slice(0, 180);
+        }
+      } catch {}
+
+      randomNotes.push({
+        path: randomPath,
+        title: path.basename(randomPath, '.md'),
+        mtime: meta ? meta.mtime : Date.now(),
+        size: meta ? meta.size : 0,
+        excerpt,
+      });
+    }
   }
+
+  const randomNote = randomNotes.length > 0 ? randomNotes[0] : null;
 
   res.json({
     ok: true,
@@ -346,12 +352,13 @@ router.get('/review/:vaultId', asyncHandler(async (req, res) => {
     heatmap,
     onThisDay,
     randomNote,
+    randomNotes,
   });
 }));
 
 /**
  * GET /api/dashboard/review/:vaultId/random
- * 获取下一篇随机漫游笔记
+ * 获取下一批随机漫游笔记 (最多3篇)
  */
 router.get('/review/:vaultId/random', asyncHandler(async (req, res) => {
   const { vaultId } = req.params;
@@ -361,28 +368,89 @@ router.get('/review/:vaultId/random', asyncHandler(async (req, res) => {
   const mdPaths = Object.keys(manifest).filter((p) => p.toLowerCase().endsWith('.md'));
 
   if (mdPaths.length === 0) {
-    return res.json({ ok: true, randomNote: null });
+    return res.json({ ok: true, randomNote: null, randomNotes: [] });
   }
 
-  const randomPath = mdPaths[Math.floor(Math.random() * mdPaths.length)];
-  const meta = manifest[randomPath];
-  let excerpt = '';
-  try {
-    const text = storage.getTextContent(vaultId, randomPath, meta);
-    if (text) {
-      excerpt = text.replace(/^#+\s+.*$/gm, '').replace(/\s+/g, ' ').trim().slice(0, 180);
-    }
-  } catch {}
+  const shuffled = [...mdPaths].sort(() => Math.random() - 0.5);
+  const sampledPaths = shuffled.slice(0, Math.min(3, shuffled.length));
+  const randomNotes = [];
+
+  for (const randomPath of sampledPaths) {
+    const meta = manifest[randomPath];
+    let excerpt = '';
+    try {
+      const text = storage.getTextContent(vaultId, randomPath, meta);
+      if (text) {
+        excerpt = text.replace(/^#+\s+.*$/gm, '').replace(/\s+/g, ' ').trim().slice(0, 180);
+      }
+    } catch {}
+
+    randomNotes.push({
+      path: randomPath,
+      title: path.basename(randomPath, '.md'),
+      mtime: meta ? meta.mtime : Date.now(),
+      size: meta ? meta.size : 0,
+      excerpt,
+    });
+  }
+
+  const randomNote = randomNotes.length > 0 ? randomNotes[0] : null;
 
   res.json({
     ok: true,
-    randomNote: {
-      path: randomPath,
-      title: path.basename(randomPath, '.md'),
-      mtime: meta.mtime,
-      size: meta.size,
-      excerpt,
-    },
+    randomNote,
+    randomNotes,
+  });
+}));
+
+/**
+ * GET /api/dashboard/review/:vaultId/date?date=YYYY-MM-DD
+ * 获取指定日期在 Vault 中修改/产出的笔记列表
+ */
+router.get('/review/:vaultId/date', asyncHandler(async (req, res) => {
+  const { vaultId } = req.params;
+  const { date } = req.query;
+  if (!requireReadAccess(req, res)) return;
+
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ ok: false, error: '日期格式无效，应为 YYYY-MM-DD' });
+  }
+
+  const manifest = storage.getManifest(vaultId);
+  const mdPaths = Object.keys(manifest).filter((p) => p.toLowerCase().endsWith('.md'));
+
+  const matchedNotes = [];
+  for (const relPath of mdPaths) {
+    const meta = manifest[relPath];
+    if (!meta || !meta.mtime) continue;
+
+    const fileDateStr = new Date(meta.mtime).toISOString().slice(0, 10);
+    if (fileDateStr === date) {
+      let excerpt = '';
+      try {
+        const text = storage.getTextContent(vaultId, relPath, meta);
+        if (text) {
+          excerpt = text.replace(/^#+\s+.*$/gm, '').replace(/\s+/g, ' ').trim().slice(0, 180);
+        }
+      } catch {}
+
+      matchedNotes.push({
+        path: relPath,
+        title: path.basename(relPath, '.md'),
+        mtime: meta.mtime,
+        size: meta.size,
+        excerpt,
+      });
+    }
+  }
+
+  matchedNotes.sort((a, b) => b.mtime - a.mtime);
+
+  res.json({
+    ok: true,
+    date,
+    total: matchedNotes.length,
+    notes: matchedNotes,
   });
 }));
 

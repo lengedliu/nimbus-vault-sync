@@ -1065,49 +1065,90 @@ export async function renderReviewSubView(overviewData, container, mainPanel, { 
 }
 
 function renderReviewBentoGrid(data, vaultId, container, openVault) {
-  const { totalNotes, heatmap, onThisDay, randomNote } = data;
+  const { totalNotes, heatmap, onThisDay, randomNote, randomNotes } = data;
 
-  // Calculate Heatmap Stats
+  // Calculate Heatmap Stats & Align Calendar Weeks
   const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const todayDow = today.getDay(); // 0 = Sun, ..., 6 = Sat
+  // Align start to Sunday 52 weeks before this week's Sunday
+  const thisSunday = new Date(today.getTime() - todayDow * 86400000);
+  const startDate = new Date(thisSunday.getTime() - 52 * 7 * 86400000);
+  const daysCount = Math.round((today.getTime() - startDate.getTime()) / 86400000) + 1;
+
   let activeDays = 0;
   let total365Count = 0;
   let last30Count = 0;
 
-  const dates365 = [];
-  for (let i = 363; i >= 0; i--) {
-    const d = new Date(now.getTime() - i * 86400000);
+  const datesList = [];
+  for (let i = 0; i < daysCount; i++) {
+    const d = new Date(startDate.getTime() + i * 86400000);
     const dateStr = d.toISOString().slice(0, 10);
     const count = heatmap[dateStr] || 0;
     if (count > 0) activeDays++;
     total365Count += count;
-    if (i < 30) last30Count += count;
-    dates365.push({ dateStr, count, dayOfWeek: d.getDay() });
+    if (today.getTime() - d.getTime() <= 30 * 86400000) {
+      last30Count += count;
+    }
+    const col = Math.floor(i / 7);
+    const row = d.getDay();
+    datesList.push({ dateStr, dateObj: d, count, col, row });
   }
 
   // Build SVG Heatmap Grid
-  let heatmapSvgSquares = '';
-  const cols = 52;
+  let heatmapSvgElements = '';
+  const cols = Math.ceil(daysCount / 7);
   const rows = 7;
-  const squareSize = 11;
-  const gap = 3;
+  const squareSize = 12;
+  const gap = 3.5;
+  const step = squareSize + gap;
+  const offsetX = 32;
+  const offsetY = 22;
 
-  dates365.forEach((item, idx) => {
-    const col = Math.floor(idx / 7);
-    const row = item.dayOfWeek;
-    const x = col * (squareSize + gap);
-    const y = row * (squareSize + gap);
-
-    let fillColor = 'rgba(255,255,255,0.06)';
-    if (item.count >= 10) fillColor = '#2ecc71';
-    else if (item.count >= 6) fillColor = '#27ae60';
-    else if (item.count >= 3) fillColor = 'rgba(46,204,113,0.7)';
-    else if (item.count >= 1) fillColor = 'rgba(46,204,113,0.35)';
-
-    heatmapSvgSquares += `<rect x="${x}" y="${y}" width="${squareSize}" height="${squareSize}" rx="2" fill="${fillColor}"><title>${item.dateStr}: ${item.count} 篇改动</title></rect>`;
+  // 1. Month Labels on Top
+  let lastMonth = -1;
+  let lastMonthCol = -10;
+  datesList.forEach((item) => {
+    const m = item.dateObj.getMonth();
+    if (m !== lastMonth && item.col - lastMonthCol >= 2) {
+      const x = offsetX + item.col * step;
+      heatmapSvgElements += `<text x="${x}" y="14" font-size="10" fill="var(--muted)" font-family="sans-serif">${m + 1}月</text>`;
+      lastMonth = m;
+      lastMonthCol = item.col;
+    }
   });
 
-  const svgWidth = cols * (squareSize + gap);
-  const svgHeight = rows * (squareSize + gap);
+  // 2. Day Labels on Left Axis
+  heatmapSvgElements += `<text x="0" y="${offsetY + 1 * step + 9.5}" font-size="10" fill="var(--muted)" font-family="sans-serif">周一</text>`;
+  heatmapSvgElements += `<text x="0" y="${offsetY + 3 * step + 9.5}" font-size="10" fill="var(--muted)" font-family="sans-serif">周三</text>`;
+  heatmapSvgElements += `<text x="0" y="${offsetY + 5 * step + 9.5}" font-size="10" fill="var(--muted)" font-family="sans-serif">周五</text>`;
+
+  // 3. Grid Squares
+  datesList.forEach((item) => {
+    const x = offsetX + item.col * step;
+    const y = offsetY + item.row * step;
+
+    let fillColor = 'rgba(128,128,128,0.12)';
+    let strokeColor = 'rgba(128,128,128,0.2)';
+    if (item.count >= 10) {
+      fillColor = '#2ecc71';
+      strokeColor = '#27ae60';
+    } else if (item.count >= 6) {
+      fillColor = '#27ae60';
+      strokeColor = '#1e8449';
+    } else if (item.count >= 3) {
+      fillColor = 'rgba(46,204,113,0.7)';
+      strokeColor = '#27ae60';
+    } else if (item.count >= 1) {
+      fillColor = 'rgba(46,204,113,0.35)';
+      strokeColor = 'rgba(46,204,113,0.6)';
+    }
+
+    heatmapSvgElements += `<rect class="heatmap-square" data-date="${item.dateStr}" data-count="${item.count}" x="${x}" y="${y}" width="${squareSize}" height="${squareSize}" rx="2" fill="${fillColor}" stroke="${strokeColor}" stroke-width="0.5" style="cursor:pointer;transition:all 0.15s ease;"><title>${item.dateStr}: ${item.count} 篇改动 (点击查看当日笔记)</title></rect>`;
+  });
+
+  const svgWidth = offsetX + cols * step;
+  const svgHeight = offsetY + rows * step;
 
   container.innerHTML = `
     <div style="display:grid;grid-template-columns:1fr;gap:16px;">
@@ -1126,37 +1167,44 @@ function renderReviewBentoGrid(data, vaultId, container, openVault) {
         </div>
 
         <div style="overflow-x:auto;padding-bottom:6px;">
-          <svg width="${svgWidth}" height="${svgHeight}" style="display:block;">
-            ${heatmapSvgSquares}
+          <svg viewBox="0 0 ${svgWidth} ${svgHeight}" style="width:100%;max-width:${svgWidth}px;min-width:680px;height:auto;display:block;">
+            ${heatmapSvgElements}
           </svg>
         </div>
 
-        <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;font-size:11px;color:var(--muted);margin-top:8px;">
-          <span>Less</span>
-          <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(255,255,255,0.06);"></span>
-          <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(46,204,113,0.35);"></span>
-          <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(46,204,113,0.7);"></span>
-          <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#27ae60;"></span>
-          <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#2ecc71;"></span>
-          <span>More</span>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:11px;color:var(--muted);margin-top:8px;">
+          <span style="color:var(--primary);">💡 点击任意热力图方块可展开查看该日产出的笔记列表</span>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span>Less</span>
+            <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(128,128,128,0.12);border:1px solid rgba(128,128,128,0.2);"></span>
+            <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(46,204,113,0.35);"></span>
+            <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(46,204,113,0.7);"></span>
+            <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#27ae60;"></span>
+            <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#2ecc71;"></span>
+            <span>More</span>
+          </div>
+        </div>
+
+        <div id="heatmap-drilldown-panel" style="display:none;margin-top:14px;padding:12px 14px;background:var(--bg);border:1px solid var(--border);border-radius:8px;">
+          <!-- Drilldown content injected here -->
         </div>
       </div>
 
       <!-- Two-Column Grid: Random Note & On This Day -->
       <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(320px, 1fr));gap:16px;">
         <!-- Card 2: Random Note Discovery -->
-        <div class="content-card" style="padding:16px;display:flex;flex-direction:column;justify-space:between;">
+        <div class="content-card" style="padding:16px;display:flex;flex-direction:column;justify-content:space-between;">
           <div>
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
               <div style="font-weight:700;font-size:14px;color:var(--text);display:flex;align-items:center;gap:6px;">
                 <span>🎲</span>
-                <span>随机漫游 (Random Note)</span>
+                <span>随机漫游 3 篇 (Random Discovery)</span>
               </div>
-              <button class="secondary" id="random-next-btn" style="padding:3px 10px;font-size:11.5px;">🎲 换一篇</button>
+              <button class="secondary" id="random-next-btn" style="padding:3px 10px;font-size:11.5px;">🎲 换一批</button>
             </div>
 
             <div id="random-card-body">
-              ${renderRandomNoteHtml(randomNote, vaultId)}
+              ${renderRandomNotesHtml(randomNotes || randomNote, vaultId)}
             </div>
           </div>
         </div>
@@ -1168,7 +1216,7 @@ function renderReviewBentoGrid(data, vaultId, container, openVault) {
             <span>历史上的今天 (On This Day)</span>
           </div>
 
-          <div style="display:flex;flex-direction:column;gap:10px;max-height:280px;overflow-y:auto;">
+          <div style="display:flex;flex-direction:column;gap:10px;min-height:360px;max-height:450px;overflow-y:auto;padding-right:4px;">
             ${
               onThisDay && onThisDay.length > 0
                 ? onThisDay
@@ -1198,6 +1246,85 @@ function renderReviewBentoGrid(data, vaultId, container, openVault) {
     </div>
   `;
 
+  // Attach Heatmap Square Click Handling
+  const drilldownPanel = container.querySelector('#heatmap-drilldown-panel');
+  container.querySelectorAll('.heatmap-square').forEach((rect) => {
+    rect.onclick = async () => {
+      const dateStr = rect.dataset.date;
+      const count = Number(rect.dataset.count || 0);
+
+      // Highlight active square border
+      container.querySelectorAll('.heatmap-square').forEach((r) => {
+        r.style.stroke = 'none';
+      });
+      rect.style.stroke = 'var(--primary)';
+      rect.style.strokeWidth = '2px';
+
+      if (!drilldownPanel) return;
+
+      drilldownPanel.style.display = 'block';
+      drilldownPanel.innerHTML = `<div style="font-size:12.5px;color:var(--muted);text-align:center;padding:12px 0;">⏳ 正在调取 ${escapeHtml(dateStr)} 的沉淀记录…</div>`;
+
+      try {
+        const res = await api(`/api/dashboard/review/${vaultId}/date?date=${encodeURIComponent(dateStr)}`);
+        const result = await res.json();
+
+        if (!result.ok) throw new Error(result.error || '获取该日笔记失败');
+
+        const notes = result.notes || [];
+
+        drilldownPanel.innerHTML = `
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--border);">
+            <div style="font-weight:700;font-size:13.5px;color:var(--text);display:flex;align-items:center;gap:6px;">
+              <span>📅</span>
+              <span>${escapeHtml(dateStr)} 沉淀归档 (${notes.length} 篇笔记)</span>
+            </div>
+            <button id="close-drilldown-btn" class="secondary" style="padding:2px 8px;font-size:11px;">✕ 关闭</button>
+          </div>
+
+          ${
+            notes.length > 0
+              ? `<div style="display:flex;flex-direction:column;gap:8px;max-height:260px;overflow-y:auto;padding-right:4px;">
+                  ${notes
+                    .map(
+                      (note) => `
+                    <div style="padding:10px 12px;background:var(--panel-2);border:1px solid var(--border);border-radius:6px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+                      <div style="overflow:hidden;flex:1;min-width:200px;">
+                        <div style="font-weight:600;font-size:13px;color:var(--text);margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                          📄 ${escapeHtml(note.title)}
+                        </div>
+                        <div style="font-size:11.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                          ${escapeHtml(note.excerpt || '无摘要内容')}
+                        </div>
+                      </div>
+                      <div style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
+                        <span style="font-size:11px;color:var(--muted);">⏱️ ${new Date(note.mtime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        <button class="btn-primary open-heatmap-note-btn" data-path="${escapeHtml(note.path)}" style="padding:3px 10px;font-size:11.5px;">📖 阅读与编辑</button>
+                      </div>
+                    </div>
+                  `
+                    )
+                    .join('')}
+                </div>`
+              : `<div style="font-size:12.5px;color:var(--muted);text-align:center;padding:12px 0;">📅 ${escapeHtml(dateStr)} 暂无改动的 Markdown 笔记</div>`
+          }
+        `;
+
+        const closeBtn = drilldownPanel.querySelector('#close-drilldown-btn');
+        if (closeBtn) {
+          closeBtn.onclick = () => {
+            drilldownPanel.style.display = 'none';
+            rect.style.stroke = 'none';
+          };
+        }
+
+        bindNoteOpenButtons(container, vaultId, openVault);
+      } catch (e) {
+        drilldownPanel.innerHTML = `<div style="font-size:12.5px;color:var(--error);text-align:center;padding:10px 0;">加载失败: ${escapeHtml(e.message)}</div>`;
+      }
+    };
+  });
+
   // Attach Random Next Click Handler
   const nextBtn = container.querySelector('#random-next-btn');
   if (nextBtn) {
@@ -1208,7 +1335,8 @@ function renderReviewBentoGrid(data, vaultId, container, openVault) {
       try {
         const res = await api(`/api/dashboard/review/${vaultId}/random`);
         const result = await res.json();
-        cardBody.innerHTML = renderRandomNoteHtml(result.randomNote, vaultId);
+        const notesToRender = result.randomNotes || (result.randomNote ? [result.randomNote] : []);
+        cardBody.innerHTML = renderRandomNotesHtml(notesToRender, vaultId);
         bindNoteOpenButtons(container, vaultId, openVault);
       } catch (e) {
         toast('获取随机笔记失败: ' + e.message, 'error');
@@ -1221,27 +1349,41 @@ function renderReviewBentoGrid(data, vaultId, container, openVault) {
   bindNoteOpenButtons(container, vaultId, openVault);
 }
 
-function renderRandomNoteHtml(note, vaultId) {
-  if (!note) {
+function renderRandomNotesHtml(notesData, vaultId) {
+  const notes = Array.isArray(notesData) ? notesData : (notesData ? [notesData] : []);
+  if (!notes || notes.length === 0) {
     return '<div style="font-size:12.5px;color:var(--muted);padding:20px 0;text-align:center;">当前 Vault 暂无 Markdown 笔记</div>';
   }
+
   return `
-    <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px;">
-      <div style="font-weight:700;font-size:14px;color:var(--text);margin-bottom:6px;">📄 ${escapeHtml(note.title)}</div>
-      <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:10px;">
-        ${escapeHtml(note.excerpt || '无摘要信息')}
-      </div>
-      <div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--muted);">
-        <span>修改时间: ${new Date(note.mtime).toLocaleString()}</span>
-        <code style="font-size:10px;">${escapeHtml(note.path)}</code>
-      </div>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      ${notes
+        .map(
+          (note) => `
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;transition:all 0.15s ease;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;">
+            <span style="font-weight:700;font-size:13.5px;color:var(--text);display:inline-flex;align-items:center;gap:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+              📄 ${escapeHtml(note.title)}
+            </span>
+            <button class="btn-primary open-random-btn" data-path="${escapeHtml(note.path)}" style="padding:3px 10px;font-size:11.5px;flex-shrink:0;">📖 阅读编辑</button>
+          </div>
+          <div style="font-size:12px;color:var(--muted);line-height:1.55;margin-bottom:8px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">
+            ${escapeHtml(note.excerpt || '无摘要信息')}
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--muted);">
+            <span>⏱️ ${new Date(note.mtime).toLocaleString()}</span>
+            <code style="font-size:10px;background:var(--panel-2);padding:2px 6px;border-radius:4px;border:1px solid var(--border);">${escapeHtml(note.path)}</code>
+          </div>
+        </div>
+      `
+        )
+        .join('')}
     </div>
-    <button class="btn-primary open-random-btn" data-path="${escapeHtml(note.path)}" style="width:100%;padding:8px;font-size:12.5px;">📖 阅读与编辑此笔记</button>
   `;
 }
 
 function bindNoteOpenButtons(container, vaultId, openVault) {
-  container.querySelectorAll('.open-random-btn, .open-otd-btn').forEach((btn) => {
+  container.querySelectorAll('.open-random-btn, .open-otd-btn, .open-heatmap-note-btn').forEach((btn) => {
     btn.onclick = () => {
       const p = btn.dataset.path;
       if (p) {
