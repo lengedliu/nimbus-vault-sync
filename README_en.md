@@ -15,6 +15,10 @@
 
 **Nimbus Vault Sync** is a lightweight, secure, and full-featured private self-hosted Obsidian cloud sync and collaborative knowledge hub. It provides millisecond-level bidirectional real-time synchronization across all platforms (iOS, Android, Mac, Windows, Linux, Web), alongside deep integrations for **22 standard Model Context Protocol (MCP) AI tools**, **native Git auto-backup**, **D3 2D knowledge graph visualization**, **interactive task kanban boards**, **3-way visual conflict resolution**, and **secure note sharing**.
 
+<p align="center">
+  <img src="docs/images/dashboard_preview.png" alt="Nimbus Vault Sync Dashboard" width="100%" />
+</p>
+
 ---
 
 ## 🌟 Core Features & Highlights
