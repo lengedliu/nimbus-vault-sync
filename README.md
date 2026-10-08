@@ -15,6 +15,10 @@
 
 **Nimbus Vault Sync** 是一款轻量级、高安全性、全功能的私有化自托管 Obsidian 知识库云端同步与协作管理中枢。它不仅支持桌面端与移动端（iOS / Android / Mac / Windows / Linux）毫秒级双向实时同步，更深度集成了 **22 项标准 Model Context Protocol (MCP) AI 工具**、**原生 Git 自动备份**、**D3 双链知识图谱**、**交互式任务看板**、**三方可视化冲突解决**及**安全外链分享**。
 
+<p align="center">
+  <img src="docs/images/dashboard_preview.png" alt="Nimbus Vault Sync 看板总览界面" width="100%" />
+</p>
+
 ---
 
 ## 🌟 核心特色与架构优势

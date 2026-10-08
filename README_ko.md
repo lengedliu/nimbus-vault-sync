@@ -15,6 +15,10 @@
 
 **Nimbus Vault Sync**는 가볍고 안전하며 강력한 기능을 갖춘 프라이빗 셀프 호스팅 Obsidian 지식베이스 클라우드 동기화 및 협업 관리 플랫폼입니다. 모바일과 데스크톱(iOS, Android, Mac, Windows, Linux, Web) 간 밀리초 단위 양방향 실시간 동기화뿐만 아니라, **22가지 표준 Model Context Protocol (MCP) AI 도구**, **네이티브 Git 자동 백업**, **D3 양방향 링크 지식 그래프**, **인터랙티브 칸반 보드**, **3-Way 시각적 충돌 해결 에디터** 및 **안전한 외부 링크 공유 기능**을 기본 제공합니다.
 
+<p align="center">
+  <img src="docs/images/dashboard_preview.png" alt="Nimbus Vault Sync 대시보드" width="100%" />
+</p>
+
 ---
 
 ## 🌟 핵심 기능 및 아키텍처 강점

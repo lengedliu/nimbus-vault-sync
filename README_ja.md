@@ -15,6 +15,10 @@
 
 **Nimbus Vault Sync** は、軽量・高セキュリティ・多機能なセルフホスト型 Obsidian ノート同期＆ナレッジ管理プラットフォームです。iOS、Android、macOS、Windows、Linux、Web 間でのミリ秒単位の双方向リアルタイム同期に加え、**22 種類の標準 Model Context Protocol (MCP) AI ツール**、**ネイティブ Git 自動バックアップ**、**D3 双方向リンクナレッジグラフ**、**インタラクティブカンバンボード**、**3-Way 競合解決エディタ**、**セキュアなノート共有機能**を統合しています。
 
+<p align="center">
+  <img src="docs/images/dashboard_preview.png" alt="Nimbus Vault Sync ダッシュボード" width="100%" />
+</p>
+
 ---
 
 ## 🌟 主な機能と特徴
