@@ -826,20 +826,36 @@ class DatabaseManager {
 
   // ------------------------- Generic SQL Query Helpers -------------------------
 
+  _sanitizeSql(sql) {
+    if (!sql || typeof sql !== 'string') return sql;
+    // Strip existing quotes around cursor first to avoid double backticks
+    let clean = sql.replace(/[`"]cursor[`"]/gi, 'cursor');
+    if (this.type === 'mysql') {
+      // MariaDB/MySQL strict keyword protection for cursor
+      return clean.replace(/\bcursor\b/g, '`cursor`');
+    }
+    if (this.type === 'postgres') {
+      // PostgreSQL identifier escaping
+      return clean.replace(/\bcursor\b/g, '"cursor"');
+    }
+    return clean;
+  }
+
   async queryAll(sql, params = []) {
+    const cleanSql = this._sanitizeSql(sql);
     if (this.type === 'sqlite') {
       return new Promise((res, rej) => {
-        this.sqliteDb.all(sql, params, (err, rows) => (err ? rej(err) : res(rows || [])));
+        this.sqliteDb.all(cleanSql, params, (err, rows) => (err ? rej(err) : res(rows || [])));
       });
     }
     if (this.type === 'postgres') {
       let i = 1;
-      const pgSql = sql.replace(/\?/g, () => `$${i++}`);
+      const pgSql = cleanSql.replace(/\?/g, () => `$${i++}`);
       const result = await this.pgPool.query(pgSql, params);
       return result.rows;
     }
     if (this.type === 'mysql') {
-      const [rows] = await this.mysqlPool.query(sql, params);
+      const [rows] = await this.mysqlPool.query(cleanSql, params);
       return rows;
     }
     return [];
@@ -851,9 +867,10 @@ class DatabaseManager {
   }
 
   async execute(sql, params = []) {
+    const cleanSql = this._sanitizeSql(sql);
     if (this.type === 'sqlite') {
       return new Promise((res, rej) => {
-        this.sqliteDb.run(sql, params, function (err) {
+        this.sqliteDb.run(cleanSql, params, function (err) {
           if (err) return rej(err);
           res({ changes: this.changes, lastID: this.lastID });
         });
@@ -861,12 +878,12 @@ class DatabaseManager {
     }
     if (this.type === 'postgres') {
       let i = 1;
-      const pgSql = sql.replace(/\?/g, () => `$${i++}`);
+      const pgSql = cleanSql.replace(/\?/g, () => `$${i++}`);
       const result = await this.pgPool.query(pgSql, params);
       return { changes: result.rowCount };
     }
     if (this.type === 'mysql') {
-      const [result] = await this.mysqlPool.query(sql, params);
+      const [result] = await this.mysqlPool.query(cleanSql, params);
       return { changes: result.affectedRows };
     }
     return { changes: 0 };
@@ -1077,7 +1094,7 @@ class DatabaseManager {
         for (const c of dataset.vaultChanges || []) {
           try {
             await this.execute(
-              `INSERT INTO vault_changes (vault_id, cursor, path, action, size, mtime, hash, created_at)
+              `INSERT INTO vault_changes (vault_id, \`cursor\`, path, action, size, mtime, hash, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
               [
                 c.vaultId,

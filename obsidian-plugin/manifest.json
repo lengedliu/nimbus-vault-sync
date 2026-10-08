@@ -1,10 +1,10 @@
 {
   "id": "nimbus-sync",
-  "name": "Nimbus Vault Sync",
-  "version": "1.3.5",
+  "name": "Nimbus vault Sync",
+  "version": "1.3.2",
   "minAppVersion": "0.15.0",
   "description": "Real-time bidirectional synchronization with self-hosted Nimbus Server.",
   "author": "Nimbus",
-  "authorUrl": "https://github.com/lengedliu",
+  "authorUrl": "https://github.com/lengedliu/obsidian-plugin",
   "isDesktopOnly": false
 }
