@@ -1,0 +1,1391 @@
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const archiverPkg = require('archiver');
+const { vaultFilesRoot, vaultRoot } = require('./vaults');
+const gitSync = require('./gitSync');
+const deltaSync = require('./deltaSync');
+const ftsEngine = require('./ftsEngine');
+
+function createArchiver(format, options = {}) {
+  if (typeof archiverPkg === 'function') {
+    return archiverPkg(format, options);
+  }
+  if (format === 'zip') {
+    return new archiverPkg.ZipArchive(options);
+  }
+  return new archiverPkg.TarArchive(options);
+}
+
+/*
+ * Layout inside a vault's data folder:
+ *   files/                the actual synced note/attachment tree (this is
+ *                          the only part reflected in getManifest() / synced
+ *                          to Obsidian clients)
+ *   manifest-cache.json    hash cache, keyed by path (sibling of files/)
+ *   history/               snapshots of overwritten file content
+ *   history-index.json     [{id, path, size, savedAt}]
+ *   trash/                  soft-deleted files, kept until purged
+ *   trash-index.json        [{id, path, size, deletedAt}]
+ */
+
+const MAX_HISTORY_VERSIONS_PER_PATH = 20;
+const MAX_VAULT_TOTAL_HISTORY = 500;
+const MAX_HISTORY_AGE_MS = 90 * 24 * 60 * 60 * 1000; // 90 days retention
+
+const NOISE_FILE_REGEXES = [
+  /^\.DS_Store$/i,
+  /^\._/i,
+  /^Thumbs\.db$/i,
+  /^desktop\.ini$/i,
+  /^\.Trash/i,
+  /^\.Trashes/i,
+];
+
+// --------------------------- Key-Based File Mutex ---------------------------
+// 基于文件路径的轻量级 Promise 链式锁（毫秒级并发互斥），无第三方依赖。
+// 确保同一 Vault 下针对同一相对路径的写入、覆盖、删除操作在单进程内严格串行化，
+// 消除“读取原文件 Hash”与“写入新文件内容”之间的微小并发竞态窗口。
+const fileLocks = new Map(); // key (${vaultId}:${relPath}) -> Promise chain
+
+function getFileLockKey(vaultId, relPath) {
+  const norm = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  return `${vaultId}:${norm}`;
+}
+
+async function withFileLock(vaultId, relPath, fn) {
+  const key = getFileLockKey(vaultId, relPath);
+  const current = fileLocks.get(key) || Promise.resolve();
+  let release;
+  const next = new Promise((resolve) => { release = resolve; });
+  fileLocks.set(key, current.then(() => next, () => next));
+
+  try {
+    await current;
+    return await fn();
+  } finally {
+    release();
+    if (fileLocks.get(key) === next) {
+      fileLocks.delete(key);
+    }
+  }
+}
+
+function clearVaultLocks(vaultId) {
+  const prefix = `${vaultId}:`;
+  for (const key of Array.from(fileLocks.keys())) {
+    if (key.startsWith(prefix)) {
+      fileLocks.delete(key);
+    }
+  }
+}
+
+function isNoiseFile(name) {
+  if (!name) return false;
+  return NOISE_FILE_REGEXES.some((re) => re.test(name));
+}
+
+/** Prevent path traversal: resolve relPath against root and ensure it stays inside root. */
+function safeJoin(root, relPath) {
+  const normalized = path.normalize(relPath).replace(/^(\.\.[/\\])+/, '');
+  // 双重保险：就算 walk() 不会把 .git 列进 manifest，也要挡住"直接按路径请求
+  // .git/config"这种绕过枚举、凭直觉/猜测硬点路径的访问方式——REST 的
+  // GET/PUT/DELETE .../files/.git/xxx 和 MCP 的 read_note/write_note 等
+  // 工具最终都会走到这里，一处拦截，处处生效。
+  const segments = normalized.split(/[/\\]/);
+  if (segments.some((seg) => seg === '.git')) {
+    throw new Error('Access to the .git directory is not allowed.');
+  }
+  const full = path.join(root, normalized);
+  if (!full.startsWith(path.resolve(root) + path.sep) && full !== path.resolve(root)) {
+    throw new Error('Invalid path (outside vault root)');
+  }
+  return full;
+}
+
+function sha256(buffer) {
+  return crypto.createHash('sha256').update(buffer).digest('hex');
+}
+
+/** Calculate SHA-256 asynchronously, streaming large files (>512KB) to avoid memory spikes and event-loop stalls. */
+async function sha256FileAsync(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', (err) => reject(err));
+  });
+}
+
+function randomId() {
+  return crypto.randomBytes(8).toString('hex');
+}
+
+/** Rename, falling back to copy+unlink if src/dest are on different filesystems (EXDEV). */
+function moveFile(src, dest) {
+  try {
+    fs.renameSync(src, dest);
+  } catch (err) {
+    if (err && err.code === 'EXDEV') {
+      fs.copyFileSync(src, dest);
+      fs.unlinkSync(src);
+    } else {
+      throw err;
+    }
+  }
+}
+
+// ------------------------------- manifest cache -------------------------------
+
+function manifestCachePath(vaultId) {
+  return path.join(vaultRoot(vaultId), 'manifest-cache.json');
+}
+
+function loadCache(vaultId) {
+  const p = manifestCachePath(vaultId);
+  if (!fs.existsSync(p)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function yieldToEventLoop() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+// In-memory manifest cache: vaultId -> { manifest, lastScanned }
+const inMemoryManifestCache = new Map();
+
+function invalidateManifestCache(vaultId) {
+  inMemoryManifestCache.delete(vaultId);
+  contentCache.delete(vaultId);
+}
+
+function clearVaultCache(vaultId) {
+  inMemoryManifestCache.delete(vaultId);
+  contentCache.delete(vaultId);
+  clearVaultLocks(vaultId);
+}
+
+function deleteVaultDirectory(vaultId) {
+  const { DATA_DIR, VAULTS_DIR } = require('./config');
+  clearVaultCache(vaultId);
+
+  // 1. 删除主 Vault 目录（包含 files/, history/, trash/, sync-rules.json 等）
+  const vRoot = vaultRoot(vaultId);
+  if (fs.existsSync(vRoot)) {
+    try {
+      fs.rmSync(vRoot, { recursive: true, force: true });
+    } catch (e) {
+      console.error(`[Storage] Failed to remove vault dir ${vRoot}:`, e.message);
+    }
+  }
+
+  // 2. 清理可能存在的独立 data/trash/:vaultId 目录
+  const legacyTrashDir = path.join(DATA_DIR, 'trash', vaultId);
+  if (fs.existsSync(legacyTrashDir)) {
+    try {
+      fs.rmSync(legacyTrashDir, { recursive: true, force: true });
+    } catch (e) {
+      console.error(`[Storage] Failed to remove legacy trash dir ${legacyTrashDir}:`, e.message);
+    }
+  }
+}
+
+function updateManifestEntry(vaultId, relPath, meta) {
+  const cachedMem = inMemoryManifestCache.get(vaultId);
+  if (cachedMem && cachedMem.manifest) {
+    if (meta === null) {
+      delete cachedMem.manifest[relPath];
+    } else {
+      cachedMem.manifest[relPath] = meta;
+    }
+  }
+}
+
+/** O(1) single-entry manifest lookup avoiding full manifest object cloning. */
+function getManifestEntry(vaultId, relPath) {
+  const cachedMem = inMemoryManifestCache.get(vaultId);
+  if (cachedMem && cachedMem.manifest) {
+    return cachedMem.manifest[relPath] || null;
+  }
+  const manifest = getManifest(vaultId);
+  return manifest ? (manifest[relPath] || null) : null;
+}
+
+function saveCache(vaultId, cache) {
+  const p = manifestCachePath(vaultId);
+  const tmp = p + '.tmp.' + Date.now();
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(cache));
+    fs.renameSync(tmp, p);
+  } catch {
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
+  }
+}
+
+async function saveCacheAsync(vaultId, cache) {
+  const p = manifestCachePath(vaultId);
+  const tmp = p + '.tmp.' + Date.now();
+  try {
+    await fs.promises.writeFile(tmp, JSON.stringify(cache));
+    await fs.promises.rename(tmp, p);
+  } catch {
+    try { if (fs.existsSync(tmp)) await fs.promises.unlink(tmp); } catch {}
+  }
+}
+
+/** Recursively list all files under a vault's files/ dir asynchronously without blocking the event loop. */
+async function walkAsync(dir, base, out = []) {
+  if (!fs.existsSync(dir)) return out;
+  try {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && (entry.name === '.git' || isNoiseFile(entry.name))) continue;
+      if (entry.isFile() && isNoiseFile(entry.name)) continue;
+      const full = path.join(dir, entry.name);
+      const rel = path.relative(base, full).split(path.sep).join('/');
+      if (entry.isDirectory()) {
+        await walkAsync(full, base, out);
+      } else if (entry.isFile()) {
+        out.push(rel);
+      }
+    }
+  } catch {
+    // Directory could be deleted or unreadable
+  }
+  return out;
+}
+
+/** Recursively list all files under a vault's files/ dir. */
+function walk(dir, base, out = []) {
+  if (!fs.existsSync(dir)) return out;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    // .git 是 Git 仓库自己的内部数据（可能包含写入了凭据的 .git/config），
+    // 不是用户的笔记内容，绝不能把它当成普通 vault 文件列出来。
+    if (entry.isDirectory() && (entry.name === '.git' || isNoiseFile(entry.name))) continue;
+    if (entry.isFile() && isNoiseFile(entry.name)) continue;
+    const full = path.join(dir, entry.name);
+    const rel = path.relative(base, full).split(path.sep).join('/');
+    if (entry.isDirectory()) {
+      walk(full, base, out);
+    } else if (entry.isFile()) {
+      out.push(rel);
+    }
+  }
+  return out;
+}
+
+/**
+ * Build a manifest asynchronously: { path: { size, mtimeMs, hash } }.
+ * Uses chunked concurrency and streaming hash for large files.
+ * Yields to the Node.js event loop after each batch to prevent blocking during large directory scans.
+ */
+async function getManifestAsync(vaultId, forceRefresh = false) {
+  const cachedMem = inMemoryManifestCache.get(vaultId);
+  if (!forceRefresh && cachedMem && cachedMem.manifest) {
+    return cachedMem.manifest;
+  }
+
+  const root = vaultFilesRoot(vaultId);
+  let cache = {};
+  const cacheP = manifestCachePath(vaultId);
+  if (fs.existsSync(cacheP)) {
+    try {
+      const data = await fs.promises.readFile(cacheP, 'utf8');
+      cache = JSON.parse(data);
+    } catch {
+      cache = {};
+    }
+  }
+
+  const relPaths = await walkAsync(root, root);
+  const nextCache = {};
+  const manifest = {};
+  const BATCH_SIZE = 32;
+
+  for (let i = 0; i < relPaths.length; i += BATCH_SIZE) {
+    const chunk = relPaths.slice(i, i + BATCH_SIZE);
+    await Promise.all(
+      chunk.map(async (rel) => {
+        const full = path.join(root, rel);
+        try {
+          const stat = await fs.promises.stat(full);
+          const cached = cache[rel];
+          let hash;
+          if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs && cached.hash) {
+            hash = cached.hash;
+          } else if (stat.size > 512 * 1024) {
+            hash = await sha256FileAsync(full);
+          } else {
+            const buf = await fs.promises.readFile(full);
+            hash = sha256(buf);
+          }
+          const ctime = (stat.birthtimeMs && stat.birthtimeMs > 0) ? stat.birthtimeMs : (stat.ctimeMs || stat.mtimeMs);
+          nextCache[rel] = { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: ctime, hash };
+          manifest[rel] = { size: stat.size, mtime: stat.mtimeMs, ctime, hash };
+        } catch {
+          // File could be deleted or locked concurrently
+        }
+      })
+    );
+
+    // Yield control back to the event loop so incoming HTTP/WebSocket connections are not blocked
+    await yieldToEventLoop();
+  }
+
+  saveCacheAsync(vaultId, nextCache).catch(() => {});
+  inMemoryManifestCache.set(vaultId, { manifest, lastScanned: Date.now() });
+  return manifest;
+}
+
+/** Build a manifest: { path: { size, mtimeMs, hash } }, cached in memory and on disk. */
+function getManifest(vaultId, forceRefresh = false) {
+  const cachedMem = inMemoryManifestCache.get(vaultId);
+  if (!forceRefresh && cachedMem && cachedMem.manifest) {
+    return cachedMem.manifest;
+  }
+
+  const root = vaultFilesRoot(vaultId);
+  const cache = loadCache(vaultId);
+  const nextCache = {};
+  const manifest = {};
+
+  for (const rel of walk(root, root)) {
+    const full = path.join(root, rel);
+    try {
+      const stat = fs.statSync(full);
+      const cached = cache[rel];
+      let hash;
+      if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+        hash = cached.hash;
+      } else {
+        hash = sha256(fs.readFileSync(full));
+      }
+      const ctime = (stat.birthtimeMs && stat.birthtimeMs > 0) ? stat.birthtimeMs : (stat.ctimeMs || stat.mtimeMs);
+      nextCache[rel] = { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: ctime, hash };
+      manifest[rel] = { size: stat.size, mtime: stat.mtimeMs, ctime, hash };
+    } catch {
+      // File could be deleted or locked concurrently
+    }
+  }
+
+  saveCache(vaultId, nextCache);
+  inMemoryManifestCache.set(vaultId, { manifest, lastScanned: Date.now() });
+  return manifest;
+}
+
+function readFile(vaultId, relPath) {
+  const full = safeJoin(vaultFilesRoot(vaultId), relPath);
+  if (!fs.existsSync(full)) return null;
+  return fs.readFileSync(full);
+}
+
+/**
+ * 拿一个可读流用于下载，而不是把整份文件读进内存再 res.send(buf)。
+ * 对大附件（视频、PDF、压缩包……）来说，流式传输能显著降低单次请求的内存占用，
+ * 也不会因为同步 readFileSync 而卡住事件循环。
+ */
+function readFileStream(vaultId, relPath) {
+  const full = safeJoin(vaultFilesRoot(vaultId), relPath);
+  if (!fs.existsSync(full)) return null;
+  const stat = fs.statSync(full);
+  return { stream: fs.createReadStream(full), size: stat.size };
+}
+
+function tmpUploadDir(vaultId) {
+  return path.join(vaultRoot(vaultId), '.tmp-uploads');
+}
+
+/**
+ * 服务器重启前如果正好有上传在进行中，进程一退出这些临时文件必然是半成品、
+ * 不可能再被续传完成——启动时统一清一遍，避免每次重启都留一堆垃圾文件占磁盘。
+ */
+function cleanupAllStaleUploadTemps() {
+  const { VAULTS_DIR } = require('./config');
+  if (!fs.existsSync(VAULTS_DIR)) return;
+  let vaultDirs;
+  try {
+    vaultDirs = fs.readdirSync(VAULTS_DIR, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of vaultDirs) {
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(VAULTS_DIR, entry.name, '.tmp-uploads');
+    if (fs.existsSync(dir)) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch (e) {
+        console.warn(`[Storage] Failed to clean stale upload temp dir ${dir}:`, e.message);
+      }
+    }
+  }
+}
+
+/** 生成一个供上传流写入的临时文件路径（调用方负责在出错时清理）。 */
+function createUploadTempPath(vaultId) {
+  const dir = tmpUploadDir(vaultId);
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, `upload-${Date.now()}-${randomId()}.part`);
+}
+
+function getVaultTags(vaultId) {
+  const root = vaultFilesRoot(vaultId);
+  const manifest = getManifest(vaultId);
+  const tagMap = new Map();
+
+  for (const relPath of Object.keys(manifest)) {
+    if (!relPath.toLowerCase().endsWith('.md')) continue;
+    const full = safeJoin(root, relPath);
+    if (!fs.existsSync(full)) continue;
+    try {
+      const content = fs.readFileSync(full, 'utf8');
+      // Frontmatter tags
+      const frontmatterMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      if (frontmatterMatch) {
+        const fm = frontmatterMatch[1];
+        const yamlTagsMatch = fm.match(/tags:\s*\[(.*?)\]/);
+        if (yamlTagsMatch) {
+          const list = yamlTagsMatch[1].split(',').map((s) => s.trim().replace(/^['"#]|['"]$/g, '')).filter(Boolean);
+          for (const t of list) {
+            const cleanT = t.toLowerCase();
+            if (!tagMap.has(cleanT)) tagMap.set(cleanT, new Set());
+            tagMap.get(cleanT).add(relPath);
+          }
+        }
+      }
+
+      // Inline #tag and #nested/tag
+      const tagRegex = /(?:^|\s)#([a-zA-Z\u4e00-\u9fa5_][\w\u4e00-\u9fa5_\-/]*)/g;
+      let match;
+      while ((match = tagRegex.exec(content)) !== null) {
+        const tag = match[1].toLowerCase();
+        if (tag.length > 0 && !/^h[1-6]$/.test(tag) && !/^[0-9a-fA-F]{3,8}$/.test(tag)) {
+          if (!tagMap.has(tag)) tagMap.set(tag, new Set());
+          tagMap.get(tag).add(relPath);
+        }
+      }
+    } catch {}
+  }
+
+  const result = [];
+  for (const [tag, fileSet] of tagMap.entries()) {
+    result.push({
+      tag,
+      count: fileSet.size,
+      files: Array.from(fileSet).sort(),
+    });
+  }
+  result.sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
+  return result;
+}
+
+function touchMtime(full, mtimeMs) {
+  if (!mtimeMs) return;
+  const d = new Date(mtimeMs);
+  fs.utimesSync(full, d, d);
+}
+
+// ---------------------------------- history ------------------------------------
+
+function historyDir(vaultId) {
+  return path.join(vaultRoot(vaultId), 'history');
+}
+function historyIndexPath(vaultId) {
+  return path.join(vaultRoot(vaultId), 'history-index.json');
+}
+function loadIndex(p) {
+  if (fs.existsSync(p)) {
+    try {
+      return JSON.parse(fs.readFileSync(p, 'utf8'));
+    } catch (e) {
+      console.warn(`[Storage] Index file ${p} corrupt, attempting backup recovery:`, e.message);
+    }
+  }
+  const bak = p + '.bak';
+  if (fs.existsSync(bak)) {
+    try {
+      return JSON.parse(fs.readFileSync(bak, 'utf8'));
+    } catch {}
+  }
+  return [];
+}
+
+function saveIndex(p, entries) {
+  const tmp = `${p}.tmp.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}`;
+  try {
+    const data = JSON.stringify(entries, null, 2);
+    const fd = fs.openSync(tmp, 'w');
+    fs.writeSync(fd, data);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+
+    // Keep backup of previous good version if exists
+    if (fs.existsSync(p)) {
+      try { fs.copyFileSync(p, p + '.bak'); } catch {}
+    }
+    fs.renameSync(tmp, p);
+  } catch (err) {
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
+    throw err;
+  }
+}
+
+/** Safely mutate an index file atomically without lost updates */
+function mutateIndex(p, mutator) {
+  const entries = loadIndex(p);
+  const updated = mutator(entries);
+  saveIndex(p, updated !== undefined ? updated : entries);
+  return updated !== undefined ? updated : entries;
+}
+
+/** Snapshot the current (about-to-be-overwritten) content of a file into history. */
+function snapshotBeforeOverwrite(vaultId, relPath, oldBuffer) {
+  fs.mkdirSync(historyDir(vaultId), { recursive: true });
+  const id = randomId();
+  fs.writeFileSync(path.join(historyDir(vaultId), id), oldBuffer);
+
+  const idxPath = historyIndexPath(vaultId);
+  mutateIndex(idxPath, (entries) => {
+    entries.push({ id, path: relPath, size: oldBuffer.length, savedAt: Date.now() });
+
+    // Cap history per path so it can't grow unbounded.
+    const forThisPath = entries.filter((e) => e.path === relPath).sort((a, b) => a.savedAt - b.savedAt);
+    let remaining = entries;
+    if (forThisPath.length > MAX_HISTORY_VERSIONS_PER_PATH) {
+      const toDrop = forThisPath.slice(0, forThisPath.length - MAX_HISTORY_VERSIONS_PER_PATH);
+      const dropIds = new Set(toDrop.map((e) => e.id));
+      for (const e of toDrop) {
+        const f = path.join(historyDir(vaultId), e.id);
+        fs.promises.unlink(f).catch(() => {});
+      }
+      remaining = remaining.filter((e) => !dropIds.has(e.id));
+    }
+
+    // Global vault history cap & age expiration
+    const now = Date.now();
+    const cutoff = now - MAX_HISTORY_AGE_MS;
+    if (remaining.length > MAX_VAULT_TOTAL_HISTORY) {
+      // Sort oldest first and drop excess
+      remaining.sort((a, b) => a.savedAt - b.savedAt);
+      const excess = remaining.slice(0, remaining.length - MAX_VAULT_TOTAL_HISTORY);
+      const dropIds = new Set(excess.map((e) => e.id));
+      for (const e of excess) {
+        const f = path.join(historyDir(vaultId), e.id);
+        fs.promises.unlink(f).catch(() => {});
+      }
+      remaining = remaining.filter((e) => !dropIds.has(e.id));
+    }
+
+    return remaining;
+  });
+}
+
+/**
+ * Prune obsolete history versions based on retention policy
+ */
+function pruneVaultHistory(vaultId, { maxAgeMs = MAX_HISTORY_AGE_MS, maxTotal = MAX_VAULT_TOTAL_HISTORY } = {}) {
+  const idxPath = historyIndexPath(vaultId);
+  return mutateIndex(idxPath, (entries) => {
+    const now = Date.now();
+    const cutoff = now - maxAgeMs;
+    const kept = [];
+    const dropped = [];
+
+    for (const e of entries) {
+      if (e.savedAt < cutoff) {
+        dropped.push(e);
+      } else {
+        kept.push(e);
+      }
+    }
+
+    if (kept.length > maxTotal) {
+      kept.sort((a, b) => a.savedAt - b.savedAt);
+      const excess = kept.splice(0, kept.length - maxTotal);
+      dropped.push(...excess);
+    }
+
+    for (const e of dropped) {
+      const f = path.join(historyDir(vaultId), e.id);
+      fs.promises.unlink(f).catch(() => {});
+    }
+
+    return kept;
+  });
+}
+
+/**
+ * 同上，但直接从磁盘上的已有文件复制到 history/，不把旧内容读进内存。
+ * 流式上传路径（writeFileFromPath）用这个版本，避免"只是为了存历史快照"
+ * 而把一份可能很大的旧文件整个 Buffer 化。
+ */
+function snapshotBeforeOverwriteFromFile(vaultId, relPath, existingFullPath, existingSize) {
+  fs.mkdirSync(historyDir(vaultId), { recursive: true });
+  const id = randomId();
+  fs.copyFileSync(existingFullPath, path.join(historyDir(vaultId), id));
+
+  const idxPath = historyIndexPath(vaultId);
+  mutateIndex(idxPath, (entries) => {
+    entries.push({ id, path: relPath, size: existingSize, savedAt: Date.now() });
+
+    const forThisPath = entries.filter((e) => e.path === relPath).sort((a, b) => a.savedAt - b.savedAt);
+    if (forThisPath.length > MAX_HISTORY_VERSIONS_PER_PATH) {
+      const toDrop = forThisPath.slice(0, forThisPath.length - MAX_HISTORY_VERSIONS_PER_PATH);
+      const dropIds = new Set(toDrop.map((e) => e.id));
+      for (const e of toDrop) {
+        const f = path.join(historyDir(vaultId), e.id);
+        fs.promises.unlink(f).catch(() => {});
+      }
+      return entries.filter((e) => !dropIds.has(e.id));
+    }
+    return entries;
+  });
+}
+
+function listHistory(vaultId, relPath) {
+  return loadIndex(historyIndexPath(vaultId))
+    .filter((e) => e.path === relPath)
+    .sort((a, b) => b.savedAt - a.savedAt);
+}
+
+function readHistoryVersion(vaultId, versionId) {
+  const entry = loadIndex(historyIndexPath(vaultId)).find((e) => e.id === versionId);
+  if (!entry) return null;
+  const full = path.join(historyDir(vaultId), versionId);
+  if (!fs.existsSync(full)) return null;
+  return { entry, buffer: fs.readFileSync(full) };
+}
+
+async function readHistoryVersionAsync(vaultId, versionId) {
+  const entry = loadIndex(historyIndexPath(vaultId)).find((e) => e.id === versionId);
+  if (!entry) return null;
+  const full = path.join(historyDir(vaultId), versionId);
+  try {
+    const buffer = await fs.promises.readFile(full);
+    return { entry, buffer };
+  } catch {
+    return null;
+  }
+}
+
+// ------------------------------------ trash --------------------------------------
+
+function trashDir(vaultId) {
+  return path.join(vaultRoot(vaultId), 'trash');
+}
+function trashIndexPath(vaultId) {
+  return path.join(vaultRoot(vaultId), 'trash-index.json');
+}
+
+function listTrash(vaultId) {
+  return loadIndex(trashIndexPath(vaultId)).sort((a, b) => b.deletedAt - a.deletedAt);
+}
+
+/** Restore a trashed file back to its original path (overwrites anything currently there). */
+async function restoreFromTrash(vaultId, trashId) {
+  const result = await restoreBatchTrash(vaultId, [trashId]);
+  return result.restoredPaths.length > 0 ? result.restoredPaths[0] : null;
+}
+
+/** Restore multiple trashed files back to their original paths in batch with high performance chunking. */
+async function restoreBatchTrash(vaultId, trashIds) {
+  if (!Array.isArray(trashIds) || trashIds.length === 0) {
+    return { restoredCount: 0, restoredPaths: [] };
+  }
+  const idSet = new Set(trashIds);
+  const idxPath = trashIndexPath(vaultId);
+  const entries = loadIndex(idxPath);
+  const targetEntries = entries.filter((e) => idSet.has(e.id));
+  if (targetEntries.length === 0) {
+    return { restoredCount: 0, restoredPaths: [] };
+  }
+
+  const restoredPaths = [];
+  const successfullyRestoredIds = new Set();
+  const deltaChanges = [];
+  const now = Date.now();
+  const vFilesRoot = vaultFilesRoot(vaultId);
+  const vTrashDir = trashDir(vaultId);
+
+  const manifest = await getManifestAsync(vaultId);
+
+  const CHUNK_SIZE = 50;
+  for (let i = 0; i < targetEntries.length; i += CHUNK_SIZE) {
+    const chunk = targetEntries.slice(i, i + CHUNK_SIZE);
+    await Promise.all(
+      chunk.map(async (entry) => {
+        const trashFull = path.join(vTrashDir, entry.id);
+        if (!fs.existsSync(trashFull)) return;
+        try {
+          const buffer = await fs.promises.readFile(trashFull);
+          let targetRelPath = entry.path;
+          let destFull = safeJoin(vFilesRoot, targetRelPath);
+
+          // 🛡️ 目标同名文件冲突保护：若目标已存在且哈希不同，自动生成副本以防覆盖
+          if (fs.existsSync(destFull)) {
+            const existingBuf = await fs.promises.readFile(destFull);
+            if (sha256(existingBuf) !== sha256(buffer)) {
+              const ext = path.extname(entry.path);
+              const baseName = entry.path.slice(0, entry.path.length - ext.length);
+              targetRelPath = `${baseName} (已恢复)${ext}`;
+              destFull = safeJoin(vFilesRoot, targetRelPath);
+            }
+          }
+
+          await fs.promises.mkdir(path.dirname(destFull), { recursive: true });
+          await fs.promises.writeFile(destFull, buffer);
+          try { await fs.promises.unlink(trashFull); } catch {}
+
+          successfullyRestoredIds.add(entry.id);
+          restoredPaths.push(targetRelPath);
+
+          const hash = sha256(buffer);
+          const meta = { size: buffer.length, mtime: now, ctime: now, hash };
+          manifest[targetRelPath] = meta;
+          updateManifestEntry(vaultId, targetRelPath, meta);
+          invalidateContentCacheEntry(vaultId, targetRelPath);
+
+          deltaChanges.push({
+            path: targetRelPath,
+            action: 'UPSERT',
+            size: buffer.length,
+            mtime: now,
+            hash,
+          });
+
+          try {
+            ftsEngine.onFileWrite(vaultId, targetRelPath, buffer.toString('utf8'), meta);
+          } catch {}
+        } catch (err) {
+          console.error(`[Trash] Failed to restore "${entry.path}":`, err);
+        }
+      })
+    );
+
+    if (i + CHUNK_SIZE < targetEntries.length) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  }
+
+  if (successfullyRestoredIds.size > 0) {
+    mutateIndex(idxPath, (current) => current.filter((e) => !successfullyRestoredIds.has(e.id)));
+    if (deltaChanges.length > 0) {
+      await deltaSync.recordBatchChanges(vaultId, deltaChanges).catch(() => {});
+    }
+    const currentManifest = inMemoryManifestCache.get(vaultId)?.manifest || manifest;
+    await saveCacheAsync(vaultId, currentManifest).catch(() => {});
+    try {
+      gitSync.notifyChange(vaultId);
+    } catch {}
+  }
+
+  return { restoredCount: restoredPaths.length, restoredPaths };
+}
+
+/** Restore all items in trash. */
+async function restoreAllTrash(vaultId) {
+  const idxPath = trashIndexPath(vaultId);
+  const entries = loadIndex(idxPath);
+  const allIds = entries.map((e) => e.id);
+  return await restoreBatchTrash(vaultId, allIds);
+}
+
+/** Permanently delete a trashed item (no way back after this). */
+async function purgeTrash(vaultId, trashId) {
+  const res = await purgeBatchTrash(vaultId, [trashId]);
+  return res.purgedCount > 0;
+}
+
+/** Purge selected items in trash. */
+async function purgeBatchTrash(vaultId, trashIds) {
+  if (!Array.isArray(trashIds) || trashIds.length === 0) {
+    return { purgedCount: 0 };
+  }
+  const idSet = new Set(trashIds);
+  const idxPath = trashIndexPath(vaultId);
+  const entries = loadIndex(idxPath);
+  const targetEntries = entries.filter((e) => idSet.has(e.id));
+  const vTrashDir = trashDir(vaultId);
+
+  const CHUNK_SIZE = 100;
+  for (let i = 0; i < targetEntries.length; i += CHUNK_SIZE) {
+    const chunk = targetEntries.slice(i, i + CHUNK_SIZE);
+    await Promise.all(
+      chunk.map(async (entry) => {
+        const f = path.join(vTrashDir, entry.id);
+        try {
+          if (fs.existsSync(f)) await fs.promises.unlink(f);
+        } catch {}
+      })
+    );
+    if (i + CHUNK_SIZE < targetEntries.length) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  }
+
+  mutateIndex(idxPath, (current) => current.filter((e) => !idSet.has(e.id)));
+  return { purgedCount: targetEntries.length };
+}
+
+/** Purge all items in trash. */
+async function purgeAllTrash(vaultId) {
+  const idxPath = trashIndexPath(vaultId);
+  const entries = loadIndex(idxPath);
+  const allIds = entries.map((e) => e.id);
+  const result = await purgeBatchTrash(vaultId, allIds);
+  return result.purgedCount;
+}
+
+/** Read content of a trashed file for preview. */
+function readTrashVersion(vaultId, trashId) {
+  const idxPath = trashIndexPath(vaultId);
+  const entries = loadIndex(idxPath);
+  const entry = entries.find((e) => e.id === trashId);
+  if (!entry) return null;
+  const trashFull = path.join(trashDir(vaultId), trashId);
+  if (!fs.existsSync(trashFull)) return null;
+  return { entry, buffer: fs.readFileSync(trashFull) };
+}
+
+// -------------------------------- write / delete ----------------------------------
+
+/**
+ * Write a file, with:
+ *  - conflict-copy protection: if the file changed on the server since the
+ *    caller last knew about it (baseHash mismatch), save a `.conflict-*`
+ *    copy instead of silently overwriting.
+ *  - automatic history snapshot: any real overwrite saves the previous
+ *    content into history/ first, so it can be recovered later.
+ */
+function writeFile(vaultId, relPath, buffer, { mtime, baseHash } = {}) {
+  const root = vaultFilesRoot(vaultId);
+  const full = safeJoin(root, relPath);
+  fs.mkdirSync(path.dirname(full), { recursive: true });
+
+  if (fs.existsSync(full)) {
+    const existingBuf = fs.readFileSync(full);
+    const existingHash = sha256(existingBuf);
+    const incomingHash = sha256(buffer);
+
+    if (existingHash === incomingHash) {
+      // No real change — just acknowledge, no history entry needed.
+      if (mtime) touchMtime(full, mtime);
+      return { written: true, conflict: null, currentHash: incomingHash };
+    }
+
+    if (baseHash && existingHash !== baseHash) {
+      // Someone else changed the file since this client last synced it — real conflict.
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const ext = path.extname(relPath);
+      const base = relPath.slice(0, relPath.length - ext.length);
+      const conflictRel = `${base}.conflict-${stamp}${ext}`;
+      const conflictFull = safeJoin(root, conflictRel);
+      fs.writeFileSync(conflictFull, buffer);
+
+      const hash = sha256(buffer);
+      const mtimeVal = mtime || Date.now();
+      updateManifestEntry(vaultId, conflictRel, { size: buffer.length, mtime: mtimeVal, ctime: mtimeVal, hash });
+      invalidateContentCacheEntry(vaultId, conflictRel);
+      deltaSync.recordChange(vaultId, { path: conflictRel, action: 'UPSERT', size: buffer.length, mtime: mtimeVal, hash }).catch(() => {});
+      try {
+        ftsEngine.onFileWrite(vaultId, conflictRel, buffer.toString('utf8'), { size: buffer.length, mtime: mtimeVal, hash });
+      } catch {}
+      try {
+        gitSync.notifyChange(vaultId);
+      } catch {}
+
+      // Don't touch the existing (server) version in this case.
+      return { written: false, conflict: conflictRel, currentHash: existingHash, conflictHash: hash, conflictSize: buffer.length, conflictMtime: mtimeVal };
+    }
+
+    snapshotBeforeOverwrite(vaultId, relPath, existingBuf);
+  }
+
+  fs.writeFileSync(full, buffer);
+  if (mtime) touchMtime(full, mtime);
+  const hash = sha256(buffer);
+  const mtimeVal = mtime || Date.now();
+  updateManifestEntry(vaultId, relPath, { size: buffer.length, mtime: mtimeVal, ctime: mtimeVal, hash });
+  invalidateContentCacheEntry(vaultId, relPath);
+  deltaSync.recordChange(vaultId, { path: relPath, action: 'UPSERT', size: buffer.length, mtime: mtimeVal, hash }).catch(() => {});
+  try {
+    ftsEngine.onFileWrite(vaultId, relPath, buffer.toString('utf8'), { size: buffer.length, mtime: mtimeVal, hash });
+  } catch {}
+  try {
+    gitSync.notifyChange(vaultId);
+  } catch {}
+  return { written: true, conflict: null, currentHash: hash };
+}
+
+/**
+ * 流式版本的 writeFile：调用方已经把上传内容写到磁盘上的临时文件 tempFilePath，
+ * 并且在流式接收的同时算好了 incomingHash（不需要在这里再整份读一遍新内容）。
+ * 判断"服务器上现有内容"是否相同时，直接用 manifest 缓存里已经算好的 hash，
+ * 而不是重新读盘+重新 sha256——这是这条路径相对 writeFile() 省掉的第二处整读整算。
+ * 最终落盘用 rename（同分区下几乎零成本），而不是再写一次 Buffer。
+ */
+function writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, { mtime, baseHash } = {}) {
+  const root = vaultFilesRoot(vaultId);
+  const full = safeJoin(root, relPath);
+  fs.mkdirSync(path.dirname(full), { recursive: true });
+
+  const manifest = getManifest(vaultId);
+  const existingMeta = manifest[relPath];
+
+  if (fs.existsSync(full)) {
+    const existingStat = fs.statSync(full);
+    let existingHash = null;
+
+    if (existingMeta && existingMeta.size === existingStat.size && existingMeta.hash) {
+      existingHash = existingMeta.hash;
+    } else {
+      try {
+        const existingBuf = fs.readFileSync(full);
+        existingHash = sha256(existingBuf);
+      } catch {
+        existingHash = null;
+      }
+    }
+
+    if (existingHash && existingHash === incomingHash) {
+      // 内容没有实际变化，丢弃临时文件，只在需要时touch一下 mtime。
+      try { fs.unlinkSync(tempFilePath); } catch {}
+      if (mtime) touchMtime(full, mtime);
+      return { written: true, conflict: null, currentHash: incomingHash, identical: true };
+    }
+
+    if (baseHash && existingHash && existingHash !== baseHash) {
+      // 服务器上的版本在这期间被别的设备改过——生成冲突副本，不动现有文件。
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const ext = path.extname(relPath);
+      const base = relPath.slice(0, relPath.length - ext.length);
+      const conflictRel = `${base}.conflict-${stamp}${ext}`;
+      const conflictFull = safeJoin(root, conflictRel);
+      moveFile(tempFilePath, conflictFull);
+
+      const stat = fs.statSync(conflictFull);
+      const mtimeVal = mtime || Date.now();
+      updateManifestEntry(vaultId, conflictRel, { size: stat.size, mtime: mtimeVal, ctime: mtimeVal, hash: incomingHash });
+      invalidateContentCacheEntry(vaultId, conflictRel);
+      deltaSync.recordChange(vaultId, { path: conflictRel, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash: incomingHash }).catch(() => {});
+      try {
+        if (stat.size <= 2 * 1024 * 1024) {
+          const buf = fs.readFileSync(conflictFull);
+          ftsEngine.onFileWrite(vaultId, conflictRel, buf.toString('utf8'), { size: stat.size, mtime: mtimeVal, hash: incomingHash });
+        }
+      } catch {}
+      try {
+        gitSync.notifyChange(vaultId);
+      } catch {}
+
+      return { written: false, conflict: conflictRel, currentHash: existingHash, conflictHash: incomingHash, conflictSize: stat.size, conflictMtime: mtimeVal };
+    }
+
+    // 真实覆盖：把旧文件直接拷贝进 history/（不读进内存），再用临时文件替换它。
+    snapshotBeforeOverwriteFromFile(vaultId, relPath, full, existingStat.size);
+  }
+
+  moveFile(tempFilePath, full);
+  if (mtime) touchMtime(full, mtime);
+  const stat = fs.statSync(full);
+  const mtimeVal = mtime || Date.now();
+  updateManifestEntry(vaultId, relPath, { size: stat.size, mtime: mtimeVal, ctime: mtimeVal, hash: incomingHash });
+  invalidateContentCacheEntry(vaultId, relPath);
+  deltaSync.recordChange(vaultId, { path: relPath, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash: incomingHash }).catch(() => {});
+  try {
+    if (stat.size <= 2 * 1024 * 1024) {
+      const buf = fs.readFileSync(full);
+      ftsEngine.onFileWrite(vaultId, relPath, buf.toString('utf8'), { size: stat.size, mtime: mtimeVal, hash: incomingHash });
+    }
+  } catch {}
+  try {
+    gitSync.notifyChange(vaultId);
+  } catch {}
+  return { written: true, conflict: null, currentHash: incomingHash };
+}
+
+/** Soft-delete: move the file into trash/ instead of unlinking it outright. */
+function deleteFile(vaultId, relPath) {
+  const full = safeJoin(vaultFilesRoot(vaultId), relPath);
+  if (!fs.existsSync(full)) return false;
+
+  fs.mkdirSync(trashDir(vaultId), { recursive: true });
+  const id = randomId();
+  fs.renameSync(full, path.join(trashDir(vaultId), id));
+
+  const idxPath = trashIndexPath(vaultId);
+  const size = fs.statSync(path.join(trashDir(vaultId), id)).size;
+  mutateIndex(idxPath, (entries) => {
+    entries.push({ id, path: relPath, size, deletedAt: Date.now() });
+    return entries;
+  });
+  updateManifestEntry(vaultId, relPath, null);
+  invalidateContentCacheEntry(vaultId, relPath);
+  deltaSync.recordChange(vaultId, { path: relPath, action: 'DELETE', size: 0, mtime: Date.now() }).catch(() => {});
+  try {
+    ftsEngine.onFileDelete(vaultId, relPath);
+  } catch {}
+  try {
+    gitSync.notifyChange(vaultId);
+  } catch {}
+
+  return true;
+}
+
+// ------------------------------ search & stats -----------------------------------
+
+// 每个 vault 一份文本内容缓存：relPath -> { mtimeMs, size, content }
+// 命中缓存就不用再同步读盘，是重复搜索时最大的一块开销来源。
+const contentCache = new Map();
+const MAX_CONTENT_CACHE_PER_VAULT = 250;
+const MAX_SEARCHABLE_CONTENT_BYTES = 2 * 1024 * 1024; // 2MB: 超过 2MB 的巨型文件只做路径匹配，不加载全文本入内存
+
+function getContentCache(vaultId) {
+  if (!contentCache.has(vaultId)) contentCache.set(vaultId, new Map());
+  return contentCache.get(vaultId);
+}
+
+function setContentCache(vaultId, relPath, entry) {
+  const cache = getContentCache(vaultId);
+  if (cache.size >= MAX_CONTENT_CACHE_PER_VAULT) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey) cache.delete(oldestKey);
+  }
+  cache.set(relPath, entry);
+}
+
+/** 文件被写入/删除时，让内容缓存跟着失效——避免搜索命中过期内容。 */
+function invalidateContentCacheEntry(vaultId, relPath) {
+  const cache = contentCache.get(vaultId);
+  if (cache) cache.delete(relPath);
+}
+
+const SEARCHABLE_EXT_RE = /\.(md|txt|json|js|ts|css|html|yaml|yml|csv|canvas)$/i;
+// 每处理这么多个文件就让出一次事件循环，避免大 vault 全文搜索长时间卡住整个进程
+const SEARCH_YIELD_BATCH_SIZE = 40;
+
+/**
+ * 读取一个文件的文本内容，命中缓存（size/mtime 都没变）就不用重新读盘。
+ * 导出给 mcp.js 的 get_vault_stats / search_notes / list_tags 复用，
+ * 这几个工具需要遍历整个 vault 的文本内容，不应该各自再实现一遍读盘逻辑。
+ * meta 是调用方已经从 getManifest() 里拿到的那条 { size, mtime, ... }，避免重复查表。
+ */
+function getTextContent(vaultId, relPath, meta) {
+  if (meta && meta.size > MAX_SEARCHABLE_CONTENT_BYTES) {
+    return null; // 超限大文件跳过文本读取，防止搜索导致 V8 内存爆炸
+  }
+  const cache = getContentCache(vaultId);
+  const cached = cache.get(relPath);
+  if (cached && cached.mtimeMs === meta.mtime && cached.size === meta.size) {
+    return cached.content;
+  }
+  const buf = readFile(vaultId, relPath);
+  if (!buf) return null;
+  const text = buf.toString('utf8');
+  setContentCache(vaultId, relPath, { mtimeMs: meta.mtime, size: meta.size, content: text });
+  return text;
+}
+
+/**
+ * 毫秒级倒排索引 + BM25 排序检索
+ */
+async function searchVault(vaultId, query, limit = 50) {
+  if (!query || !query.trim()) return [];
+  const q = query.trim();
+
+  // 1. Trigger background index warm-up if not already loaded/indexed
+  const manifest = getManifest(vaultId);
+  const idx = ftsEngine.getIndex(vaultId);
+  if (!idx.isLoaded || idx.docCount === 0) {
+    // Warm up index asynchronously
+    ftsEngine.buildVaultIndexAsync(vaultId, manifest, (p) => readFile(vaultId, p));
+  }
+
+  // 2. Perform fast FTS search using inverted index + BM25
+  const readContentFn = (relPath) => {
+    const meta = manifest[relPath];
+    return getTextContent(vaultId, relPath, meta);
+  };
+
+  const ftsResults = ftsEngine.searchVault(vaultId, q, { limit, readContentFn });
+  if (ftsResults && ftsResults.length > 0) {
+    return ftsResults;
+  }
+
+  // 3. Fallback: linear scan for files (e.g. while background index is building)
+  const qLower = q.toLowerCase();
+  const paths = Object.keys(manifest).sort();
+  const results = [];
+
+  let processed = 0;
+  for (const relPath of paths) {
+    const meta = manifest[relPath];
+    const pathLower = relPath.toLowerCase();
+    const isPathMatch = pathLower.includes(qLower);
+
+    let snippet = '';
+    let matchesCount = 0;
+
+    if (SEARCHABLE_EXT_RE.test(relPath) && meta.size <= MAX_SEARCHABLE_CONTENT_BYTES) {
+      const text = getTextContent(vaultId, relPath, meta);
+
+      if (text) {
+        const lowerText = text.toLowerCase();
+        let idxPos = lowerText.indexOf(qLower);
+        while (idxPos !== -1 && matchesCount < 5) {
+          matchesCount++;
+          if (!snippet) {
+            const start = Math.max(0, idxPos - 40);
+            const end = Math.min(text.length, idxPos + qLower.length + 60);
+            snippet = (start > 0 ? '…' : '') + text.slice(start, end).replace(/[\r\n]+/g, ' ') + (end < text.length ? '…' : '');
+          }
+          idxPos = lowerText.indexOf(qLower, idxPos + qLower.length);
+        }
+      }
+    }
+
+    if (isPathMatch || matchesCount > 0) {
+      results.push({
+        path: relPath,
+        size: meta.size,
+        mtime: meta.mtime,
+        isPathMatch,
+        matchesCount,
+        snippet,
+      });
+    }
+
+    processed++;
+    if (processed % SEARCH_YIELD_BATCH_SIZE === 0) {
+      await yieldToEventLoop();
+    }
+  }
+
+  results.sort((a, b) => {
+    if (a.isPathMatch && !b.isPathMatch) return -1;
+    if (!a.isPathMatch && b.isPathMatch) return 1;
+    return b.matchesCount - a.matchesCount;
+  });
+
+  return results.slice(0, limit);
+}
+
+/** Vault statistics summary. */
+function getVaultStats(vaultId) {
+  const manifest = getManifest(vaultId);
+  const paths = Object.keys(manifest);
+  let totalBytes = 0;
+  let notesCount = 0;
+  let attachmentsCount = 0;
+  let configsCount = 0;
+
+  for (const p of paths) {
+    const meta = manifest[p];
+    totalBytes += meta.size;
+    if (p.toLowerCase().endsWith('.md')) {
+      notesCount++;
+    } else if (p.startsWith('.obsidian/')) {
+      configsCount++;
+    } else {
+      attachmentsCount++;
+    }
+  }
+
+  const trashEntries = loadIndex(trashIndexPath(vaultId));
+  const historyEntries = loadIndex(historyIndexPath(vaultId));
+
+  return {
+    totalFiles: paths.length,
+    notesCount,
+    attachmentsCount,
+    configsCount,
+    totalBytes,
+    trashCount: trashEntries.length,
+    historyCount: historyEntries.length,
+  };
+}
+
+/** Stream a ZIP archive of all files in vault's files/ folder. */
+function exportVaultZip(vaultId, outputStream) {
+  const archive = createArchiver('zip', { zlib: { level: 6 } });
+  archive.pipe(outputStream);
+  const root = vaultFilesRoot(vaultId);
+  if (fs.existsSync(root)) {
+    archive.directory(root, false);
+  }
+  return archive.finalize();
+}
+
+/** Stream a ZIP archive of selected files in vault's files/ folder. */
+function exportFilesZip(vaultId, relPaths, outputStream) {
+  const archive = createArchiver('zip', { zlib: { level: 6 } });
+  archive.pipe(outputStream);
+  const root = vaultFilesRoot(vaultId);
+  const pathSet = new Set(Array.isArray(relPaths) ? relPaths : [relPaths]);
+  for (const rel of pathSet) {
+    if (!rel || typeof rel !== 'string') continue;
+    const full = safeJoin(root, rel);
+    if (fs.existsSync(full) && fs.statSync(full).isFile()) {
+      archive.file(full, { name: rel });
+    }
+  }
+  return archive.finalize();
+}
+
+/** Move or rename a file within a vault */
+function moveVaultFile(vaultId, oldRelPath, newRelPath) {
+  const root = vaultFilesRoot(vaultId);
+  const oldFull = safeJoin(root, oldRelPath);
+  const newFull = safeJoin(root, newRelPath);
+  if (!fs.existsSync(oldFull)) return { ok: false, error: '原文件不存在' };
+  if (fs.existsSync(newFull) && oldFull !== newFull) return { ok: false, error: '目标路径已存在同名文件' };
+  
+  fs.mkdirSync(path.dirname(newFull), { recursive: true });
+  fs.renameSync(oldFull, newFull);
+  
+  // 更新历史版本索引中的路径，确保重命名后历史版本链路不丢失
+  const idxPath = historyIndexPath(vaultId);
+  try {
+    mutateIndex(idxPath, (entries) => {
+      let changed = false;
+      for (const entry of entries) {
+        if (entry.path === oldRelPath) {
+          entry.path = newRelPath;
+          changed = true;
+        }
+      }
+      return entries;
+    });
+  } catch (e) {
+    console.warn('[Storage] 重命名历史版本索引关联失败:', e.message);
+  }
+
+  updateManifestEntry(vaultId, oldRelPath, null);
+  invalidateContentCacheEntry(vaultId, oldRelPath);
+  deltaSync.recordChange(vaultId, { path: oldRelPath, action: 'DELETE', size: 0, mtime: Date.now() }).catch(() => {});
+  try {
+    ftsEngine.onFileDelete(vaultId, oldRelPath);
+  } catch {}
+  
+  const stat = fs.statSync(newFull);
+  const hash = sha256(fs.readFileSync(newFull));
+  const mtimeVal = stat.mtimeMs || Date.now();
+  const ctimeVal = stat.birthtimeMs || stat.ctimeMs || mtimeVal;
+  updateManifestEntry(vaultId, newRelPath, { size: stat.size, mtime: mtimeVal, ctime: ctimeVal, hash });
+  invalidateContentCacheEntry(vaultId, newRelPath);
+  deltaSync.recordChange(vaultId, { path: newRelPath, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash }).catch(() => {});
+  try {
+    if (stat.size <= 2 * 1024 * 1024) {
+      const buf = fs.readFileSync(newFull);
+      ftsEngine.onFileWrite(vaultId, newRelPath, buf.toString('utf8'), { size: stat.size, mtime: mtimeVal, hash });
+    }
+  } catch {}
+  
+  try { gitSync.notifyChange(vaultId); } catch {}
+  return { ok: true };
+}
+
+/**
+ * Clean up old history versions according to retention policy:
+ * - Keep all versions within maxDays (default 30 days)
+ * - Cap max versions per file (default 20)
+ * Returns { cleanedCount, freedBytes }
+ */
+function cleanupOldHistoryVersions(vaultId, maxDays = 30, maxVersionsPerPath = 20) {
+  const idxPath = historyIndexPath(vaultId);
+  let cleanedCount = 0;
+  let freedBytes = 0;
+
+  mutateIndex(idxPath, (entries) => {
+    if (!entries.length) return entries;
+
+    const cutoff = Date.now() - maxDays * 24 * 60 * 60 * 1000;
+    const byPath = new Map();
+
+    for (const entry of entries) {
+      if (!byPath.has(entry.path)) byPath.set(entry.path, []);
+      byPath.get(entry.path).push(entry);
+    }
+
+    const toKeep = [];
+    const toDrop = [];
+
+    for (const [, fileEntries] of byPath.entries()) {
+      // Sort newest first
+      fileEntries.sort((a, b) => b.savedAt - a.savedAt);
+      fileEntries.forEach((entry, idx) => {
+        // Keep at least 1 most recent version even if older than cutoff
+        if (idx === 0) {
+          toKeep.push(entry);
+        } else if (idx >= maxVersionsPerPath || entry.savedAt < cutoff) {
+          toDrop.push(entry);
+        } else {
+          toKeep.push(entry);
+        }
+      });
+    }
+
+    for (const drop of toDrop) {
+      const full = path.join(historyDir(vaultId), drop.id);
+      try {
+        if (fs.existsSync(full)) {
+          freedBytes += drop.size || 0;
+          fs.unlinkSync(full);
+        }
+      } catch {}
+    }
+
+    cleanedCount = toDrop.length;
+    return toKeep;
+  });
+
+  return { cleanedCount, freedBytes };
+}
+
+module.exports = {
+  getManifest,
+  getManifestAsync,
+  getManifestEntry,
+  walkAsync,
+  invalidateManifestCache,
+  readFile,
+  readFileStream,
+  createUploadTempPath,
+  writeFile,
+  writeFileFromPath,
+  deleteFile,
+  sha256,
+  safeJoin,
+  listHistory,
+  readHistoryVersion,
+  cleanupOldHistoryVersions,
+  listTrash,
+  readTrashVersion,
+  restoreFromTrash,
+  restoreBatchTrash,
+  restoreAllTrash,
+  purgeTrash,
+  purgeBatchTrash,
+  purgeAllTrash,
+  searchVault,
+  getVaultTags,
+  getVaultStats,
+  exportVaultZip,
+  exportFilesZip,
+  moveVaultFile,
+  cleanupAllStaleUploadTemps,
+  getTextContent,
+  yieldToEventLoop,
+  SEARCHABLE_EXT_RE,
+  SEARCH_YIELD_BATCH_SIZE,
+  isNoiseFile,
+  pruneVaultHistory,
+  withFileLock,
+  clearVaultCache,
+  deleteVaultDirectory,
+};

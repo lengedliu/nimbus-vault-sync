@@ -1,0 +1,1115 @@
+const fs = require('fs');
+const path = require('path');
+const { DATA_DIR, USERS_FILE, VAULTS_FILE } = require('./config');
+
+const DB_CONFIG_FILE = path.join(DATA_DIR, 'db_config.json');
+
+let sqlite3 = null;
+let pg = null;
+let mysql = null;
+
+function createNodeSqliteWrapper(DatabaseSync) {
+  class Database {
+    constructor(filename, callback) {
+      try {
+        this.syncDb = new DatabaseSync(filename);
+        if (typeof callback === 'function') {
+          process.nextTick(() => callback(null));
+        }
+      } catch (err) {
+        if (typeof callback === 'function') {
+          process.nextTick(() => callback(err));
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    exec(sql, callback) {
+      try {
+        this.syncDb.exec(sql);
+        if (typeof callback === 'function') process.nextTick(() => callback(null));
+      } catch (err) {
+        if (typeof callback === 'function') process.nextTick(() => callback(err));
+        else throw err;
+      }
+    }
+
+    run(sql, params, callback) {
+      if (typeof params === 'function') {
+        callback = params;
+        params = [];
+      } else if (params !== undefined && !Array.isArray(params)) {
+        params = [params];
+      }
+      params = params || [];
+      const ctx = { changes: 0, lastID: 0 };
+      try {
+        const trimmed = (sql || '').trim();
+        if (params.length === 0 && trimmed.includes(';') && trimmed.indexOf(';') < trimmed.length - 1) {
+          this.syncDb.exec(trimmed);
+        } else {
+          const stmt = this.syncDb.prepare(trimmed);
+          const result = stmt.run(...params);
+          ctx.changes = Number(result.changes || 0);
+          ctx.lastID = Number(result.lastInsertRowid || 0);
+        }
+        if (typeof callback === 'function') {
+          process.nextTick(() => callback.call(ctx, null));
+        }
+      } catch (err) {
+        if (typeof callback === 'function') {
+          process.nextTick(() => callback.call(ctx, err));
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    get(sql, params, callback) {
+      if (typeof params === 'function') {
+        callback = params;
+        params = [];
+      } else if (params !== undefined && !Array.isArray(params)) {
+        params = [params];
+      }
+      params = params || [];
+      try {
+        const stmt = this.syncDb.prepare(sql);
+        const row = stmt.get(...params);
+        if (typeof callback === 'function') {
+          process.nextTick(() => callback(null, row || null));
+        }
+      } catch (err) {
+        if (typeof callback === 'function') {
+          process.nextTick(() => callback(err, null));
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    all(sql, params, callback) {
+      if (typeof params === 'function') {
+        callback = params;
+        params = [];
+      } else if (params !== undefined && !Array.isArray(params)) {
+        params = [params];
+      }
+      params = params || [];
+      try {
+        const stmt = this.syncDb.prepare(sql);
+        const rows = stmt.all(...params);
+        if (typeof callback === 'function') {
+          process.nextTick(() => callback(null, rows || []));
+        }
+      } catch (err) {
+        if (typeof callback === 'function') {
+          process.nextTick(() => callback(err, []));
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    prepare(sql, callback) {
+      try {
+        const stmt = this.syncDb.prepare(sql);
+        const wrapper = {
+          run: (...args) => {
+            let cb = null;
+            let p = [];
+            if (args.length > 0) {
+              if (typeof args[args.length - 1] === 'function') {
+                cb = args.pop();
+              }
+              if (args.length === 1 && Array.isArray(args[0])) {
+                p = args[0];
+              } else {
+                p = args;
+              }
+            }
+            const ctx = { changes: 0, lastID: 0 };
+            try {
+              const r = stmt.run(...p);
+              ctx.changes = Number(r.changes || 0);
+              ctx.lastID = Number(r.lastInsertRowid || 0);
+              if (cb) process.nextTick(() => cb.call(ctx, null));
+            } catch (e) {
+              if (cb) process.nextTick(() => cb.call(ctx, e));
+            }
+          },
+          get: (...args) => {
+            let cb = typeof args[args.length - 1] === 'function' ? args.pop() : null;
+            let p = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
+            try {
+              const row = stmt.get(...p);
+              if (cb) process.nextTick(() => cb(null, row || null));
+            } catch (e) {
+              if (cb) process.nextTick(() => cb(e, null));
+            }
+          },
+          all: (...args) => {
+            let cb = typeof args[args.length - 1] === 'function' ? args.pop() : null;
+            let p = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
+            try {
+              const rows = stmt.all(...p);
+              if (cb) process.nextTick(() => cb(null, rows || []));
+            } catch (e) {
+              if (cb) process.nextTick(() => cb(e, []));
+            }
+          },
+          finalize: (cb) => {
+            if (cb) process.nextTick(() => cb(null));
+          }
+        };
+        if (typeof callback === 'function') process.nextTick(() => callback(null, wrapper));
+        return wrapper;
+      } catch (err) {
+        if (typeof callback === 'function') process.nextTick(() => callback(err));
+        else throw err;
+      }
+    }
+
+    serialize(fn) {
+      if (typeof fn === 'function') fn();
+    }
+
+    close(callback) {
+      try {
+        this.syncDb.close();
+        if (typeof callback === 'function') process.nextTick(() => callback(null));
+      } catch (err) {
+        if (typeof callback === 'function') process.nextTick(() => callback(err));
+        else throw err;
+      }
+    }
+  }
+
+  return {
+    Database,
+    verbose: () => ({ Database })
+  };
+}
+
+function getSqlite3() {
+  if (!sqlite3) {
+    try {
+      sqlite3 = require('sqlite3').verbose();
+    } catch (err) {
+      try {
+        const { DatabaseSync } = require('node:sqlite');
+        sqlite3 = createNodeSqliteWrapper(DatabaseSync);
+      } catch (innerErr) {
+        throw new Error('SQLite driver not available in current environment: ' + err.message);
+      }
+    }
+  }
+  return sqlite3;
+}
+
+function getPg() {
+  if (!pg) pg = require('pg');
+  return pg;
+}
+
+function getMysql() {
+  if (!mysql) mysql = require('mysql2/promise');
+  return mysql;
+}
+
+/**
+ * DB Types: 'json' (default), 'sqlite', 'postgres', 'mysql'
+ */
+class DatabaseManager {
+  constructor() {
+    this.type = 'json';
+    this.connectionConfig = {};
+    this.initialized = false;
+    this.sqliteDb = null;
+    this.pgPool = null;
+    this.mysqlPool = null;
+  }
+
+  loadPersistentConfig() {
+    if (fs.existsSync(DB_CONFIG_FILE)) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(DB_CONFIG_FILE, 'utf8'));
+        if (raw && raw.type) return raw;
+      } catch (err) {
+        console.error('[DB] Failed to read db_config.json:', err.message);
+      }
+    }
+    return null;
+  }
+
+  savePersistentConfig(config) {
+    try {
+      fs.mkdirSync(path.dirname(DB_CONFIG_FILE), { recursive: true });
+      fs.writeFileSync(DB_CONFIG_FILE, JSON.stringify(config, null, 2));
+    } catch (err) {
+      console.error('[DB] Failed to save db_config.json:', err.message);
+    }
+  }
+
+  detectConfig() {
+    const saved = this.loadPersistentConfig();
+    if (saved) return saved;
+
+    const dbType = (process.env.DB_TYPE || '').toLowerCase();
+    if (dbType === 'sqlite' || process.env.SQLITE_PATH) {
+      return {
+        type: 'sqlite',
+        sqlitePath: process.env.SQLITE_PATH || path.join(DATA_DIR, 'nimbus.sqlite'),
+      };
+    }
+    if (dbType === 'postgres' || dbType === 'postgresql' || process.env.DATABASE_URL || process.env.PG_HOST) {
+      const sslEnabled = process.env.PG_SSL === 'true' ||
+        (typeof process.env.DATABASE_URL === 'string' && (process.env.DATABASE_URL.includes('sslmode=require') || process.env.DATABASE_URL.includes('ssl=true')));
+      return {
+        type: 'postgres',
+        connectionString: process.env.DATABASE_URL || '',
+        host: process.env.PG_HOST || 'localhost',
+        port: parseInt(process.env.PG_PORT || '5432', 10),
+        user: process.env.PG_USER || 'postgres',
+        password: process.env.PG_PASSWORD || '',
+        database: process.env.PG_DATABASE || 'nimbus',
+        ssl: sslEnabled,
+        sslRejectUnauthorized: process.env.PG_SSL_REJECT_UNAUTHORIZED !== 'false',
+        sslCa: process.env.PG_SSL_CA || '',
+      };
+    }
+    if (dbType === 'mysql' || process.env.MYSQL_HOST) {
+      return {
+        type: 'mysql',
+        host: process.env.MYSQL_HOST || 'localhost',
+        port: parseInt(process.env.MYSQL_PORT || '3306', 10),
+        user: process.env.MYSQL_USER || 'root',
+        password: process.env.MYSQL_PASSWORD || '',
+        database: process.env.MYSQL_DATABASE || 'nimbus',
+      };
+    }
+    return { type: 'json' };
+  }
+
+  async close() {
+    if (this.sqliteDb) {
+      try {
+        await new Promise((res) => this.sqliteDb.close(res));
+      } catch {}
+      this.sqliteDb = null;
+    }
+    if (this.pgPool) {
+      try {
+        await this.pgPool.end();
+      } catch {}
+      this.pgPool = null;
+    }
+    if (this.mysqlPool) {
+      try {
+        await this.mysqlPool.end();
+      } catch {}
+      this.mysqlPool = null;
+    }
+    this.initialized = false;
+  }
+
+  async init(configOverride = null) {
+    await this.close();
+
+    const config = configOverride || this.detectConfig();
+    this.type = (config.type || 'json').toLowerCase();
+    this.connectionConfig = { ...config, type: this.type };
+
+    try {
+      if (this.type === 'sqlite') {
+        const dbPath = path.resolve(config.sqlitePath || path.join(DATA_DIR, 'nimbus.sqlite'));
+        fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+        const SQLite = getSqlite3();
+        await new Promise((resolve, reject) => {
+          this.sqliteDb = new SQLite.Database(dbPath, (err) => {
+            if (err) return reject(err);
+            resolve();
+          });
+        });
+        // Enable WAL mode and tune concurrency & I/O cache for SQLite
+        await new Promise((resolve, reject) => {
+          this.sqliteDb.exec(`
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA busy_timeout = 5000;
+            PRAGMA cache_size = -64000;
+            PRAGMA temp_store = MEMORY;
+          `, (err) => {
+            if (err) return reject(err);
+            resolve();
+          });
+        });
+        await this._createSqliteTables();
+      } else if (this.type === 'postgres' || this.type === 'postgresql') {
+        this.type = 'postgres';
+        const { Pool } = getPg();
+        const sslConfig = this._buildPgSslConfig(config);
+        const poolConfig = config.connectionString
+          ? {
+              connectionString: config.connectionString,
+              ssl: sslConfig,
+            }
+          : {
+              host: config.host,
+              port: config.port || 5432,
+              user: config.user,
+              password: config.password,
+              database: config.database,
+              ssl: sslConfig,
+            };
+        this.pgPool = new Pool(poolConfig);
+        await this._createPostgresTables();
+      } else if (this.type === 'mysql') {
+        const mysqlPkg = getMysql();
+        this.mysqlPool = mysqlPkg.createPool({
+          host: config.host,
+          port: config.port || 3306,
+          user: config.user,
+          password: config.password,
+          database: config.database,
+          waitForConnections: true,
+          connectionLimit: 10,
+        });
+        await this._createMysqlTables();
+      }
+    } catch (err) {
+      if (!configOverride) {
+        console.warn(`[DB] Failed to initialize ${this.type.toUpperCase()} database, falling back to JSON storage mode:`, err.message);
+        this.type = 'json';
+        this.connectionConfig = { type: 'json' };
+        await this.close();
+      } else {
+        throw err;
+      }
+    }
+
+    this.initialized = true;
+    console.log(`[DB] Database initialized successfully. Active engine: ${this.type.toUpperCase()}`);
+    return { type: this.type, ok: true };
+  }
+
+  async _createSqliteTables() {
+    const run = (sql) => new Promise((res, rej) => this.sqliteDb.run(sql, (err) => err ? rej(err) : res()));
+    await run(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+    `);
+    await run(`
+      CREATE TABLE IF NOT EXISTS vaults (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+    `);
+    await run(`
+      CREATE TABLE IF NOT EXISTS shares (
+        id TEXT PRIMARY KEY,
+        vault_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        title TEXT NOT NULL,
+        has_password INTEGER NOT NULL,
+        password_hash TEXT,
+        allow_copy INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER,
+        view_count INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+    await run(`
+      CREATE TABLE IF NOT EXISTS sync_rules (
+        vault_id TEXT PRIMARY KEY,
+        rules_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    await run(`
+      CREATE TABLE IF NOT EXISTS system_settings (
+        setting_key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    await run(`
+      CREATE TABLE IF NOT EXISTS api_tokens (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        label TEXT NOT NULL,
+        token TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        last_used_at INTEGER
+      );
+    `);
+    await run(`
+      CREATE TABLE IF NOT EXISTS sync_logs (
+        id TEXT PRIMARY KEY,
+        vault_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        username TEXT NOT NULL,
+        device_name TEXT NOT NULL,
+        client_ip TEXT,
+        action TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        file_size INTEGER DEFAULT 0,
+        file_hash TEXT,
+        status TEXT NOT NULL,
+        detail TEXT,
+        timestamp INTEGER NOT NULL
+      );
+    `);
+    await run(`
+      CREATE TABLE IF NOT EXISTS vault_members (
+        id TEXT PRIMARY KEY,
+        vault_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        permission TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        UNIQUE(vault_id, user_id)
+      );
+    `);
+    await run(`
+      CREATE TABLE IF NOT EXISTS vault_changes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        vault_id TEXT NOT NULL,
+        cursor INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        action TEXT NOT NULL,
+        size INTEGER DEFAULT 0,
+        mtime INTEGER,
+        hash TEXT,
+        created_at INTEGER NOT NULL
+      );
+    `);
+    // Performance indexes for fast querying & high concurrency
+    await run(`CREATE INDEX IF NOT EXISTS idx_sync_logs_vault_time ON sync_logs(vault_id, timestamp DESC);`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_sync_logs_user_time ON sync_logs(user_id, timestamp DESC);`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_shares_vault_id ON shares(vault_id);`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_vault_members_user ON vault_members(user_id);`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_vaults_owner ON vaults(owner_id);`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_vault_changes_cursor ON vault_changes(vault_id, cursor);`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_vault_changes_created ON vault_changes(vault_id, created_at);`);
+  }
+
+  async _createPostgresTables() {
+    await this.pgPool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id VARCHAR(64) PRIMARY KEY,
+        username VARCHAR(128) UNIQUE NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        role VARCHAR(32) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS vaults (
+        id VARCHAR(64) PRIMARY KEY,
+        owner_id VARCHAR(64) NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS shares (
+        id VARCHAR(64) PRIMARY KEY,
+        vault_id VARCHAR(64) NOT NULL,
+        user_id VARCHAR(64) NOT NULL,
+        file_path TEXT NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        has_password BOOLEAN NOT NULL,
+        password_hash VARCHAR(255),
+        allow_copy BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at BIGINT NOT NULL,
+        expires_at BIGINT,
+        view_count INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS sync_rules (
+        vault_id VARCHAR(64) PRIMARY KEY,
+        rules_json TEXT NOT NULL,
+        updated_at BIGINT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS system_settings (
+        setting_key VARCHAR(128) PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        updated_at BIGINT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS api_tokens (
+        id VARCHAR(64) PRIMARY KEY,
+        user_id VARCHAR(64) NOT NULL,
+        label VARCHAR(128) NOT NULL,
+        token TEXT NOT NULL,
+        created_at BIGINT NOT NULL,
+        last_used_at BIGINT
+      );
+      CREATE TABLE IF NOT EXISTS sync_logs (
+        id VARCHAR(64) PRIMARY KEY,
+        vault_id VARCHAR(64) NOT NULL,
+        user_id VARCHAR(64) NOT NULL,
+        username VARCHAR(128) NOT NULL,
+        device_name VARCHAR(128) NOT NULL,
+        client_ip VARCHAR(64),
+        action VARCHAR(32) NOT NULL,
+        file_path TEXT NOT NULL,
+        file_size BIGINT DEFAULT 0,
+        file_hash VARCHAR(128),
+        status VARCHAR(32) NOT NULL,
+        detail TEXT,
+        timestamp BIGINT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS vault_members (
+        id VARCHAR(64) PRIMARY KEY,
+        vault_id VARCHAR(64) NOT NULL,
+        user_id VARCHAR(64) NOT NULL,
+        permission VARCHAR(32) NOT NULL,
+        created_at BIGINT NOT NULL,
+        UNIQUE(vault_id, user_id)
+      );
+      CREATE TABLE IF NOT EXISTS vault_changes (
+        id BIGSERIAL PRIMARY KEY,
+        vault_id VARCHAR(64) NOT NULL,
+        cursor BIGINT NOT NULL,
+        path TEXT NOT NULL,
+        action VARCHAR(32) NOT NULL,
+        size BIGINT DEFAULT 0,
+        mtime BIGINT,
+        hash VARCHAR(128),
+        created_at BIGINT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_vault_changes_cursor ON vault_changes(vault_id, cursor);
+      CREATE INDEX IF NOT EXISTS idx_vault_changes_created ON vault_changes(vault_id, created_at);
+    `);
+  }
+
+  async _createMysqlTables() {
+    await this.mysqlPool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id VARCHAR(64) PRIMARY KEY,
+        username VARCHAR(128) UNIQUE NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        role VARCHAR(32) NOT NULL,
+        created_at VARCHAR(64) NOT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+    await this.mysqlPool.query(`
+      CREATE TABLE IF NOT EXISTS vaults (
+        id VARCHAR(64) PRIMARY KEY,
+        owner_id VARCHAR(64) NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        created_at VARCHAR(64) NOT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+    await this.mysqlPool.query(`
+      CREATE TABLE IF NOT EXISTS shares (
+        id VARCHAR(64) PRIMARY KEY,
+        vault_id VARCHAR(64) NOT NULL,
+        user_id VARCHAR(64) NOT NULL,
+        file_path TEXT NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        has_password TINYINT(1) NOT NULL,
+        password_hash VARCHAR(255),
+        allow_copy TINYINT(1) NOT NULL DEFAULT 1,
+        created_at BIGINT NOT NULL,
+        expires_at BIGINT,
+        view_count INT NOT NULL DEFAULT 0
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+    await this.mysqlPool.query(`
+      CREATE TABLE IF NOT EXISTS sync_rules (
+        vault_id VARCHAR(64) PRIMARY KEY,
+        rules_json LONGTEXT NOT NULL,
+        updated_at BIGINT NOT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+    await this.mysqlPool.query(`
+      CREATE TABLE IF NOT EXISTS system_settings (
+        setting_key VARCHAR(128) PRIMARY KEY,
+        value_json LONGTEXT NOT NULL,
+        updated_at BIGINT NOT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+    await this.mysqlPool.query(`
+      CREATE TABLE IF NOT EXISTS api_tokens (
+        id VARCHAR(64) PRIMARY KEY,
+        user_id VARCHAR(64) NOT NULL,
+        label VARCHAR(128) NOT NULL,
+        token TEXT NOT NULL,
+        created_at BIGINT NOT NULL,
+        last_used_at BIGINT
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+    await this.mysqlPool.query(`
+      CREATE TABLE IF NOT EXISTS sync_logs (
+        id VARCHAR(64) PRIMARY KEY,
+        vault_id VARCHAR(64) NOT NULL,
+        user_id VARCHAR(64) NOT NULL,
+        username VARCHAR(128) NOT NULL,
+        device_name VARCHAR(128) NOT NULL,
+        client_ip VARCHAR(64),
+        action VARCHAR(32) NOT NULL,
+        file_path TEXT NOT NULL,
+        file_size BIGINT DEFAULT 0,
+        file_hash VARCHAR(128),
+        status VARCHAR(32) NOT NULL,
+        detail TEXT,
+        timestamp BIGINT NOT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+    await this.mysqlPool.query(`
+      CREATE TABLE IF NOT EXISTS vault_members (
+        id VARCHAR(64) PRIMARY KEY,
+        vault_id VARCHAR(64) NOT NULL,
+        user_id VARCHAR(64) NOT NULL,
+        permission VARCHAR(32) NOT NULL,
+        created_at BIGINT NOT NULL,
+        UNIQUE KEY uk_vault_user (vault_id, user_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+    await this.mysqlPool.query(`
+      CREATE TABLE IF NOT EXISTS vault_changes (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        vault_id VARCHAR(64) NOT NULL,
+        \`cursor\` BIGINT NOT NULL,
+        path TEXT NOT NULL,
+        action VARCHAR(32) NOT NULL,
+        size BIGINT DEFAULT 0,
+        mtime BIGINT,
+        hash VARCHAR(128),
+        created_at BIGINT NOT NULL,
+        INDEX idx_vault_changes_cursor (vault_id, \`cursor\`),
+        INDEX idx_vault_changes_created (vault_id, created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+  }
+
+  async testConnection(config) {
+    const type = (config.type || '').toLowerCase();
+    const startTime = Date.now();
+
+    if (type === 'sqlite') {
+      const SQLite = getSqlite3();
+      const testPath = path.resolve(config.sqlitePath || path.join(DATA_DIR, 'test_connect.sqlite'));
+      try {
+        fs.mkdirSync(path.dirname(testPath), { recursive: true });
+        return await new Promise((resolve) => {
+          const db = new SQLite.Database(testPath, (err) => {
+            if (err) return resolve({ ok: false, error: err.message });
+            db.run('SELECT 1;', (rErr) => {
+              db.close();
+              if (rErr) return resolve({ ok: false, error: rErr.message });
+              const latencyMs = Date.now() - startTime;
+              resolve({ ok: true, message: `SQLite 连接测试成功 (${latencyMs}ms)`, latencyMs });
+            });
+          });
+        });
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+
+    if (type === 'postgres' || type === 'postgresql') {
+      const { Pool } = getPg();
+      const sslConfig = this._buildPgSslConfig(config);
+      const pool = new Pool(
+        config.connectionString
+          ? {
+              connectionString: config.connectionString,
+              connectionTimeoutMillis: 4000,
+              ssl: sslConfig,
+            }
+          : {
+              host: config.host,
+              port: config.port || 5432,
+              user: config.user,
+              password: config.password,
+              database: config.database,
+              connectionTimeoutMillis: 4000,
+              ssl: sslConfig,
+            }
+      );
+      try {
+        const client = await pool.connect();
+        const res = await client.query('SELECT version();');
+        client.release();
+        await pool.end();
+        const latencyMs = Date.now() - startTime;
+        const ver = res.rows[0]?.version || 'PostgreSQL';
+        return { ok: true, message: `PostgreSQL 连接成功 (${latencyMs}ms): ${ver.split(' on ')[0]}`, latencyMs };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+
+    if (type === 'mysql') {
+      const mysqlPkg = getMysql();
+      try {
+        const conn = await mysqlPkg.createConnection({
+          host: config.host,
+          port: config.port || 3306,
+          user: config.user,
+          password: config.password,
+          database: config.database,
+          connectTimeout: 4000,
+        });
+        const [rows] = await conn.query('SELECT VERSION() as ver');
+        await conn.end();
+        const latencyMs = Date.now() - startTime;
+        const ver = rows[0]?.ver || 'MySQL';
+        return { ok: true, message: `MySQL 连接成功 (${latencyMs}ms): Version ${ver}`, latencyMs };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+
+    return { ok: true, message: 'JSON 本地文件存储模式运行就绪 (零配置/毫秒级本地 IO)', latencyMs: 0 };
+  }
+
+  _buildPgSslConfig(config) {
+    if (!config || !config.ssl) return false;
+
+    // 默认启用严格证书校验 (rejectUnauthorized: true)，杜绝公网传输遭遇中间人攻击 (MitM)
+    // 仅在用户显式指定允许自签名或测试证书时 (sslRejectUnauthorized === false 或 PG_SSL_REJECT_UNAUTHORIZED=false) 才允许降级
+    let rejectUnauthorized = true;
+    if (typeof config.sslRejectUnauthorized === 'boolean') {
+      rejectUnauthorized = config.sslRejectUnauthorized;
+    } else if (process.env.PG_SSL_REJECT_UNAUTHORIZED === 'false' || config.allowSelfSigned === true) {
+      rejectUnauthorized = false;
+    }
+
+    const sslConfig = { rejectUnauthorized };
+
+    if (!rejectUnauthorized) {
+      console.warn('[DB] ⚠️ 安全告警：PostgreSQL SSL 连接已关闭证书校验 (rejectUnauthorized=false)，易受中间人攻击。生产环境强烈建议启用有效证书验证。');
+    }
+
+    if (config.sslCa && typeof config.sslCa === 'string' && config.sslCa.trim()) {
+      sslConfig.ca = config.sslCa.trim();
+    } else if (process.env.PG_SSL_CA) {
+      sslConfig.ca = process.env.PG_SSL_CA;
+    } else if (process.env.PG_SSL_CA_PATH && fs.existsSync(process.env.PG_SSL_CA_PATH)) {
+      try {
+        sslConfig.ca = fs.readFileSync(process.env.PG_SSL_CA_PATH, 'utf8');
+      } catch (err) {
+        console.warn('[DB] 读取 PG_SSL_CA_PATH 失败:', err.message);
+      }
+    }
+
+    return sslConfig;
+  }
+
+  getStatus() {
+    return {
+      type: this.type,
+      activeEngine: this.type.toUpperCase(),
+      initialized: this.initialized,
+      config: {
+        type: this.type,
+        sqlitePath: this.connectionConfig.sqlitePath || path.join(DATA_DIR, 'nimbus.sqlite'),
+        connectionString: this.connectionConfig.connectionString ? '***' : '',
+        host: this.connectionConfig.host || '',
+        port: this.connectionConfig.port || '',
+        database: this.connectionConfig.database || '',
+        user: this.connectionConfig.user || '',
+        ssl: Boolean(this.connectionConfig.ssl),
+        sslRejectUnauthorized: this.connectionConfig.sslRejectUnauthorized !== false,
+        hasCustomCa: Boolean(this.connectionConfig.sslCa || process.env.PG_SSL_CA || process.env.PG_SSL_CA_PATH),
+      },
+    };
+  }
+
+  // ------------------------- Generic SQL Query Helpers -------------------------
+
+  async queryAll(sql, params = []) {
+    if (this.type === 'sqlite') {
+      return new Promise((res, rej) => {
+        this.sqliteDb.all(sql, params, (err, rows) => (err ? rej(err) : res(rows || [])));
+      });
+    }
+    if (this.type === 'postgres') {
+      let i = 1;
+      const pgSql = sql.replace(/\?/g, () => `$${i++}`);
+      const result = await this.pgPool.query(pgSql, params);
+      return result.rows;
+    }
+    if (this.type === 'mysql') {
+      const [rows] = await this.mysqlPool.query(sql, params);
+      return rows;
+    }
+    return [];
+  }
+
+  async queryOne(sql, params = []) {
+    const rows = await this.queryAll(sql, params);
+    return rows[0] || null;
+  }
+
+  async execute(sql, params = []) {
+    if (this.type === 'sqlite') {
+      return new Promise((res, rej) => {
+        this.sqliteDb.run(sql, params, function (err) {
+          if (err) return rej(err);
+          res({ changes: this.changes, lastID: this.lastID });
+        });
+      });
+    }
+    if (this.type === 'postgres') {
+      let i = 1;
+      const pgSql = sql.replace(/\?/g, () => `$${i++}`);
+      const result = await this.pgPool.query(pgSql, params);
+      return { changes: result.rowCount };
+    }
+    if (this.type === 'mysql') {
+      const [result] = await this.mysqlPool.query(sql, params);
+      return { changes: result.affectedRows };
+    }
+    return { changes: 0 };
+  }
+
+  // ------------------------- Engine Switch & Data Migration -------------------------
+
+  async switchAndMigrate(targetConfig, dataset, doMigrate = true) {
+    const targetType = (targetConfig.type || 'json').toLowerCase();
+
+    // 1. Initialize target engine
+    await this.init(targetConfig);
+
+    // 2. If migration requested, import dataset into target engine
+    let migratedCounts = {
+      users: 0,
+      vaults: 0,
+      vaultMembers: 0,
+      shares: 0,
+      syncRules: 0,
+      systemSettings: 0,
+      apiTokens: 0,
+      syncLogs: 0,
+      vaultChanges: 0,
+    };
+
+    if (doMigrate && dataset) {
+      if (targetType === 'json') {
+        // Save to JSON files
+        const usersData = { users: dataset.users || [] };
+        const vaultsData = { vaults: dataset.vaults || [] };
+        fs.writeFileSync(USERS_FILE, JSON.stringify(usersData, null, 2));
+        fs.writeFileSync(VAULTS_FILE, JSON.stringify(vaultsData, null, 2));
+        fs.writeFileSync(path.join(DATA_DIR, 'vault_members.json'), JSON.stringify({ members: dataset.vaultMembers || [] }, null, 2));
+        fs.writeFileSync(path.join(DATA_DIR, 'shares.json'), JSON.stringify(dataset.shares || [], null, 2));
+        fs.writeFileSync(path.join(DATA_DIR, 'settings.json'), JSON.stringify(dataset.systemSettings || {}, null, 2));
+        fs.writeFileSync(path.join(DATA_DIR, 'api_tokens.json'), JSON.stringify(dataset.apiTokens || [], null, 2));
+        fs.writeFileSync(path.join(DATA_DIR, 'sync_logs.json'), JSON.stringify(dataset.syncLogs || [], null, 2));
+
+        // Group changes by vaultId and write to changes/changes_{vaultId}.json
+        if (Array.isArray(dataset.vaultChanges) && dataset.vaultChanges.length > 0) {
+          const changesDir = path.join(DATA_DIR, 'changes');
+          fs.mkdirSync(changesDir, { recursive: true });
+          const changesByVault = new Map();
+          for (const c of dataset.vaultChanges) {
+            if (!changesByVault.has(c.vaultId)) {
+              changesByVault.set(c.vaultId, []);
+            }
+            changesByVault.get(c.vaultId).push(c);
+          }
+          for (const [vaultId, cList] of changesByVault.entries()) {
+            cList.sort((a, b) => a.cursor - b.cursor);
+            const latestCursor = cList.length > 0 ? cList[cList.length - 1].cursor : 0;
+            const filePath = path.join(changesDir, `changes_${vaultId}.json`);
+            fs.writeFileSync(filePath, JSON.stringify({ latestCursor, changes: cList }, null, 2));
+          }
+        }
+
+        migratedCounts = {
+          users: (dataset.users || []).length,
+          vaults: (dataset.vaults || []).length,
+          vaultMembers: (dataset.vaultMembers || []).length,
+          shares: (dataset.shares || []).length,
+          syncRules: Object.keys(dataset.syncRules || {}).length,
+          systemSettings: Object.keys(dataset.systemSettings || {}).length,
+          apiTokens: (dataset.apiTokens || []).length,
+          syncLogs: (dataset.syncLogs || []).length,
+          vaultChanges: (dataset.vaultChanges || []).length,
+        };
+      } else {
+        // Insert into SQL tables
+        // Users
+        for (const u of dataset.users || []) {
+          try {
+            await this.execute(
+              'INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)',
+              [u.id, u.username, u.passwordHash, u.role, u.createdAt]
+            );
+            migratedCounts.users++;
+          } catch (e) {
+            console.warn('[DB Migrate] user insert skipped:', e.message);
+          }
+        }
+
+        // Vaults
+        for (const v of dataset.vaults || []) {
+          try {
+            await this.execute('INSERT INTO vaults (id, owner_id, name, created_at) VALUES (?, ?, ?, ?)', [
+              v.id,
+              v.ownerId,
+              v.name,
+              v.createdAt,
+            ]);
+            migratedCounts.vaults++;
+          } catch (e) {
+            console.warn('[DB Migrate] vault insert skipped:', e.message);
+          }
+        }
+
+        // Shares
+        for (const s of dataset.shares || []) {
+          try {
+            await this.execute(
+              'INSERT INTO shares (id, vault_id, user_id, file_path, title, has_password, password_hash, allow_copy, created_at, expires_at, view_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              [
+                s.id,
+                s.vaultId,
+                s.userId,
+                s.filePath,
+                s.title,
+                s.hasPassword ? 1 : 0,
+                s.passwordHash || null,
+                s.allowCopy ? 1 : 0,
+                s.createdAt,
+                s.expiresAt || null,
+                s.viewCount || 0,
+              ]
+            );
+            migratedCounts.shares++;
+          } catch (e) {
+            console.warn('[DB Migrate] share insert skipped:', e.message);
+          }
+        }
+
+        // Sync rules
+        const rulesMap = dataset.syncRules || {};
+        const now = Date.now();
+        for (const [vaultId, rules] of Object.entries(rulesMap)) {
+          try {
+            await this.execute(
+              'INSERT INTO sync_rules (vault_id, rules_json, updated_at) VALUES (?, ?, ?)',
+              [vaultId, JSON.stringify(rules), now]
+            );
+            migratedCounts.syncRules++;
+          } catch (e) {
+            console.warn('[DB Migrate] sync_rules insert skipped:', e.message);
+          }
+        }
+
+        // System settings
+        for (const [key, val] of Object.entries(dataset.systemSettings || {})) {
+          try {
+            await this.execute(
+              'INSERT INTO system_settings (setting_key, value_json, updated_at) VALUES (?, ?, ?)',
+              [key, JSON.stringify(val), now]
+            );
+            migratedCounts.systemSettings++;
+          } catch (e) {
+            console.warn('[DB Migrate] system_settings insert skipped:', e.message);
+          }
+        }
+
+        // API Tokens
+        for (const t of dataset.apiTokens || []) {
+          try {
+            await this.execute(
+              'INSERT INTO api_tokens (id, user_id, label, token, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?)',
+              [t.id, t.userId, t.label, t.token, t.createdAt, t.lastUsedAt || null]
+            );
+            migratedCounts.apiTokens++;
+          } catch (e) {
+            console.warn('[DB Migrate] api_token insert skipped:', e.message);
+          }
+        }
+
+        // Sync Logs
+        for (const l of dataset.syncLogs || []) {
+          try {
+            await this.execute(
+              `INSERT INTO sync_logs (id, vault_id, user_id, username, device_name, client_ip, action, file_path, file_size, file_hash, status, detail, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                l.id,
+                l.vaultId,
+                l.userId,
+                l.username,
+                l.deviceName,
+                l.clientIp || null,
+                l.action,
+                l.path,
+                l.size || 0,
+                l.hash || null,
+                l.status || 'success',
+                l.detail || null,
+                l.timestamp,
+              ]
+            );
+            migratedCounts.syncLogs++;
+          } catch (e) {
+            console.warn('[DB Migrate] sync_log insert skipped:', e.message);
+          }
+        }
+
+        // Vault Members
+        for (const m of dataset.vaultMembers || []) {
+          try {
+            await this.execute(
+              'INSERT INTO vault_members (id, vault_id, user_id, permission, created_at) VALUES (?, ?, ?, ?, ?)',
+              [m.id, m.vaultId, m.userId, m.permission, m.createdAt]
+            );
+            migratedCounts.vaultMembers++;
+          } catch (e) {
+            console.warn('[DB Migrate] vault_member insert skipped:', e.message);
+          }
+        }
+
+        // Vault Changes
+        for (const c of dataset.vaultChanges || []) {
+          try {
+            await this.execute(
+              `INSERT INTO vault_changes (vault_id, cursor, path, action, size, mtime, hash, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                c.vaultId,
+                c.cursor,
+                c.path,
+                c.action,
+                c.size || 0,
+                c.mtime || 0,
+                c.hash || null,
+                c.createdAt || Date.now(),
+              ]
+            );
+            migratedCounts.vaultChanges++;
+          } catch (e) {
+            console.warn('[DB Migrate] vault_change insert skipped:', e.message);
+          }
+        }
+      }
+    }
+
+    // 3. Save to persistent file
+    this.savePersistentConfig(this.connectionConfig);
+
+    return {
+      ok: true,
+      activeEngine: this.type.toUpperCase(),
+      migrated: doMigrate,
+      counts: migratedCounts,
+      message: `已成功切换并更新数据库引擎至 ${this.type.toUpperCase()}${doMigrate ? '，并完成全量数据平滑迁移' : ''}`,
+    };
+  }
+}
+
+const dbManager = new DatabaseManager();
+module.exports = dbManager;

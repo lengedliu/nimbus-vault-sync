@@ -1,0 +1,1892 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-demo-theme="titanium-studio" data-demo-layout="classic" data-mode="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nimbus Vault Sync · 多套 UI 设计风格 & 布局架构全景 Demo 预览</title>
+  <style>
+    /* ==========================================================================
+       Nimbus Vault Sync · Multi-Theme & Multi-Layout Architecture Showcase
+       Standalone static interactive preview. Zero modification to production code.
+       ========================================================================== */
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    /* --------------------------------------------------------------------------
+       THEME ARCHETYPE 1: ❄️ Nordic Frost Glass (北欧微光玻璃 · 冰晶透亮风)
+       -------------------------------------------------------------------------- */
+    [data-demo-theme="nordic-glass"][data-mode="light"] {
+      --bg: #f8fafc;
+      --bg-topbar: rgba(255, 255, 255, 0.85);
+      --bg-sidebar: #f1f5f9;
+      --bg-activity: #e2e8f0;
+      --bg-card: #ffffff;
+      --bg-card-hover: #f8fafc;
+      --bg-accent: rgba(2, 132, 199, 0.08);
+      --border: #e2e8f0;
+      --border-accent: rgba(2, 132, 199, 0.35);
+      --primary: #0284c7;
+      --primary-hover: #0369a1;
+      --primary-rgb: 2, 132, 199;
+      --text: #0f172a;
+      --text-muted: #475569;
+      --text-dim: #94a3b8;
+      --font-heading: -apple-system, BlinkMacSystemFont, "Inter", "SF Pro Display", sans-serif;
+      --font-body: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+      --radius: 8px;
+      --radius-lg: 12px;
+      --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.05);
+      --shadow-md: 0 4px 16px rgba(15, 23, 42, 0.08);
+      --status-ok: #0284c7;
+      --glass-backdrop: blur(12px);
+    }
+
+    [data-demo-theme="nordic-glass"][data-mode="dark"] {
+      --bg: #0b131f;
+      --bg-topbar: rgba(15, 23, 42, 0.85);
+      --bg-sidebar: #0f172a;
+      --bg-activity: #0a0f1d;
+      --bg-card: #1e293b;
+      --bg-card-hover: #334155;
+      --bg-accent: rgba(56, 189, 248, 0.15);
+      --border: #334155;
+      --border-accent: rgba(56, 189, 248, 0.4);
+      --primary: #38bdf8;
+      --primary-hover: #7dd3fc;
+      --primary-rgb: 56, 189, 248;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --font-heading: -apple-system, BlinkMacSystemFont, "Inter", "SF Pro Display", sans-serif;
+      --font-body: -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+      --radius: 8px;
+      --radius-lg: 12px;
+      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35);
+      --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.5);
+      --status-ok: #38bdf8;
+      --glass-backdrop: blur(14px);
+    }
+
+    /* --------------------------------------------------------------------------
+       THEME ARCHETYPE 2: 📜 Warm Ivory Parchment (人文典藏纸本 · 琥珀书卷风)
+       -------------------------------------------------------------------------- */
+    [data-demo-theme="warm-parchment"][data-mode="light"] {
+      --bg: #fdfbf7;
+      --bg-topbar: rgba(253, 251, 247, 0.94);
+      --bg-sidebar: #f5f0e6;
+      --bg-activity: #ede5d5;
+      --bg-card: #ffffff;
+      --bg-card-hover: #faf5eb;
+      --bg-accent: rgba(180, 83, 9, 0.08);
+      --border: #e7decb;
+      --border-accent: rgba(180, 83, 9, 0.35);
+      --primary: #b45309;
+      --primary-hover: #92400e;
+      --primary-rgb: 180, 83, 9;
+      --text: #292524;
+      --text-muted: #57534e;
+      --text-dim: #878378;
+      --font-heading: "Charter", "Georgia", "Songti SC", "SimSun", serif;
+      --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+      --radius: 6px;
+      --radius-lg: 10px;
+      --shadow-sm: 0 1px 3px rgba(41, 37, 36, 0.04);
+      --shadow-md: 0 4px 14px rgba(41, 37, 36, 0.07);
+      --status-ok: #15803d;
+      --glass-backdrop: none;
+    }
+
+    [data-demo-theme="warm-parchment"][data-mode="dark"] {
+      --bg: #1c1917;
+      --bg-topbar: rgba(28, 25, 23, 0.92);
+      --bg-sidebar: #262320;
+      --bg-activity: #1f1b19;
+      --bg-card: #2e2a27;
+      --bg-card-hover: #383430;
+      --bg-accent: rgba(245, 158, 11, 0.15);
+      --border: #44403c;
+      --border-accent: rgba(245, 158, 11, 0.4);
+      --primary: #f59e0b;
+      --primary-hover: #fbbf24;
+      --primary-rgb: 245, 158, 11;
+      --text: #f5f5f4;
+      --text-muted: #a8a29e;
+      --text-dim: #78716c;
+      --font-heading: "Charter", "Georgia", "Songti SC", serif;
+      --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+      --radius: 6px;
+      --radius-lg: 10px;
+      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35);
+      --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.45);
+      --status-ok: #4ade80;
+      --glass-backdrop: none;
+    }
+
+    /* --------------------------------------------------------------------------
+       THEME ARCHETYPE 3: 📐 Neue Swiss Grid (新瑞士网格 · 国际包豪斯风)
+       -------------------------------------------------------------------------- */
+    [data-demo-theme="swiss-grid"][data-mode="light"] {
+      --bg: #f4f4f5;
+      --bg-topbar: rgba(244, 244, 245, 0.98);
+      --bg-sidebar: #eaeaea;
+      --bg-activity: #dfdfdf;
+      --bg-card: #ffffff;
+      --bg-card-hover: #f9f9fb;
+      --bg-accent: rgba(225, 29, 72, 0.08);
+      --border: #d4d4d8;
+      --border-accent: #e11d48;
+      --primary: #e11d48;
+      --primary-hover: #be123c;
+      --primary-rgb: 225, 29, 72;
+      --text: #09090b;
+      --text-muted: #52525b;
+      --text-dim: #71717a;
+      --font-heading: "Helvetica Neue", "Arial", "PingFang SC", sans-serif;
+      --font-body: "Helvetica Neue", "Arial", "PingFang SC", sans-serif;
+      --radius: 2px;
+      --radius-lg: 4px;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+      --shadow-md: 0 4px 10px rgba(0, 0, 0, 0.08);
+      --status-ok: #059669;
+      --glass-backdrop: none;
+    }
+
+    [data-demo-theme="swiss-grid"][data-mode="dark"] {
+      --bg: #0c0d10;
+      --bg-topbar: rgba(12, 13, 16, 0.98);
+      --bg-sidebar: #121418;
+      --bg-activity: #08090b;
+      --bg-card: #181a20;
+      --bg-card-hover: #20232b;
+      --bg-accent: rgba(244, 63, 94, 0.15);
+      --border: #262933;
+      --border-accent: #f43f5e;
+      --primary: #f43f5e;
+      --primary-hover: #fb7185;
+      --primary-rgb: 244, 63, 94;
+      --text: #f4f4f5;
+      --text-muted: #a1a1aa;
+      --text-dim: #71717a;
+      --font-heading: "Helvetica Neue", "Arial", "PingFang SC", sans-serif;
+      --font-body: "Helvetica Neue", "Arial", "PingFang SC", sans-serif;
+      --radius: 2px;
+      --radius-lg: 4px;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+      --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.6);
+      --status-ok: #10b981;
+      --glass-backdrop: none;
+    }
+
+    /* --------------------------------------------------------------------------
+       THEME ARCHETYPE 4: ⚡ Obsidian Neon HUD (赛博高阶控制台 · 霓虹天鹅绒)
+       -------------------------------------------------------------------------- */
+    [data-demo-theme="neon-hud"][data-mode="dark"] {
+      --bg: #090d16;
+      --bg-topbar: rgba(15, 23, 42, 0.95);
+      --bg-sidebar: #0f172a;
+      --bg-activity: #0a0f1d;
+      --bg-card: #131d31;
+      --bg-card-hover: #1c2a45;
+      --bg-accent: rgba(45, 212, 191, 0.15);
+      --border: #1e2d4a;
+      --border-accent: rgba(45, 212, 191, 0.45);
+      --primary: #2dd4bf;
+      --primary-hover: #5eead4;
+      --primary-rgb: 45, 212, 191;
+      --text: #f0fdfa;
+      --text-muted: #99f6e4;
+      --text-dim: #5eead4;
+      --font-heading: -apple-system, BlinkMacSystemFont, "JetBrains Mono", monospace;
+      --font-body: -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+      --radius: 6px;
+      --radius-lg: 10px;
+      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+      --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.55);
+      --status-ok: #2dd4bf;
+      --glass-backdrop: none;
+    }
+
+    [data-demo-theme="neon-hud"][data-mode="light"] {
+      --bg: #f0fdf4;
+      --bg-topbar: rgba(240, 253, 244, 0.95);
+      --bg-sidebar: #dcfce7;
+      --bg-activity: #bbf7d0;
+      --bg-card: #ffffff;
+      --bg-card-hover: #f0fdf4;
+      --bg-accent: rgba(13, 148, 136, 0.1);
+      --border: #bbf7d0;
+      --border-accent: #0d9488;
+      --primary: #0d9488;
+      --primary-hover: #0f766e;
+      --primary-rgb: 13, 148, 136;
+      --text: #064e3b;
+      --text-muted: #047857;
+      --text-dim: #10b981;
+      --font-heading: -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+      --font-body: -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+      --radius: 6px;
+      --radius-lg: 10px;
+      --shadow-sm: 0 1px 2px rgba(6, 78, 59, 0.05);
+      --shadow-md: 0 4px 12px rgba(6, 78, 59, 0.08);
+      --status-ok: #059669;
+      --glass-backdrop: none;
+    }
+
+    /* --------------------------------------------------------------------------
+       THEME ARCHETYPE 5: 🍃 Kyoto Moss & Tea (禅意古都 · 苔原竹韵风)
+       -------------------------------------------------------------------------- */
+    [data-demo-theme="kyoto-moss"][data-mode="light"] {
+      --bg: #f6f8f5;
+      --bg-topbar: rgba(246, 248, 245, 0.95);
+      --bg-sidebar: #eaf0e8;
+      --bg-activity: #dde7da;
+      --bg-card: #ffffff;
+      --bg-card-hover: #f1f5ef;
+      --bg-accent: rgba(45, 106, 79, 0.1);
+      --border: #d8e2d5;
+      --border-accent: rgba(45, 106, 79, 0.35);
+      --primary: #2d6a4f;
+      --primary-hover: #1b4332;
+      --primary-rgb: 45, 106, 79;
+      --text: #1a2e22;
+      --text-muted: #405d4b;
+      --text-dim: #749380;
+      --font-heading: "STKaiti", "Kaiti SC", "Yu Mincho", "Georgia", serif;
+      --font-body: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+      --radius: 8px;
+      --radius-lg: 12px;
+      --shadow-sm: 0 1px 3px rgba(26, 46, 34, 0.04);
+      --shadow-md: 0 4px 16px rgba(26, 46, 34, 0.07);
+      --status-ok: #2d6a4f;
+      --glass-backdrop: none;
+    }
+
+    [data-demo-theme="kyoto-moss"][data-mode="dark"] {
+      --bg: #0e1511;
+      --bg-topbar: rgba(14, 21, 17, 0.95);
+      --bg-sidebar: #141f19;
+      --bg-activity: #0a110d;
+      --bg-card: #1b2820;
+      --bg-card-hover: #24352b;
+      --bg-accent: rgba(82, 183, 136, 0.15);
+      --border: #2b3e32;
+      --border-accent: rgba(82, 183, 136, 0.4);
+      --primary: #52b788;
+      --primary-hover: #74c69d;
+      --primary-rgb: 82, 183, 136;
+      --text: #e8f5e9;
+      --text-muted: #a3d9b1;
+      --text-dim: #629e74;
+      --font-heading: "STKaiti", "Kaiti SC", "Yu Mincho", serif;
+      --font-body: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+      --radius: 8px;
+      --radius-lg: 12px;
+      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35);
+      --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.45);
+      --status-ok: #52b788;
+      --glass-backdrop: none;
+    }
+
+    /* --------------------------------------------------------------------------
+       THEME ARCHETYPE 6: 🏭 Titanium Industrial Studio (工业精工 · 钛银极简风)
+       -------------------------------------------------------------------------- */
+    [data-demo-theme="titanium-studio"][data-mode="light"] {
+      --bg: #f1f3f5;
+      --bg-topbar: rgba(241, 243, 245, 0.95);
+      --bg-sidebar: #e9ecef;
+      --bg-activity: #dee2e6;
+      --bg-card: #ffffff;
+      --bg-card-hover: #f8f9fa;
+      --bg-accent: rgba(37, 99, 235, 0.08);
+      --border: #ced4da;
+      --border-accent: rgba(37, 99, 235, 0.35);
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --primary-rgb: 37, 99, 235;
+      --text: #212529;
+      --text-muted: #495057;
+      --text-dim: #868e96;
+      --font-heading: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Roboto", sans-serif;
+      --font-body: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+      --radius: 4px;
+      --radius-lg: 6px;
+      --shadow-sm: 0 1px 2px rgba(33, 37, 41, 0.05);
+      --shadow-md: 0 4px 12px rgba(33, 37, 41, 0.08);
+      --status-ok: #2563eb;
+      --glass-backdrop: none;
+    }
+
+    [data-demo-theme="titanium-studio"][data-mode="dark"] {
+      --bg: #121316;
+      --bg-topbar: rgba(18, 19, 22, 0.95);
+      --bg-sidebar: #181a1f;
+      --bg-activity: #101114;
+      --bg-card: #212529;
+      --bg-card-hover: #2b3036;
+      --bg-accent: rgba(59, 130, 246, 0.15);
+      --border: #343a40;
+      --border-accent: rgba(59, 130, 246, 0.4);
+      --primary: #3b82f6;
+      --primary-hover: #60a5fa;
+      --primary-rgb: 59, 130, 246;
+      --text: #f8f9fa;
+      --text-muted: #adb5bd;
+      --text-dim: #6c757d;
+      --font-heading: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Roboto", sans-serif;
+      --font-body: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+      --radius: 4px;
+      --radius-lg: 6px;
+      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35);
+      --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.45);
+      --status-ok: #3b82f6;
+      --glass-backdrop: none;
+    }
+
+    /* Base Global Styles */
+    body {
+      font-family: var(--font-body);
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      transition: background-color 0.2s ease, color 0.2s ease;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ==========================================================================
+       TOP SHOWCASE CONTROL BAR (Theme & Layout Matrix Switcher)
+       ========================================================================== */
+    .demo-bar {
+      background: #0f172a;
+      color: #f8fafc;
+      border-bottom: 1px solid #1e293b;
+      padding: 10px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 1000;
+      flex-shrink: 0;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+    }
+
+    .demo-bar-row1 {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .demo-bar-title {
+      font-size: 13.5px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      letter-spacing: -0.2px;
+    }
+
+    .demo-bar-badges {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .demo-bar-badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      background: #38bdf8;
+      color: #0f172a;
+      font-weight: 700;
+    }
+
+    .demo-bar-badge-layout {
+      background: #a855f7;
+      color: #ffffff;
+    }
+
+    .demo-bar-row2 {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+      border-top: 1px solid rgba(255,255,255,0.08);
+      padding-top: 8px;
+    }
+
+    .demo-selector-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .demo-group-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-right: 4px;
+    }
+
+    .demo-btn {
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #94a3b8;
+      padding: 5px 11px;
+      border-radius: 6px;
+      font-size: 11.5px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+
+    .demo-btn:hover {
+      background: #334155;
+      color: #f8fafc;
+    }
+
+    .demo-btn.active {
+      background: #38bdf8;
+      color: #0f172a;
+      border-color: #38bdf8;
+      box-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
+    }
+
+    .demo-layout-btn.active {
+      background: #c084fc;
+      color: #0f172a;
+      border-color: #c084fc;
+      box-shadow: 0 0 10px rgba(192, 132, 252, 0.35);
+    }
+
+    .demo-mode-btn {
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: #f8fafc;
+      padding: 5px 12px;
+      border-radius: 6px;
+      font-size: 11.5px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .demo-mode-btn:hover {
+      background: rgba(255,255,255,0.2);
+    }
+
+    /* ==========================================================================
+       MAIN APP WORKSPACE SHELL
+       ========================================================================== */
+    .app-viewport {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Standard Topbar */
+    .topbar {
+      height: 54px;
+      padding: 0 24px;
+      background: var(--bg-topbar);
+      backdrop-filter: var(--glass-backdrop);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      transition: all 0.2s ease;
+      z-index: 100;
+    }
+
+    .topbar-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-family: var(--font-heading);
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .brand-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: var(--radius);
+      background: var(--primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #ffffff;
+      font-weight: 800;
+      font-size: 14px;
+      box-shadow: 0 2px 8px rgba(var(--primary-rgb), 0.3);
+    }
+
+    .topbar-search {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      padding: 6px 14px;
+      border-radius: var(--radius);
+      color: var(--text-muted);
+      font-size: 12.5px;
+      width: 320px;
+      cursor: pointer;
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .status-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--status-ok);
+      box-shadow: 0 0 8px var(--status-ok);
+    }
+
+    .user-profile {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .avatar {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: var(--primary);
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    /* Main Container Layout Body */
+    .layout-main {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Activity Bar (Only for Three-Column layout) */
+    .activity-bar {
+      display: none;
+      width: 54px;
+      background: var(--bg-activity);
+      border-right: 1px solid var(--border);
+      flex-direction: column;
+      align-items: center;
+      padding: 14px 0;
+      gap: 16px;
+      flex-shrink: 0;
+      z-index: 10;
+    }
+
+    .activity-icon-btn {
+      width: 38px;
+      height: 38px;
+      border-radius: var(--radius);
+      background: transparent;
+      border: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .activity-icon-btn:hover {
+      background: var(--bg-card-hover);
+      color: var(--text);
+    }
+
+    .activity-icon-btn.active {
+      background: var(--bg-card);
+      color: var(--primary);
+      box-shadow: var(--shadow-sm);
+      border: 1px solid var(--border);
+    }
+
+    /* Sidebar - Highlighted Left Background */
+    .sidebar {
+      width: 240px;
+      background: var(--bg-sidebar);
+      border-right: 1px solid var(--border);
+      padding: 16px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      flex-shrink: 0;
+      transition: all 0.2s ease;
+      overflow-y: auto;
+    }
+
+    .sidebar-primary-btn {
+      width: 100%;
+      padding: 9px 14px;
+      background: var(--primary);
+      color: #ffffff;
+      border: none;
+      border-radius: var(--radius);
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      box-shadow: var(--shadow-sm);
+      transition: all 0.15s ease;
+    }
+
+    .sidebar-primary-btn:hover {
+      background: var(--primary-hover);
+    }
+
+    .sidebar-section-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-dim);
+      padding: 0 8px;
+      margin-bottom: 8px;
+    }
+
+    .sidebar-menu {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .sidebar-item {
+      padding: 8px 12px;
+      border-radius: var(--radius);
+      font-size: 13px;
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border: 1px solid transparent;
+      border-left: 3px solid transparent;
+      transition: all 0.12s ease;
+      user-select: none;
+    }
+
+    .sidebar-item:hover {
+      background: var(--bg-card-hover);
+      color: var(--text);
+    }
+
+    .sidebar-item.active {
+      background: var(--bg-card);
+      color: var(--text);
+      font-weight: 700;
+      box-shadow: var(--shadow-sm);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--primary);
+    }
+
+    .sidebar-item-count {
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+
+    .sidebar-footer {
+      margin-top: auto;
+      padding-top: 10px;
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--text-dim);
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Content Area */
+    .content-area {
+      flex: 1;
+      padding: 24px;
+      overflow-y: auto;
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      /* 隐藏滚动条，保留滚轮和手势滚动 */
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+
+    .content-area::-webkit-scrollbar {
+      display: none;
+      width: 0;
+      height: 0;
+    }
+
+    .view-container {
+      max-width: 1140px;
+      margin: 0 auto;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    /* View Tab Navigation */
+    .view-tabs {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 12px;
+    }
+
+    .view-tab-btn {
+      padding: 8px 16px;
+      border-radius: var(--radius);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      background: transparent;
+      border: 1px solid transparent;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+    }
+
+    .view-tab-btn:hover {
+      color: var(--text);
+      background: var(--bg-card-hover);
+    }
+
+    .view-tab-btn.active {
+      color: var(--primary);
+      background: var(--bg-accent);
+      border-color: var(--border-accent);
+    }
+
+    /* Cards */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      box-shadow: var(--shadow-sm);
+      transition: all 0.15s ease;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+
+    .card-title {
+      font-family: var(--font-heading);
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    /* Hero Alert & Stats Header */
+    .hero-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      position: relative;
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .hero-title {
+      font-family: var(--font-heading);
+      font-size: 20px;
+      font-weight: 800;
+      color: var(--text);
+      margin-bottom: 8px;
+      letter-spacing: -0.3px;
+    }
+
+    .hero-desc {
+      font-size: 13.5px;
+      color: var(--text-muted);
+      max-width: 720px;
+      line-height: 1.6;
+    }
+
+    .meta-line {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 14px;
+    }
+
+    .separator {
+      color: var(--text-dim);
+    }
+
+    /* Grid Layouts */
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+    }
+
+    .stat-box {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    .stat-val {
+      font-family: var(--font-heading);
+      font-size: 24px;
+      font-weight: 800;
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stat-sub {
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+
+    /* File Table List */
+    .file-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    .file-table th {
+      text-align: left;
+      padding: 10px 14px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .file-table td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+    }
+
+    .file-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .file-table tr:hover td {
+      background: var(--bg-card-hover);
+    }
+
+    .file-name {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+    }
+
+    /* Inspector Panel (For Three-Column layout) */
+    .inspector-panel {
+      display: none;
+      width: 270px;
+      background: var(--bg-sidebar);
+      border-left: 1px solid var(--border);
+      padding: 16px;
+      flex-direction: column;
+      gap: 16px;
+      flex-shrink: 0;
+      overflow-y: auto;
+    }
+
+    /* Top Dock Bar (Only for Top Dock layout) */
+    .top-dock-bar {
+      display: none;
+      align-items: center;
+      gap: 12px;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
+      padding: 8px 24px;
+      flex-shrink: 0;
+    }
+
+    .dock-pill-btn {
+      padding: 6px 12px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+    }
+
+    .dock-pill-btn:hover {
+      background: var(--bg-card-hover);
+      color: var(--text);
+    }
+
+    .dock-pill-btn.active {
+      background: var(--primary);
+      color: #ffffff;
+      border-color: var(--primary);
+      box-shadow: 0 2px 8px rgba(var(--primary-rgb), 0.3);
+    }
+
+    /* Bento Matrix Specific Layout */
+    .bento-section {
+      display: none;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 16px;
+    }
+
+    .bento-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      box-shadow: var(--shadow-sm);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      transition: all 0.15s ease;
+      position: relative;
+    }
+
+    .bento-card:hover {
+      border-color: var(--border-accent);
+      box-shadow: var(--shadow-md);
+    }
+
+    .bento-col-8 { grid-column: span 8; }
+    .bento-col-4 { grid-column: span 4; }
+    .bento-col-6 { grid-column: span 6; }
+    .bento-col-12 { grid-column: span 12; }
+
+    /* Design Concept Info Box */
+    .concept-footer-box {
+      margin-top: 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-accent);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      box-shadow: var(--shadow-sm);
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    .concept-col h4 {
+      font-family: var(--font-heading);
+      font-size: 14.5px;
+      font-weight: 700;
+      color: var(--primary);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .concept-col div {
+      font-size: 12.5px;
+      color: var(--text-muted);
+      line-height: 1.65;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    /* ==========================================================================
+       LAYOUT ARCHITECTURE VARIANTS OVERRIDES (5 Distinct Layouts)
+       ========================================================================== */
+
+    /* LAYOUT 1: Classic (Default) - Sidebar on Left, Topbar on Top */
+    [data-demo-layout="classic"] .sidebar {
+      display: flex;
+    }
+
+    /* LAYOUT 2: Top Dock & Fluid Canvas (全宽顶部命令坞 · 无左侧栏) */
+    [data-demo-layout="topdock"] .sidebar {
+      display: none !important;
+    }
+    [data-demo-layout="topdock"] .top-dock-bar {
+      display: flex;
+    }
+    [data-demo-layout="topdock"] .view-container {
+      max-width: 1440px;
+    }
+    [data-demo-layout="topdock"] .hero-desc {
+      max-width: 960px;
+    }
+
+    /* LAYOUT 3: Three-Column IDE (专业三栏工作台 · Activity Bar + Pane + Inspector) */
+    [data-demo-layout="three-column"] .activity-bar {
+      display: flex;
+    }
+    [data-demo-layout="three-column"] .sidebar {
+      width: 230px;
+    }
+    [data-demo-layout="three-column"] .inspector-panel {
+      display: flex;
+    }
+    [data-demo-layout="three-column"] .view-container {
+      max-width: 100%;
+    }
+
+    /* LAYOUT 4: Bento Matrix Dashboard (Bento 模块化磁贴网格) */
+    [data-demo-layout="bento"] .sidebar {
+      width: 220px;
+    }
+    [data-demo-layout="bento"] .view-section-normal {
+      display: none !important;
+    }
+    [data-demo-layout="bento"] .bento-section {
+      display: grid;
+    }
+    [data-demo-layout="bento"] .view-tabs {
+      display: none !important;
+    }
+
+    /* LAYOUT 5: Zen Monograph & Floating Pill (居中禅意极简卷轴) */
+    [data-demo-layout="zen"] .sidebar {
+      display: none !important;
+    }
+    [data-demo-layout="zen"] .topbar {
+      max-width: 820px;
+      margin: 16px auto 0;
+      border-radius: 9999px;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-md);
+      padding: 0 20px;
+    }
+    [data-demo-layout="zen"] .view-container {
+      max-width: 800px;
+      margin: 20px auto;
+    }
+    [data-demo-layout="zen"] .concept-footer-box {
+      grid-template-columns: 1fr;
+    }
+
+    @media (max-width: 900px) {
+      .bento-col-8, .bento-col-4, .bento-col-6 {
+        grid-column: span 12;
+      }
+      .concept-footer-box {
+        grid-template-columns: 1fr;
+      }
+      .inspector-panel {
+        display: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ==========================================================================
+       TOP SHOWCASE CONTROL BAR (Theme, Layout & Mode Selector)
+       ========================================================================== -->
+  <header class="demo-bar">
+    <div class="demo-bar-row1">
+      <div class="demo-bar-title">
+        <span>✨ Nimbus UI 静态方案 · 风格 & 布局架构全景画廊</span>
+        <div class="demo-bar-badges">
+          <span class="demo-bar-badge" id="demo-theme-badge">ARCHETYPE 1</span>
+          <span class="demo-bar-badge demo-bar-badge-layout" id="demo-layout-badge">LAYOUT: 经典侧边双栏</span>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:10px;">
+        <button class="demo-mode-btn" id="demo-mode-toggle">
+          <span>🌗 切深/浅模式</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="demo-bar-row2">
+      <!-- 1. Layout Selector (5 Unique Layout Architectures) -->
+      <div class="demo-selector-group">
+        <span class="demo-group-label">📐 布局架构：</span>
+        <button class="demo-btn demo-layout-btn active" data-layout="classic">
+          <span>📌 经典侧边双栏</span>
+        </button>
+        <button class="demo-btn demo-layout-btn" data-layout="topdock">
+          <span>🚀 顶部命令坞 (全宽流)</span>
+        </button>
+        <button class="demo-btn demo-layout-btn" data-layout="three-column">
+          <span>💻 专业三栏 (IDE 架构)</span>
+        </button>
+        <button class="demo-btn demo-layout-btn" data-layout="bento">
+          <span>🍱 Bento 模块磁贴</span>
+        </button>
+        <button class="demo-btn demo-layout-btn" data-layout="zen">
+          <span>📜 居中禅意卷轴</span>
+        </button>
+      </div>
+
+      <!-- 2. Visual Theme Archetypes (6 Unique Aesthetic Styles) -->
+      <div class="demo-selector-group">
+        <span class="demo-group-label">🎨 视觉风格：</span>
+        <button class="demo-btn demo-theme-btn" data-theme="nordic-glass">
+          <span>❄️ 北欧微光玻璃</span>
+        </button>
+        <button class="demo-btn demo-theme-btn" data-theme="warm-parchment">
+          <span>📜 人文典藏纸本</span>
+        </button>
+        <button class="demo-btn demo-theme-btn" data-theme="swiss-grid">
+          <span>📐 新瑞士网格</span>
+        </button>
+        <button class="demo-btn demo-theme-btn" data-theme="neon-hud">
+          <span>⚡ 赛博高阶控制台</span>
+        </button>
+        <button class="demo-btn demo-theme-btn" data-theme="kyoto-moss">
+          <span>🍃 禅意古都苔原</span>
+        </button>
+        <button class="demo-btn demo-theme-btn active" data-theme="titanium-studio">
+          <span>🏭 工业精工钛银</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ==========================================================================
+       MAIN VIEWPORT
+       ========================================================================== -->
+  <div class="app-viewport">
+    
+    <!-- Topbar (Adaptive across layouts) -->
+    <div class="topbar">
+      <div class="topbar-brand">
+        <div class="brand-icon">N</div>
+        <span>Nimbus Vault Sync</span>
+      </div>
+
+      <div class="topbar-search">
+        <span>🔍</span>
+        <span>搜索笔记、Vault 或全局功能... (⌘K)</span>
+      </div>
+
+      <div class="topbar-right">
+        <div class="status-indicator">
+          <span class="status-dot"></span>
+          <span>已就绪 / 实时同步开启</span>
+        </div>
+        <div class="user-profile">
+          <div class="avatar">A</div>
+          <span>Admin</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Top Dock Bar (Only active in Top Dock Layout) -->
+    <div class="top-dock-bar">
+      <div style="font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px;color:var(--text);">
+        <span>📂 笔记库:</span>
+        <select style="font-size:12px;padding:3px 8px;border-radius:var(--radius);border:1px solid var(--border);background:var(--bg);color:var(--text);">
+          <option>TestVault (12 files)</option>
+          <option>知识卡片库 (28 files)</option>
+          <option>工作周报与日志 (5 files)</option>
+        </select>
+      </div>
+      <div style="height:16px;width:1px;background:var(--border);"></div>
+      <div style="display:flex;gap:6px;flex:1;">
+        <button class="dock-pill-btn active" id="dock-btn-vault">📁 笔记文档管理</button>
+        <button class="dock-pill-btn" id="dock-btn-dash">📊 实时指标监控</button>
+        <button class="dock-pill-btn" id="dock-btn-sponsor">☕ 赞助与打赏</button>
+        <button class="dock-pill-btn">📱 接入设备 (3)</button>
+        <button class="dock-pill-btn">⚙️ 系统设置</button>
+      </div>
+      <div style="font-size:11.5px;color:var(--text-dim);">
+        空间利用率 +35% · 宽画卷视野
+      </div>
+    </div>
+
+    <!-- Main Flex Container -->
+    <div class="layout-main">
+      
+      <!-- 1. Activity Bar (Narrow 54px Icon Bar, active in Three-Column Layout) -->
+      <aside class="activity-bar">
+        <button class="activity-icon-btn active" title="笔记库文件树">📂</button>
+        <button class="activity-icon-btn" title="全局搜索">🔍</button>
+        <button class="activity-icon-btn" title="Git 自动化同步">🔀</button>
+        <button class="activity-icon-btn" title="MCP / AI 工具">🤖</button>
+        <button class="activity-icon-btn" title="仪表盘监控">📊</button>
+        <div style="margin-top:auto;display:flex;flex-direction:column;gap:12px;align-items:center;">
+          <button class="activity-icon-btn" title="赞助">☕</button>
+          <button class="activity-icon-btn" title="系统设置">⚙️</button>
+          <div class="avatar" style="cursor:pointer;" title="当前用户">A</div>
+        </div>
+      </aside>
+
+      <!-- 2. Standard / Tree Sidebar -->
+      <aside class="sidebar" id="main-sidebar">
+        <button class="sidebar-primary-btn" id="side-nav-dash">
+          <span>📊</span>
+          <span>看板总览</span>
+        </button>
+
+        <div>
+          <div class="sidebar-section-title">我的 Vaults (笔记库)</div>
+          <ul class="sidebar-menu">
+            <li class="sidebar-item active" id="side-nav-vault">
+              <span>📂 TestVault</span>
+              <span class="sidebar-item-count">12</span>
+            </li>
+            <li class="sidebar-item">
+              <span>📚 知识卡片库</span>
+              <span class="sidebar-item-count">28</span>
+            </li>
+            <li class="sidebar-item">
+              <span>📝 工作周报与日志</span>
+              <span class="sidebar-item-count">5</span>
+            </li>
+          </ul>
+        </div>
+
+        <div>
+          <div class="sidebar-section-title">快捷入口</div>
+          <ul class="sidebar-menu">
+            <li class="sidebar-item" id="side-nav-sponsor">
+              <span>☕ 赞助与支持</span>
+              <span class="sidebar-item-count">NEW</span>
+            </li>
+            <li class="sidebar-item">
+              <span>⚙️ 系统设置</span>
+            </li>
+          </ul>
+        </div>
+
+        <div class="sidebar-footer">
+          <div class="sidebar-date-display" id="demo-sidebar-date" style="display:flex;align-items:center;gap:6px;background:var(--bg-sidebar);border:1px solid var(--border);border-radius:var(--radius);padding:5px 8px;font-size:11.5px;color:var(--text-muted);margin-bottom:8px;box-shadow:none;">
+            <span>📅</span>
+            <span id="demo-date-text">2026年09月29日 星期二</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;width:100%;">
+            <span>版本: v2.4.0-build</span>
+            <span style="color:var(--status-ok);font-weight:600;">已同步</span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- 3. Central Main Workspace Content Area -->
+      <main class="content-area">
+        <div class="view-container">
+
+          <!-- View Tabs Bar -->
+          <div class="view-tabs">
+            <button class="view-tab-btn active" data-view="vault">
+              <span>📁</span>
+              <span>Vault 笔记管理视图</span>
+            </button>
+            <button class="view-tab-btn" data-view="dash">
+              <span>📊</span>
+              <span>仪表盘与指标监控</span>
+            </button>
+            <button class="view-tab-btn" data-view="sponsor">
+              <span>☕</span>
+              <span>赞助与打赏通道</span>
+            </button>
+          </div>
+
+          <!-- ==========================================
+               NORMAL VIEWS (For Classic / TopDock / Three-Column / Zen)
+               ========================================== -->
+          <div class="view-section-normal">
+            <!-- VIEW 1: Vault Management -->
+            <div class="view-section" id="view-vault">
+              
+              <div class="hero-card">
+                <div class="hero-title">📂 TestVault · 笔记库实时预览</div>
+                <div class="hero-desc">
+                  正在展示完整的笔记文件树结构与同步状态。当前背景、侧栏对比与网格排版已根据选定的「布局架构」与「视觉风格」自动无缝适配。
+                </div>
+                <div class="meta-line">
+                  <span>主路径: /User/Vaults/TestVault</span>
+                  <span class="separator">·</span>
+                  <span>包含 12 个 Markdown 文档</span>
+                  <span class="separator">·</span>
+                  <span>最后修改: 10 分钟前</span>
+                </div>
+              </div>
+
+              <!-- Stats grid -->
+              <div class="grid-3" style="margin-top:20px;">
+                <div class="stat-box">
+                  <div class="stat-label">文档总数</div>
+                  <div class="stat-val">12</div>
+                  <div class="stat-sub">包含 3 个子文件夹</div>
+                </div>
+                <div class="stat-box">
+                  <div class="stat-label">总字数统计</div>
+                  <div class="stat-val">42,850</div>
+                  <div class="stat-sub">约 85 页阅读量</div>
+                </div>
+                <div class="stat-box">
+                  <div class="stat-label">同步效率</div>
+                  <div class="stat-val">0.4s</div>
+                  <div class="stat-sub">云端毫秒级高可用</div>
+                </div>
+              </div>
+
+              <!-- File List Card -->
+              <div class="card" style="margin-top:20px;">
+                <div class="card-header">
+                  <div class="card-title">
+                    <span>📝 库内文档列表</span>
+                  </div>
+                  <div class="meta-line" style="margin:0;">
+                    <span>按修改时间排序</span>
+                    <span class="separator">·</span>
+                    <span>双向同步就绪</span>
+                  </div>
+                </div>
+
+                <table class="file-table">
+                  <thead>
+                    <tr>
+                      <th>文档名称</th>
+                      <th>相对路径</th>
+                      <th>估计字数</th>
+                      <th>更新时间</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>
+                        <div class="file-name">
+                          <span>📄</span>
+                          <span>01. 2026 个人年度发展规划与目标拆解.md</span>
+                        </div>
+                      </td>
+                      <td>/Planning/2026.md</td>
+                      <td>3,420 字</td>
+                      <td>2 分钟前</td>
+                      <td><button style="background:var(--bg-accent);color:var(--primary);border:1px solid var(--border-accent);padding:3px 10px;border-radius:var(--radius);font-size:11px;font-weight:600;cursor:pointer;">编辑</button></td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <div class="file-name">
+                          <span>📄</span>
+                          <span>02. System Architecture & Vault Sync Protocols.md</span>
+                        </div>
+                      </td>
+                      <td>/Tech/Sync.md</td>
+                      <td>8,150 字</td>
+                      <td>1 小时前</td>
+                      <td><button style="background:var(--bg-accent);color:var(--primary);border:1px solid var(--border-accent);padding:3px 10px;border-radius:var(--radius);font-size:11px;font-weight:600;cursor:pointer;">编辑</button></td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <div class="file-name">
+                          <span>📄</span>
+                          <span>03. Obsidian 多端同步配置指南与最佳实践.md</span>
+                        </div>
+                      </td>
+                      <td>/Guides/Obsidian.md</td>
+                      <td>4,900 字</td>
+                      <td>昨天 18:30</td>
+                      <td><button style="background:var(--bg-accent);color:var(--primary);border:1px solid var(--border-accent);padding:3px 10px;border-radius:var(--radius);font-size:11px;font-weight:600;cursor:pointer;">编辑</button></td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <div class="file-name">
+                          <span>📄</span>
+                          <span>04. 知识图谱构建与卡片盒笔记法实践心得.md</span>
+                        </div>
+                      </td>
+                      <td>/Notes/Zettelkasten.md</td>
+                      <td>2,800 字</td>
+                      <td>3 天前</td>
+                      <td><button style="background:var(--bg-accent);color:var(--primary);border:1px solid var(--border-accent);padding:3px 10px;border-radius:var(--radius);font-size:11px;font-weight:600;cursor:pointer;">编辑</button></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+            </div>
+
+            <!-- VIEW 2: Dashboard Preview -->
+            <div class="view-section hidden" id="view-dash">
+              <div class="hero-card">
+                <div class="hero-title">📊 仪表盘与运行状态监控</div>
+                <div class="hero-desc">
+                  监控整体 Vault 同步节点、云端存储容量以及实时遥测数据。可切换不同 UI 方案直观观察图表与卡片的色调表现。
+                </div>
+              </div>
+
+              <div class="grid-2" style="margin-top:20px;">
+                <div class="card">
+                  <div class="card-title">⚡ 节点状态与网络连通性</div>
+                  <p style="font-size:13px;color:var(--text-muted);margin-top:8px;line-height:1.6;">
+                    主节点: US-West Gateway (Green)<br>
+                    备用节点: Tokyo Edge Node (Standby)<br>
+                    已连续稳定运行: 42 天 18 小时
+                  </p>
+                </div>
+
+                <div class="card">
+                  <div class="card-title">💾 存储配额与云端使用率</div>
+                  <p style="font-size:13px;color:var(--text-muted);margin-top:8px;line-height:1.6;">
+                    已用容量: 1.2 GB / 20.0 GB (6%)<br>
+                    本地缓存占用: 180 MB<br>
+                    加密协议: AES-256 GCM 客户端点对点加密
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <!-- VIEW 3: Sponsor & Support -->
+            <div class="view-section hidden" id="view-sponsor">
+              <div class="hero-card">
+                <div class="hero-title">☕ 赞助与支持 Nimbus Vault Sync</div>
+                <div class="hero-desc">
+                  如果您觉得 Nimbus 为您的 Obsidian 笔记多端同步与知识库管理带来了便利与价值，欢迎赞助请作者喝杯咖啡！100% 自愿自发，永久免费开源。
+                </div>
+
+                <div class="meta-line">
+                  <span>✨ 100% 永久免费开源</span>
+                  <span class="separator">·</span>
+                  <span>纯粹无广告</span>
+                  <span class="separator">·</span>
+                  <span>自愿打赏鼓励</span>
+                </div>
+              </div>
+
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:20px;">
+                <div class="card">
+                  <div class="card-title">💚 微信支付</div>
+                  <p style="font-size:13px;color:var(--text-muted);margin:8px 0 16px;">扫码赞赏支持开发</p>
+                  <div style="background:var(--bg-sidebar);border:1px solid var(--border);border-radius:var(--radius);padding:24px;text-align:center;color:var(--text-muted);">
+                    [ 微信赞赏码预览图 ]
+                  </div>
+                </div>
+
+                <div class="card">
+                  <div class="card-title">💙 支付宝</div>
+                  <p style="font-size:13px;color:var(--text-muted);margin:8px 0 16px;">支付宝扫码与转账支持</p>
+                  <div style="background:var(--bg-sidebar);border:1px solid var(--border);border-radius:var(--radius);padding:24px;text-align:center;color:var(--text-muted);">
+                    [ 支付宝赞赏码 / alipay.png 预览图 ]
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ==========================================
+               BENTO MATRIX DASHBOARD (Layout 4 Exclusive)
+               ========================================== -->
+          <div class="bento-section" id="bento-section">
+            <!-- Tile 1: Hero Sync Topology (8 cols) -->
+            <div class="bento-card bento-col-8">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div class="card-title" style="display:flex;align-items:center;gap:8px;">
+                  <span style="font-size:18px;">🌐</span>
+                  <span>多端点双向高速拓扑网络 (Mesh Sync Topology)</span>
+                </div>
+                <span style="font-size:11px;padding:3px 8px;border-radius:10px;background:var(--bg-accent);color:var(--primary);font-weight:700;">毫秒级流式响应</span>
+              </div>
+              <p style="font-size:13px;color:var(--text-muted);line-height:1.6;">
+                当前有 <b>3 台设备</b>正在协同同步 TestVault：MacBook Pro (Active)、iPad Pro (Connected) 与 iPhone 15。所有变更均通过增量游标 (Cursor-based delta) 与乐观锁无损同步。
+              </p>
+              <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:12px;margin-top:8px;">
+                <div class="stat-box" style="padding:12px;">
+                  <span class="stat-label">传输平均延迟</span>
+                  <span class="stat-val" style="font-size:20px;">24 ms</span>
+                </div>
+                <div class="stat-box" style="padding:12px;">
+                  <span class="stat-label">24小时同步包</span>
+                  <span class="stat-val" style="font-size:20px;">1,428 次</span>
+                </div>
+                <div class="stat-box" style="padding:12px;">
+                  <span class="stat-label">冲突自动解决率</span>
+                  <span class="stat-val" style="font-size:20px;">100%</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tile 2: Quick Obsidian Connection Card (4 cols) -->
+            <div class="bento-card bento-col-4">
+              <div class="card-title">📱 Obsidian 插件快速对接</div>
+              <p style="font-size:12.5px;color:var(--text-muted);line-height:1.5;">
+                支持 BRAT 一键安装。在 Obsidian 粘贴仓库链接即可完成配置。
+              </p>
+              <div style="background:var(--bg-sidebar);padding:10px;border-radius:var(--radius);font-family:monospace;font-size:11px;color:var(--text);word-break:break-all;">
+                lengedliu/nimbus-vault-sync
+              </div>
+              <button class="sidebar-primary-btn" style="padding:7px 12px;font-size:12px;margin-top:auto;">
+                ⚡ 复制 BRAT 配置代码
+              </button>
+            </div>
+
+            <!-- Tile 3: AI & MCP Capabilities (4 cols) -->
+            <div class="bento-card bento-col-4">
+              <div class="card-title" style="display:flex;align-items:center;gap:6px;">
+                <span>🤖</span>
+                <span>MCP 接口 (22 个工具)</span>
+              </div>
+              <p style="font-size:12px;color:var(--text-muted);line-height:1.5;">
+                已为 Cursor / Claude Desktop 就绪。AI 客户端可直接读写笔记与知识图谱。
+              </p>
+              <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:auto;">
+                <span style="font-size:10.5px;padding:2px 6px;border-radius:4px;background:var(--bg-accent);color:var(--primary);">write_note</span>
+                <span style="font-size:10.5px;padding:2px 6px;border-radius:4px;background:var(--bg-accent);color:var(--primary);">search_notes</span>
+                <span style="font-size:10.5px;padding:2px 6px;border-radius:4px;background:var(--bg-accent);color:var(--primary);">git_sync</span>
+              </div>
+            </div>
+
+            <!-- Tile 4: Git Automated Backups (4 cols) -->
+            <div class="bento-card bento-col-4">
+              <div class="card-title" style="display:flex;align-items:center;gap:6px;">
+                <span>🔀</span>
+                <span>Git 远端自动快照</span>
+              </div>
+              <p style="font-size:12px;color:var(--text-muted);line-height:1.5;">
+                分支: <code>main</code> · 远端已同步<br>
+                最近快照: <code>feat: update 4 notes</code> (10 分钟前)
+              </p>
+              <div style="margin-top:auto;font-size:11px;color:var(--status-ok);font-weight:600;">
+                ✓ 连续 38 天备份无间断
+              </div>
+            </div>
+
+            <!-- Tile 5: Knowledge Tags & Graph Radar (4 cols) -->
+            <div class="bento-card bento-col-4">
+              <div class="card-title" style="display:flex;align-items:center;gap:6px;">
+                <span>🏷️</span>
+                <span>知识图谱与热门标签</span>
+              </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">
+                <span style="font-size:11.5px;padding:3px 8px;border-radius:12px;border:1px solid var(--border);color:var(--text);">#AI (38)</span>
+                <span style="font-size:11.5px;padding:3px 8px;border-radius:12px;border:1px solid var(--border);color:var(--text);">#Architecture (24)</span>
+                <span style="font-size:11.5px;padding:3px 8px;border-radius:12px;border:1px solid var(--border);color:var(--text);">#Product (19)</span>
+                <span style="font-size:11.5px;padding:3px 8px;border-radius:12px;border:1px solid var(--border);color:var(--text);">#Readwise (15)</span>
+              </div>
+            </div>
+
+            <!-- Tile 6: Recent Activity Stream (12 cols) -->
+            <div class="bento-card bento-col-12">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div class="card-title">📝 实时文档流 (Live Document Stream)</div>
+                <span style="font-size:11.5px;color:var(--text-dim);">自动轮询已启用</span>
+              </div>
+              <table class="file-table">
+                <tbody>
+                  <tr>
+                    <td><b>01. 2026 个人年度发展规划与目标拆解.md</b></td>
+                    <td>/Planning/2026.md</td>
+                    <td>MacBook Pro</td>
+                    <td>2 分钟前</td>
+                    <td><span style="color:var(--status-ok);font-weight:600;">已增量同步</span></td>
+                  </tr>
+                  <tr>
+                    <td><b>02. System Architecture & Vault Sync Protocols.md</b></td>
+                    <td>/Tech/Sync.md</td>
+                    <td>iPad Pro</td>
+                    <td>1 小时前</td>
+                    <td><span style="color:var(--status-ok);font-weight:600;">已增量同步</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- ================================================================
+               Design Concept & Layout Rationale Analysis Box (Dual Analysis)
+               ================================================================ -->
+          <div class="concept-footer-box">
+            <div class="concept-col">
+              <h4 id="concept-title">🎨 视觉风格剖析: ❄️ 北欧微光玻璃 (Nordic Frost Glass)</h4>
+              <div id="concept-desc">
+                本方案采用轻盈澄澈的微光玻璃质感（Frost Glassmorphism），以微光水蓝与冷调石墨灰作为主色，配合 8px 标准微圆角与 1px 精细发丝线边框。去除了冗余的彩色胶囊（Zero-Pill Discipline），呈现高雅舒缓的知识管理氛围。
+              </div>
+            </div>
+
+            <div class="concept-col">
+              <h4 id="layout-title">📐 布局架构说明: 📌 经典侧边双栏架构 (Classic Dual-Pane)</h4>
+              <div id="layout-desc">
+                经典标准的管理后台架构：左侧固定 240px 专属调色背景导航栏，顶部承载全局搜索与状态指示，主视口自适应居中。层级明晰、认知负荷最低，适合绝大多数常规使用场景。
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </main>
+
+      <!-- 4. Right Inspector Drawer (Active in Three-Column Layout) -->
+      <aside class="inspector-panel" id="main-inspector">
+        <div style="font-size:12px;font-weight:700;text-transform:uppercase;color:var(--text-dim);letter-spacing:0.5px;">
+          遥测与环境检查器 (Inspector)
+        </div>
+
+        <div class="card" style="padding:14px;">
+          <div style="font-size:12px;font-weight:700;margin-bottom:6px;color:var(--text);">WebSocket 实时链路</div>
+          <div style="font-size:11.5px;color:var(--text-muted);line-height:1.5;">
+            状态: <span style="color:var(--status-ok);font-weight:700;">🟢 Connected</span><br>
+            信道: <code>/ws?vault=TestVault</code><br>
+            往返 RTT: <b>24 ms</b><br>
+            游标版本: <code>c-1092847</code>
+          </div>
+        </div>
+
+        <div class="card" style="padding:14px;">
+          <div style="font-size:12px;font-weight:700;margin-bottom:6px;color:var(--text);">活跃客户端接入</div>
+          <div style="font-size:11.5px;color:var(--text-muted);display:flex;flex-direction:column;gap:4px;">
+            <div>💻 <b>MacBook Pro</b> (主编辑)</div>
+            <div>📱 <b>iPad Air 5</b> (已连接)</div>
+            <div>📱 <b>iPhone 15 Pro</b> (后台同步)</div>
+          </div>
+        </div>
+
+        <div class="card" style="padding:14px;">
+          <div style="font-size:12px;font-weight:700;margin-bottom:6px;color:var(--text);">安全与冲突防线</div>
+          <div style="font-size:11.5px;color:var(--text-muted);line-height:1.5;">
+            冲突策略: <code>conflict_copy</code><br>
+            快照备份: 自动保留 30 天<br>
+            待同步队列: <b>0</b> 项
+          </div>
+        </div>
+
+        <div style="margin-top:auto;font-size:11px;color:var(--text-dim);text-align:center;">
+          Nimbus Telemetry v2.4.0
+        </div>
+      </aside>
+
+    </div>
+  </div>
+
+  <!-- ==========================================================================
+       INTERACTIVE MATRIX LOGIC
+       ========================================================================== -->
+  <script>
+    // 1. Theme concepts definitions
+    const THEME_CONCEPTS = {
+      'nordic-glass': {
+        badge: 'ARCHETYPE 1',
+        title: '🎨 视觉风格剖析: ❄️ 北欧微光玻璃 (Nordic Frost Glass)',
+        desc: '灵感源自 Raycast、Linear 与 Craft Notes。采用极轻盈澄澈的微光玻璃质感，侧边栏(#f1f5f9)与主画布(#f8fafc)形成清晰层级。配合 8px 微圆角与发丝级细边框，去除了冗余的彩色胶囊（Zero-Pill Discipline），极适合日常长期知识库管理。'
+      },
+      'warm-parchment': {
+        badge: 'ARCHETYPE 2',
+        title: '🎨 视觉风格剖析: 📜 人文典藏纸本 (Warm Ivory Parchment)',
+        desc: '灵感源自 iA Writer、Readwise 与 Bear Notes。采用暖象牙纸质画布（#fdfbf7）、温润羊皮纸侧边栏（#f5f0e6）与琥珀金（#b45309）高亮，标题搭配经典学术衬线体（Charter / Georgia / 宋体），具备极高的人文书卷气与学术阅读沉浸感。'
+      },
+      'swiss-grid': {
+        badge: 'ARCHETYPE 3',
+        title: '🎨 视觉风格剖析: 📐 新瑞士网格 (Neue Swiss Grid)',
+        desc: '灵感源自 Braun、Dieter Rams 与瑞士包豪斯排版设计。采用严谨的 8px 网格规范、中性灰侧边栏（#eaeaea）、高度对比的无衬线字体与精准 2px 几何直角，以经典的包豪斯朱砂红（#e11d48）作为唯一视觉焦点，突出绝对功能主义与秩序感。'
+      },
+      'neon-hud': {
+        badge: 'ARCHETYPE 4',
+        title: '🎨 视觉风格剖析: ⚡ 赛博高阶控制台 (Obsidian Neon HUD)',
+        desc: '灵感源自 Vercel、Zed Editor 与 GitHub Dark Dimmed。专为硬核开发者与夜间高频用户设计，天鹅绒深炭黑画布（#090d16）、曜石深蓝侧边栏（#0f172a）配合霓虹薄荷绿高亮（#2dd4bf），具备高信息密度、硬核遥测指标感与沉浸极客气场。'
+      },
+      'kyoto-moss': {
+        badge: 'ARCHETYPE 5',
+        title: '🎨 视觉风格剖析: 🍃 禅意古都苔原 (Kyoto Moss & Tea)',
+        desc: '灵感源自京都茶室与枯山水庭院。采用有机茶绿画布（#f6f8f5）、竹韵浅绿侧边栏（#eaf0e8）与森林苔藓绿（#2d6a4f）高亮，标题使用优雅楷书/衬线体，传递平和沉静的自然呼吸感。'
+      },
+      'titanium-studio': {
+        badge: 'ARCHETYPE 6',
+        title: '🎨 视觉风格剖析: 🏭 工业精工钛银 (Titanium Industrial Studio)',
+        desc: '灵感源自工业设计工作室与精密机械控制台。采用钛银灰画布（#f1f3f5）、冷灰侧边栏（#e9ecef）与克莱因宝蓝（#2563eb）高亮，配以 4px 精密小圆角与清爽的平庸度控制，呈现理性高质感工坊氛围。'
+      }
+    };
+
+    // 2. Layout architecture definitions
+    const LAYOUT_CONCEPTS = {
+      'classic': {
+        badge: 'LAYOUT: 经典侧边双栏',
+        title: '📐 布局架构说明: 📌 经典侧边双栏架构 (Classic Dual-Pane)',
+        desc: '经典标准的管理后台架构：左侧固定 240px 专属调色背景导航栏，顶部承载全局搜索与状态指示，主视口自适应居中。层级明晰、认知负荷最低，适合绝大多数常规使用场景。'
+      },
+      'topdock': {
+        badge: 'LAYOUT: 顶部命令坞全宽流',
+        title: '📐 布局架构说明: 🚀 极简顶部命令坞与水平全宽画卷 (Top Dock & Fluid Canvas)',
+        desc: '彻底消除左侧垂直侧边栏！顶部转化为水平操作命令坞，集成笔记库切换、功能胶囊与搜索。主工作区获得 100% 满宽横向屏幕空间，为宽表格、多列数据与代码比对带来开阔视野。'
+      },
+      'three-column': {
+        badge: 'LAYOUT: 专业三栏 IDE 架构',
+        title: '📐 布局架构说明: 💻 专业三栏深度工作台 (Three-Column Master-Detail)',
+        desc: '源自 Obsidian、VS Code 与 Slack 专业桌面端生产力工具：54px 极窄图标 Activity Bar + 230px 树状目录栏 + Fluid 主舞台 + 270px 右侧遥测抽屉（Inspector）。信息吞吐量极大，适合重度多任务。'
+      },
+      'bento': {
+        badge: 'LAYOUT: Bento 模块磁贴网格',
+        title: '📐 布局架构说明: 🍱 Bento 模块化磁贴仪表盘 (Bento Matrix Dashboard)',
+        desc: '采用当下流行的 Apple & Linear 式 12 栅格非对称 Bento 磁贴网格排版。打破传统枯燥表格，把拓扑网络、MCP 接口、Git 备份与最近文档流按信息权重自然聚合，视觉表现力极强。'
+      },
+      'zen': {
+        badge: 'LAYOUT: 居中禅意卷轴',
+        title: '📐 布局架构说明: 📜 居中禅意极简卷轴 (Zen Monograph & Floating Pill)',
+        desc: '极致纯粹的沉浸式无噪读书阅览模式：隐藏侧边栏，顶部化身悬浮半透明玻璃胶囊导航，中央呈现 820px 黄金阅读比例优雅排版，两侧大量留白，营造宁静深邃的长文研读与专注写作心流。'
+      }
+    };
+
+    const docHtml = document.documentElement;
+    const themeBadgeEl = document.getElementById('demo-theme-badge');
+    const layoutBadgeEl = document.getElementById('demo-layout-badge');
+    const conceptTitleEl = document.getElementById('concept-title');
+    const conceptDescEl = document.getElementById('concept-desc');
+    const layoutTitleEl = document.getElementById('layout-title');
+    const layoutDescEl = document.getElementById('layout-desc');
+
+    // 1. Theme Switching Handler
+    document.querySelectorAll('.demo-theme-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.demo-theme-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        const theme = btn.dataset.theme;
+        docHtml.setAttribute('data-demo-theme', theme);
+
+        if (THEME_CONCEPTS[theme]) {
+          themeBadgeEl.textContent = THEME_CONCEPTS[theme].badge;
+          conceptTitleEl.textContent = THEME_CONCEPTS[theme].title;
+          conceptDescEl.textContent = THEME_CONCEPTS[theme].desc;
+        }
+      });
+    });
+
+    // 2. Layout Switching Handler
+    document.querySelectorAll('.demo-layout-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.demo-layout-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        const layout = btn.dataset.layout;
+        docHtml.setAttribute('data-demo-layout', layout);
+
+        if (LAYOUT_CONCEPTS[layout]) {
+          layoutBadgeEl.textContent = LAYOUT_CONCEPTS[layout].badge;
+          layoutTitleEl.textContent = LAYOUT_CONCEPTS[layout].title;
+          layoutDescEl.textContent = LAYOUT_CONCEPTS[layout].desc;
+        }
+      });
+    });
+
+    // 3. Dark / Light Mode Toggle
+    document.getElementById('demo-mode-toggle').addEventListener('click', () => {
+      const currentMode = docHtml.getAttribute('data-mode') || 'light';
+      const newMode = currentMode === 'light' ? 'dark' : 'light';
+      docHtml.setAttribute('data-mode', newMode);
+    });
+
+    // 4. View Switching Logic (Vault / Dashboard / Sponsor)
+    const viewTabs = document.querySelectorAll('.view-tab-btn');
+    const viewSections = {
+      vault: document.getElementById('view-vault'),
+      dash: document.getElementById('view-dash'),
+      sponsor: document.getElementById('view-sponsor')
+    };
+
+    function switchView(viewName) {
+      viewTabs.forEach(t => {
+        t.classList.toggle('active', t.dataset.view === viewName);
+      });
+      document.querySelectorAll('.dock-pill-btn').forEach(p => {
+        if (p.id === 'dock-btn-' + viewName) p.classList.add('active');
+        else if (p.id.startsWith('dock-btn-')) p.classList.remove('active');
+      });
+      Object.keys(viewSections).forEach(k => {
+        if (viewSections[k]) {
+          if (k === viewName) {
+            viewSections[k].classList.remove('hidden');
+          } else {
+            viewSections[k].classList.add('hidden');
+          }
+        }
+      });
+    }
+
+    viewTabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        switchView(tab.dataset.view);
+      });
+    });
+
+    const dockBtnVault = document.getElementById('dock-btn-vault');
+    const dockBtnDash = document.getElementById('dock-btn-dash');
+    const dockBtnSponsor = document.getElementById('dock-btn-sponsor');
+    if (dockBtnVault) dockBtnVault.addEventListener('click', () => switchView('vault'));
+    if (dockBtnDash) dockBtnDash.addEventListener('click', () => switchView('dash'));
+    if (dockBtnSponsor) dockBtnSponsor.addEventListener('click', () => switchView('sponsor'));
+
+    const sideNavVault = document.getElementById('side-nav-vault');
+    const sideNavDash = document.getElementById('side-nav-dash');
+    const sideNavSponsor = document.getElementById('side-nav-sponsor');
+    if (sideNavVault) sideNavVault.addEventListener('click', () => switchView('vault'));
+    if (sideNavDash) sideNavDash.addEventListener('click', () => switchView('dash'));
+    if (sideNavSponsor) sideNavSponsor.addEventListener('click', () => switchView('sponsor'));
+  </script>
+</body>
+</html>

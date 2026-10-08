@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nimbus Vault Sync · Obsidian 高速实时同步服务</title>
+  <meta name="description" content="High-performance Obsidian sync server with Git auto-backup, Web dashboard, full REST API, and 20 MCP tools">
+  <meta property="og:title" content="Nimbus Vault Sync · Obsidian 高速实时同步服务">
+  <meta property="og:description" content="High-performance Obsidian sync server with Git auto-backup, Web dashboard, full REST API, and 20 MCP tools">
+  <link rel="stylesheet" href="/style.css?v=1.3.1">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path d='M8.5 25C4.9 25 2 22.1 2 18.5C2 15.2 4.4 12.5 7.6 12.1C8.9 7.8 12.8 4.8 17.5 4.8C22.9 4.8 27.3 9.0 27.5 14.4C29.8 15.5 31 18.0 30.3 20.5C29.6 23.1 27.2 25 24.5 25Z' fill='%2338bdf8'/><path d='M16.5 10.5L13.5 16.5H17.5L14.5 22' stroke='%23ffffff' stroke-width='2' stroke-linecap='round'/></svg>">
+  <script>
+    (function() {
+      try {
+        var savedTheme = localStorage.getItem('nimbus_theme') || 'titanium-studio';
+        document.documentElement.setAttribute('data-theme', savedTheme);
+        var isLight = (savedTheme === 'titanium-studio' || savedTheme.indexOf('light') !== -1 || savedTheme === 'nordic-sky' || savedTheme === 'bright-day' || savedTheme === 'pure-light' || savedTheme === 'pearl-light' || savedTheme === 'matcha-light' || savedTheme === 'rose-blush' || savedTheme === 'nordic-glass' || savedTheme === 'warm-parchment' || savedTheme === 'swiss-grid' || savedTheme === 'swiss-grid-light' || savedTheme === 'kyoto-moss');
+        document.documentElement.setAttribute('data-theme-mode', isLight ? 'light' : 'dark');
+        if (isLight) {
+          document.documentElement.classList.add('theme-light');
+          document.documentElement.classList.remove('theme-dark');
+        } else {
+          document.documentElement.classList.remove('theme-light');
+          document.documentElement.classList.add('theme-dark');
+        }
+        var savedFontSize = localStorage.getItem('nimbus_font_size') || 'normal';
+        document.documentElement.setAttribute('data-font-size', savedFontSize);
+      } catch (e) {}
+    })();
+  </script>
+</head>
+<body>
+
+<div id="login-view" class="center-screen center-box" style="position:relative;">
+  <!-- Login language switcher in the corner -->
+  <div class="login-lang-corner">
+    <div class="fontsize-picker-wrap" id="login-fontsize-picker-container">
+      <button type="button" id="login-fontsize-btn" class="lang-menu-btn fontsize-menu-btn" title="字号调节 / Font Size">
+        <span class="fontsize-icon">🔤</span>
+        <span id="login-fontsize-label">标准 (100%)</span>
+        <span style="font-size:10px;opacity:0.7;">▼</span>
+      </button>
+      <div id="login-fontsize-dropdown" class="fontsize-dropdown-menu hidden">
+        <div class="fontsize-dropdown-header">
+          <span class="fontsize-dropdown-title" data-i18n="fontsize.dropdown_title">字号缩放比例</span>
+          <button type="button" id="login-fontsize-reset-btn" class="fontsize-reset-btn" title="恢复默认标准大小" data-i18n="fontsize.reset_btn">恢复默认</button>
+        </div>
+        <button type="button" class="fontsize-opt-item" data-size-val="sm">
+          <div class="fontsize-opt-left">
+            <span class="fontsize-badge" style="font-size: 11px;">A⁻</span>
+            <span data-i18n="fontsize.sm">紧凑小号 (88%)</span>
+          </div>
+          <span class="fontsize-check"></span>
+        </button>
+        <button type="button" class="fontsize-opt-item" data-size-val="normal">
+          <div class="fontsize-opt-left">
+            <span class="fontsize-badge" style="font-size: 13px;">A</span>
+            <span data-i18n="fontsize.normal">标准适中 (100%)</span>
+          </div>
+          <span class="fontsize-check"></span>
+        </button>
+        <button type="button" class="fontsize-opt-item" data-size-val="md">
+          <div class="fontsize-opt-left">
+            <span class="fontsize-badge" style="font-size: 15px;">A⁺</span>
+            <span data-i18n="fontsize.md">舒适中号 (112%)</span>
+          </div>
+          <span class="fontsize-check"></span>
+        </button>
+        <button type="button" class="fontsize-opt-item" data-size-val="lg">
+          <div class="fontsize-opt-left">
+            <span class="fontsize-badge" style="font-size: 17px;">A⁺⁺</span>
+            <span data-i18n="fontsize.lg">清晰大号 (125%)</span>
+          </div>
+          <span class="fontsize-check"></span>
+        </button>
+      </div>
+    </div>
+
+    <div class="lang-picker-wrap">
+      <button type="button" id="login-lang-btn" class="lang-menu-btn" title="切换语言 / Switch Language">
+        <span>🌐</span>
+        <span id="login-lang-label">🇨🇳 简体中文</span>
+        <span style="font-size:10px;opacity:0.7;">▼</span>
+      </button>
+      <div id="login-lang-dropdown" class="lang-dropdown-menu hidden">
+        <button type="button" class="lang-opt-item" data-lang-val="zh-CN">
+          <span>🇨🇳</span>
+          <span>简体中文</span>
+        </button>
+        <button type="button" class="lang-opt-item" data-lang-val="zh-TW">
+          <span>🇭🇰</span>
+          <span>繁體中文</span>
+        </button>
+        <button type="button" class="lang-opt-item" data-lang-val="en">
+          <span>🇺🇸</span>
+          <span>English</span>
+        </button>
+        <button type="button" class="lang-opt-item" data-lang-val="ko">
+          <span>🇰🇷</span>
+          <span>한국어</span>
+        </button>
+        <button type="button" class="lang-opt-item" data-lang-val="ja">
+          <span>🇯🇵</span>
+          <span>日本語</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <form id="login-form" class="card login-card">
+    <div class="brand">
+      <span class="logo cloud-logo-wrap">
+        <svg class="cloud-logo-svg" width="30" height="30" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="cloud-grad-login" x1="2" y1="4" x2="30" y2="28" gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stop-color="#38bdf8"/>
+              <stop offset="50%" stop-color="#818cf8"/>
+              <stop offset="100%" stop-color="#c084fc"/>
+            </linearGradient>
+            <linearGradient id="cloud-highlight-login" x1="10" y1="4" x2="22" y2="20" gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stop-color="#ffffff" stop-opacity="0.6"/>
+              <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+            </linearGradient>
+            <filter id="cloud-glow-login" x="-2" y="-2" width="36" height="36" filterUnits="userSpaceOnUse">
+              <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#818cf8" flood-opacity="0.4"/>
+            </filter>
+          </defs>
+          <path d="M 8.5 25 C 4.9 25 2 22.1 2 18.5 C 2 15.2 4.4 12.5 7.6 12.1 C 8.9 7.8 12.8 4.8 17.5 4.8 C 22.9 4.8 27.3 9.0 27.5 14.4 C 29.8 15.5 31 18.0 30.3 20.5 C 29.6 23.1 27.2 25 24.5 25 L 8.5 25 Z" fill="url(#cloud-grad-login)" filter="url(#cloud-glow-login)"/>
+          <path d="M 8.5 24.5 C 5.2 24.5 2.5 21.8 2.5 18.5 C 2.5 15.5 4.7 13.0 7.7 12.6 C 9.0 8.5 12.8 5.5 17.5 5.5 C 22.5 5.5 26.5 9.3 26.8 14.3 C 29.0 15.3 30.2 17.6 29.5 19.9 C 28.9 22.2 26.8 23.8 24.5 23.8" stroke="url(#cloud-highlight-login)" stroke-width="1.2" stroke-linecap="round"/>
+          <path d="M 16.5 10.5 L 13.5 16.5 H 17.5 L 14.5 22" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      <span class="brand-name" data-i18n="login.title">Nimbus Vault Sync</span>
+    </div>
+    <div class="subtitle" data-i18n="login.subtitle">Obsidian 高速实时同步服务 · 管理后台</div>
+    <div class="login-date-display" id="login-date-display" title="当前系统日期">
+      <span class="date-icon">📅</span>
+      <span id="login-date-text" class="date-text"></span>
+    </div>
+
+    <label>
+      <span data-i18n="login.server_label">服务器地址</span>
+      <input type="text" id="login-server" data-i18n-placeholder="login.server_placeholder" placeholder="留空默认当前服务器 (自动识别端口)" />
+    </label>
+    <label>
+      <span data-i18n="login.username_label">用户名</span>
+      <input type="text" id="login-username" required autocomplete="username" />
+    </label>
+    <label>
+      <span data-i18n="login.password_label">密码</span>
+      <input type="password" id="login-password" required autocomplete="current-password" />
+    </label>
+
+    <div id="login-error" class="error-msg"></div>
+    <div id="login-hint-badge-box" class="login-hint-badge" style="font-size:11.5px;color:var(--text-secondary);background:rgba(255,255,255,0.04);border:1px dashed var(--border);border-radius:6px;padding:6px 10px;display:flex;align-items:center;justify-content:space-between;gap:6px;margin:2px 0 8px 0;">
+      <span>💡 默认管理员：<code id="login-default-hint" style="font-family:monospace;font-weight:600;color:var(--primary);cursor:pointer;" title="点击自动填入">admin / admin123</code></span>
+      <button type="button" id="btn-quick-fill-admin" style="font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid var(--border);background:var(--panel-2);color:var(--text);cursor:pointer;">一键填入</button>
+    </div>
+    <button type="submit" class="primary" data-i18n="login.submit_btn">登录</button>
+  </form>
+</div>
+
+<div id="app-view" class="app hidden">
+  <header class="topbar">
+    <div class="topbar-left">
+      <button type="button" id="sidebar-toggle-btn" class="sidebar-toggle-btn" aria-label="Toggle Navigation" title="切换导航菜单">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      </button>
+      <div class="brand" id="brand-logo-btn" style="cursor:pointer;" title="返回看板总览">
+        <span class="logo cloud-logo-wrap">
+          <svg class="cloud-logo-svg" width="24" height="24" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="cloud-grad-topbar" x1="2" y1="4" x2="30" y2="28" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#38bdf8"/>
+                <stop offset="50%" stop-color="#818cf8"/>
+                <stop offset="100%" stop-color="#c084fc"/>
+              </linearGradient>
+              <linearGradient id="cloud-highlight-topbar" x1="10" y1="4" x2="22" y2="20" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#ffffff" stop-opacity="0.6"/>
+                <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+              </linearGradient>
+            </defs>
+            <path d="M 8.5 25 C 4.9 25 2 22.1 2 18.5 C 2 15.2 4.4 12.5 7.6 12.1 C 8.9 7.8 12.8 4.8 17.5 4.8 C 22.9 4.8 27.3 9.0 27.5 14.4 C 29.8 15.5 31 18.0 30.3 20.5 C 29.6 23.1 27.2 25 24.5 25 L 8.5 25 Z" fill="url(#cloud-grad-topbar)"/>
+            <path d="M 8.5 24.5 C 5.2 24.5 2.5 21.8 2.5 18.5 C 2.5 15.5 4.7 13.0 7.7 12.6 C 9.0 8.5 12.8 5.5 17.5 5.5 C 22.5 5.5 26.5 9.3 26.8 14.3 C 29.0 15.3 30.2 17.6 29.5 19.9 C 28.9 22.2 26.8 23.8 24.5 23.8" stroke="url(#cloud-highlight-topbar)" stroke-width="1.2" stroke-linecap="round"/>
+            <path d="M 16.5 10.5 L 13.5 16.5 H 17.5 L 14.5 22" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </span>
+        <span class="brand-name">Nimbus Vault Sync</span>
+        <span class="brand-badge">Fast Sync</span>
+      </div>
+    </div>
+    <div class="topbar-center">
+      <button id="topbar-search-btn" class="topbar-search-btn" data-i18n-title="topbar.search_title" title="全局快速检索 (Ctrl+K)">
+        <span>🔍</span>
+        <span class="search-placeholder" data-i18n="topbar.search_placeholder">全局检索笔记与内容...</span>
+        <kbd class="shortcut-kbd" data-i18n="topbar.search_shortcut">Ctrl K</kbd>
+      </button>
+      <div class="sync-indicator" id="hub-status-indicator" data-i18n-title="topbar.sync_title" title="实时同步服务运行中">
+        <span class="status-dot"></span>
+        <span class="status-text" id="hub-status-text" data-i18n="topbar.sync_ready">同步服务就绪</span>
+      </div>
+    </div>
+    <div class="who">
+      <!-- Language Switcher Selector -->
+      <div class="lang-picker-wrap" id="lang-picker-container">
+        <button id="lang-menu-btn" class="lang-menu-btn" data-i18n-title="topbar.lang_title" title="切换语言 / Language">
+          <span id="lang-current-flag">🇨🇳</span>
+          <span id="lang-label-name">简体中文</span>
+          <span style="font-size:10px;opacity:0.7;">▼</span>
+        </button>
+        <div id="lang-dropdown-menu" class="lang-dropdown-menu hidden">
+          <button class="lang-opt-item" data-lang-val="zh-CN">
+            <span>🇨🇳</span>
+            <span>简体中文</span>
+          </button>
+          <button class="lang-opt-item" data-lang-val="zh-TW">
+            <span>🇭🇰</span>
+            <span>繁體中文</span>
+          </button>
+          <button class="lang-opt-item" data-lang-val="en">
+            <span>🇺🇸</span>
+            <span>English</span>
+          </button>
+          <button class="lang-opt-item" data-lang-val="ko">
+            <span>🇰🇷</span>
+            <span>한국어</span>
+          </button>
+          <button class="lang-opt-item" data-lang-val="ja">
+            <span>🇯🇵</span>
+            <span>日本語</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Theme Switcher Selector -->
+      <div class="theme-picker-wrap" id="theme-picker-container">
+        <button id="theme-menu-btn" class="theme-menu-btn" data-i18n-title="topbar.theme_title" title="切换后台主题与配色">
+          <span class="theme-color-dot" id="theme-color-dot"></span>
+          <span id="theme-label-name">默认科技蓝</span>
+          <span style="font-size:10px;opacity:0.7;">▼</span>
+        </button>
+        <div id="theme-dropdown-menu" class="theme-dropdown-menu hidden">
+          <!-- Populated dynamically by initThemeSwitcher in themes.js -->
+        </div>
+      </div>
+
+      <!-- Font Size Switcher Selector -->
+      <div class="fontsize-picker-wrap" id="fontsize-picker-container">
+        <button id="fontsize-menu-btn" class="fontsize-menu-btn" data-i18n-title="topbar.fontsize_title" title="调节界面字号大小">
+          <span class="fontsize-icon">🔤</span>
+          <span id="fontsize-label-name">标准 (100%)</span>
+          <span style="font-size:10px;opacity:0.7;">▼</span>
+        </button>
+        <div id="fontsize-dropdown-menu" class="fontsize-dropdown-menu hidden">
+          <div class="fontsize-dropdown-header">
+            <span class="fontsize-dropdown-title" data-i18n="fontsize.dropdown_title">字号缩放比例</span>
+            <button type="button" id="fontsize-reset-btn" class="fontsize-reset-btn" title="恢复默认标准大小" data-i18n="fontsize.reset_btn">恢复默认</button>
+          </div>
+          <button type="button" class="fontsize-opt-item" data-size-val="sm">
+            <div class="fontsize-opt-left">
+              <span class="fontsize-badge" style="font-size: 11px;">A⁻</span>
+              <span data-i18n="fontsize.sm">紧凑小号 (88%)</span>
+            </div>
+            <span class="fontsize-check"></span>
+          </button>
+          <button type="button" class="fontsize-opt-item" data-size-val="normal">
+            <div class="fontsize-opt-left">
+              <span class="fontsize-badge" style="font-size: 13px;">A</span>
+              <span data-i18n="fontsize.normal">标准适中 (100%)</span>
+            </div>
+            <span class="fontsize-check"></span>
+          </button>
+          <button type="button" class="fontsize-opt-item" data-size-val="md">
+            <div class="fontsize-opt-left">
+              <span class="fontsize-badge" style="font-size: 15px;">A⁺</span>
+              <span data-i18n="fontsize.md">舒适中号 (112%)</span>
+            </div>
+            <span class="fontsize-check"></span>
+          </button>
+          <button type="button" class="fontsize-opt-item" data-size-val="lg">
+            <div class="fontsize-opt-left">
+              <span class="fontsize-badge" style="font-size: 17px;">A⁺⁺</span>
+              <span data-i18n="fontsize.lg">清晰大号 (125%)</span>
+            </div>
+            <span class="fontsize-check"></span>
+          </button>
+        </div>
+      </div>
+
+      <button type="button" id="topbar-inspector-toggle-btn" class="ghost" data-i18n-title="topbar.inspector_title" title="切换右侧系统遥测检查器 (Ctrl+J)" style="padding:4px 8px;font-size:12px;display:inline-flex;align-items:center;gap:4px;border-radius:6px;border:1px solid var(--border);background:var(--panel-2);color:var(--text-secondary);cursor:pointer;">
+        <span>📡</span>
+        <span class="inspector-btn-label">遥测</span>
+      </button>
+
+      <span id="who-username" class="user-pill"></span>
+      <span id="who-role" class="badge"></span>
+      <button id="logout-btn" class="ghost" data-i18n="topbar.logout">退出</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- 1. Activity Bar (Narrow 52px Icon Bar for Three-Column Architecture) -->
+    <aside class="activity-bar" id="activity-bar">
+      <div class="activity-btn-group">
+        <button type="button" class="activity-icon-btn active" id="act-btn-dashboard" data-tab="dashboard" title="📊 看板总览">
+          <span>📊</span>
+        </button>
+        <button type="button" class="activity-icon-btn" id="act-btn-vaults" title="📂 我的笔记库 (定位/展开)">
+          <span>📂</span>
+        </button>
+        <button type="button" class="activity-icon-btn" id="act-btn-search" title="🔍 全局快捷检索 (Ctrl+K)">
+          <span>🔍</span>
+        </button>
+        <button type="button" class="activity-icon-btn" id="act-btn-devices" data-tab="devices" title="📱 接入设备管理">
+          <span>📱</span>
+        </button>
+        <button type="button" class="activity-icon-btn" id="act-btn-mcp" title="🤖 MCP / AI 接口配置">
+          <span>🤖</span>
+        </button>
+        <button type="button" class="activity-icon-btn" id="act-btn-connect" title="⚡ Obsidian 连接指引">
+          <span>⚡</span>
+        </button>
+      </div>
+
+      <div class="activity-bar-bottom">
+        <button type="button" class="activity-icon-btn" id="act-btn-sponsor" data-tab="sponsor" title="❤️ 支持该项目">
+          <span>❤️</span>
+        </button>
+        <button type="button" class="activity-icon-btn" id="act-btn-settings" data-tab="settings" title="⚙️ 系统设置">
+          <span>⚙️</span>
+        </button>
+        <div class="activity-divider"></div>
+        <button type="button" class="activity-icon-btn" id="act-btn-inspector" title="📡 切换右侧系统遥测面板">
+          <span>📡</span>
+        </button>
+      </div>
+    </aside>
+
+    <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
+    <nav class="sidebar" id="sidebar">
+      <div class="sidebar-body">
+        <div style="margin-bottom: 14px;">
+          <button class="sidebar-primary-btn nav-item tab-btn" id="global-dashboard-btn" data-tab="dashboard" data-i18n="sidebar.dashboard">
+            📊 看板总览
+          </button>
+        </div>
+
+        <div class="sidebar-header">
+          <div class="nav-section-title" data-i18n="sidebar.my_vaults">我的 Vaults</div>
+          <button id="new-vault-btn" class="btn-icon" data-i18n-title="sidebar.new_vault" title="新建 Vault">+</button>
+        </div>
+        <ul id="vault-list" class="vault-list"></ul>
+
+        <div class="nav-section-header collapsible" id="section-tools-header" role="button" tabindex="0" title="点击展开/折叠快捷工具">
+          <span class="nav-section-title" data-i18n="sidebar.quick_tools">快捷工具</span>
+          <span class="nav-section-toggle-icon">▾</span>
+        </div>
+        <ul class="nav-menu" id="tools-nav-menu">
+          <li><button class="nav-item tab-btn" id="global-settings-btn" data-tab="settings" data-i18n="sidebar.settings">⚙️ 设置</button></li>
+          <li><button class="nav-item tab-btn" data-tab="devices" data-i18n="sidebar.devices">📱 接入设备管理</button></li>
+          <li><button class="nav-item" id="global-connect-btn" data-i18n="sidebar.connect_guide">⚡ Obsidian 连接指引</button></li>
+          <li><button class="nav-item" id="global-mcp-btn" data-i18n="sidebar.mcp_config">🤖 AI / MCP 接口配置</button></li>
+          <li><button class="nav-item" id="global-docs-btn" data-i18n="sidebar.api_docs">📖 REST API 开发者文档</button></li>
+          <li><button class="nav-item tab-btn" id="global-sponsor-btn" data-tab="sponsor" data-i18n="sidebar.sponsor">❤️ 支持该项目</button></li>
+        </ul>
+
+        <div id="admin-nav" class="hidden">
+          <div class="nav-section-header collapsible" id="section-admin-header" role="button" tabindex="0" title="点击展开/折叠系统管理">
+            <span class="nav-section-title" data-i18n="sidebar.admin_section">系统管理</span>
+            <span class="nav-section-toggle-icon">▾</span>
+          </div>
+          <ul class="nav-menu" id="admin-nav-menu">
+            <li><button class="tab-btn" data-tab="dashboard" data-i18n="sidebar.dashboard">📊 看板总览</button></li>
+            <li><button class="tab-btn" data-tab="settings" data-i18n="sidebar.settings">⚙️ 设置</button></li>
+            <li><button class="tab-btn" data-tab="database" data-i18n="sidebar.database">🗄️ 数据库管理</button></li>
+            <li><button class="tab-btn" data-tab="webhooks" data-i18n="sidebar.webhooks">🔔 Webhook 告警</button></li>
+            <li><button class="tab-btn" data-tab="synclogs" data-i18n="sidebar.synclogs">📋 同步日志</button></li>
+            <li><button class="tab-btn" data-tab="devices" data-i18n="sidebar.all_devices">📱 全局设备</button></li>
+            <li><button class="tab-btn" data-tab="users" data-i18n="sidebar.users">👥 用户管理</button></li>
+            <li><button class="tab-btn" data-tab="all-vaults" data-i18n="sidebar.all_vaults">📚 全局 Vault</button></li>
+            <li><button class="tab-btn" data-tab="sponsor" data-i18n="sidebar.sponsor_admin">❤️ 赞助支持</button></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="sidebar-date-display" id="sidebar-date-display" data-i18n-title="topbar.date_title" title="当前系统日期">
+          <span class="date-icon">📅</span>
+          <span id="sidebar-date-text" class="date-text"></span>
+        </div>
+        <div class="sidebar-footer-row">
+          <a href="https://github.com/lengedliu/nimbus-vault-sync" target="_blank" rel="noopener noreferrer" class="sidebar-github-link" title="访问 GitHub 开源仓库 (lengedliu/nimbus-vault-sync)">
+            <svg class="github-icon" viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+              <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+            </svg>
+            <span>GitHub</span>
+          </a>
+          <div class="sidebar-version-badge" id="sidebar-version-badge" data-i18n-title="sidebar.version" title="当前版本">v1.3.2</div>
+        </div>
+      </div>
+    </nav>
+
+    <main class="main" id="main-panel">
+      <div class="empty-state">
+        <div style="font-size:48px;margin-bottom:12px;">📓</div>
+        <p data-i18n="empty.welcome_desc">从左侧选择一个 Vault 开始管理，或新建一个 Vault 进行 Obsidian 同步</p>
+      </div>
+    </main>
+
+    <!-- 4. Inspector / Telemetry Drawer (Right Column) -->
+    <aside class="inspector-panel" id="inspector-panel">
+      <div class="inspector-header">
+        <div class="inspector-title">
+          <span>📡</span>
+          <span>系统遥测与监控</span>
+        </div>
+        <button type="button" class="inspector-close-btn" id="inspector-close-btn" title="折叠遥测面板">✕</button>
+      </div>
+
+      <div class="inspector-body">
+        <!-- WebSocket Card -->
+        <div class="inspector-card">
+          <div class="inspector-card-title">
+            <span>WebSocket 实时链路</span>
+            <span class="inspector-badge-ok" id="insp-ws-status">🟢 正常</span>
+          </div>
+          <div class="inspector-card-body">
+            <div>信道: <code>/ws</code></div>
+            <div>往返延迟: <b id="insp-ws-rtt" style="color:var(--primary)">24 ms</b></div>
+            <div>协议: <code>JSON Streamable Delta</code></div>
+          </div>
+        </div>
+
+        <!-- Vault Status Card -->
+        <div class="inspector-card">
+          <div class="inspector-card-title">
+            <span>当前笔记库摘要</span>
+            <span style="font-size:11px;color:var(--text-dim);" id="insp-vault-files-count">--</span>
+          </div>
+          <div class="inspector-card-body" id="insp-vault-info">
+            <div>活跃库: <b id="insp-vault-name" style="color:var(--primary)">未选定</b></div>
+            <div>权限: <span id="insp-vault-perm">读写就绪</span></div>
+            <div>加密: <span>AES-256 GCM</span></div>
+          </div>
+        </div>
+
+        <!-- Devices Card -->
+        <div class="inspector-card">
+          <div class="inspector-card-title">
+            <span>活跃接入设备</span>
+            <button type="button" id="insp-manage-devices-btn" class="ghost" style="font-size:11px;padding:1px 5px;cursor:pointer;">管理</button>
+          </div>
+          <div class="inspector-card-body" id="insp-devices-list">
+            <div class="inspector-device-item">
+              <span>💻 Web 仪表盘 (当前)</span>
+              <span class="inspector-badge-ok">在线</span>
+            </div>
+            <div class="inspector-device-item">
+              <span>📱 Obsidian 客户端</span>
+              <span style="color:var(--text-dim);font-size:10.5px;">已就绪</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick Actions Card -->
+        <div class="inspector-card" style="margin-top:auto;">
+          <div class="inspector-card-title">
+            <span>快捷操作通道</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px;margin-top:4px;">
+            <button type="button" id="insp-btn-connect" class="token-act-btn" style="padding:6px 10px;font-size:12px;border-radius:4px;border:1px solid var(--border);background:var(--panel-2);color:var(--text);cursor:pointer;text-align:left;display:flex;align-items:center;gap:6px;">
+              <span>⚡</span> <span>Obsidian 快速连接</span>
+            </button>
+            <button type="button" id="insp-btn-mcp" class="token-act-btn" style="padding:6px 10px;font-size:12px;border-radius:4px;border:1px solid var(--border);background:var(--panel-2);color:var(--text);cursor:pointer;text-align:left;display:flex;align-items:center;gap:6px;">
+              <span>🤖</span> <span>打开 MCP AI 接口</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="inspector-footer">
+        <span>Nimbus Telemetry Engine</span>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<!-- Modal Container for Connect / Share / Diff -->
+<div id="modal-backdrop" class="modal-backdrop hidden">
+  <div id="modal-container" class="modal-container"></div>
+</div>
+
+<script src="/i18n.js?v=1.3.1"></script>
+<script type="module" src="/js/main.js?v=1.3.1"></script>
+</body>
+</html>
