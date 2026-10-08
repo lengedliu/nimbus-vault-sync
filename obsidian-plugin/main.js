@@ -52,6 +52,8 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     this.remoteApplyingCount = 0;
     this.applyingRemotePaths = new Set();
     this.isVaultReady = false;
+    this.syncBarrierActive = true; // 🛡️ 启动期下行优先屏障保护 (Pull-First Sync Barrier)
+    this.pendingLocalQueueWhileBarrier = new Set();
     this.fileHashes = new Map();
     this.reconnectTimer = null;
     this.pingTimer = null;
@@ -495,6 +497,9 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   connectWebSocket() {
     this.disconnectWebSocket();
 
+    // 🛡️ 启动连接时激活下行优先屏障，直到服务端握手与初次对齐完成
+    this.syncBarrierActive = true;
+
     const rawToken = (this.settings.token || this.settings.authToken || '').trim();
     if (!rawToken || !this.settings.vaultId) {
       this.updateStatusBar('idle', '☁️ Nimbus: 未配置');
@@ -559,6 +564,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   }
 
   disconnectWebSocket() {
+    this.syncBarrierActive = false;
     if (this.pingTimer) clearInterval(this.pingTimer);
     if (this.ws) {
       this.ws.close();
@@ -580,13 +586,16 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         if (localCursor > 0 && serverCursor > localCursor) {
           const deltaOk = await this.syncDeltaChanges(localCursor);
           if (deltaOk) {
+            await this.flushPendingLocalChangesAfterBarrier();
             break;
           }
           // 🛡️ 增量追更若因网络波动或部分拉取未完成，保留游标断点续传，绝不冒然降级全量并推进游标导致漏拉
           console.warn('[Nimbus] 增量追更有未完成项，保留当前游标等待下次重试');
+          this.syncBarrierActive = false;
           break;
         } else if (localCursor > 0 && serverCursor === localCursor) {
           // 游标完全吻合，秒级对齐完成
+          await this.flushPendingLocalChangesAfterBarrier();
           new Notice('✅ 本地已与 Nimbus 云端完全对齐');
           break;
         }
@@ -597,6 +606,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           manifest = await this.fetchManifestHttp(vaultId);
         }
         await this.syncManifest(manifest || {}, serverCursor);
+        await this.flushPendingLocalChangesAfterBarrier();
         break;
       }
 
@@ -872,6 +882,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       const toPush = [];
       const toLocalDelete = [];
       const toRemoteDelete = [];
+      const toLocalConflictBackup = [];
 
       // 3-Way 对比分析：Local (本地当前) vs Remote (云端当前) vs Base (上次同步基线)
       for (const path of allPaths) {
@@ -899,14 +910,11 @@ module.exports = class NimbusSyncPlugin extends Plugin {
               // 仅云端修改 -> 拉取至本地
               toPull.push({ path, meta: remoteMeta });
             } else {
-              // 并发修改/时间戳比对
-              const localMtime = (localFile.stat && localFile.stat.mtime) ? localFile.stat.mtime : 0;
-              const remoteMtime = (remoteMeta.mtime) ? remoteMeta.mtime : 0;
-              if (remoteMtime > localMtime) {
-                toPull.push({ path, meta: remoteMeta });
-              } else {
-                toPush.push(localFile);
-              }
+              // 🛡️ 两端均发生修改（真正并发冲突）
+              // 绝不能凭操作系统不可靠的 mtime 覆盖云端！
+              // 永远以权威云端优先拉取，并在本地妥善保留离线修改为分支副本，防止误伤云端新笔记
+              toLocalConflictBackup.push({ file: localFile, path });
+              toPull.push({ path, meta: remoteMeta });
             }
           }
         } else if (localFile && !remoteMeta && baseMeta) {
@@ -946,20 +954,16 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           // 场景 5: 云端纯新增文件 (无基线，本地无) -> 拉取
           toPull.push({ path, meta: remoteMeta });
         } else if (localFile && remoteMeta && !baseMeta) {
-          // 场景 6: 两端均存在但无历史基线 (首次绑定/基线重置)
+          // 场景 6: 两端均存在但无历史基线 (首次绑定/基线重置/长期离线基线断层)
           const localHash = await this.computeFileHash(localFile);
           if (localHash && remoteMeta.hash && localHash === remoteMeta.hash) {
             this.fileHashes.set(path, remoteMeta.hash);
             baseline[path] = { hash: remoteMeta.hash, mtime: remoteMeta.mtime, size: remoteMeta.size };
           } else {
-            const localMtime = (localFile.stat && localFile.stat.mtime) ? localFile.stat.mtime : 0;
-            const remoteMtime = (remoteMeta.mtime) ? remoteMeta.mtime : 0;
-            if (remoteMtime > localMtime) {
-              toPull.push({ path, meta: remoteMeta });
-            } else {
-              if (localHash) this.fileHashes.set(path, localHash);
-              toPush.push(localFile);
-            }
+            // 🛡️ 两端内容不一致且无历史基线时：云端为权威源（Source of Truth）优先拉取，
+            // 绝不盲目信赖本地被 OS 刷新的 mtime。本地版本自动保留为离线分支副本，防止旧客户端逆向冲毁云端！
+            toLocalConflictBackup.push({ file: localFile, path });
+            toPull.push({ path, meta: remoteMeta });
           }
         } else if (!localFile && !remoteMeta && baseMeta) {
           // 场景 7: 两端均已删除
@@ -986,12 +990,25 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         toLocalDelete.length = 0; // 清空本地删除任务
       }
 
+      // =========================================================================
+      // 🛡️ 防御机制 3: 异常大批量上传安全熔断阀 (Safety Circuit Breaker for Upload)
+      // 若单次尝试上传超过安全阈值（例如 > 15 篇且占云端总比 > 40%），拦截疑似陈旧设备大批量覆盖
+      // =========================================================================
+      const remoteCountVal = remoteCount || 0;
+      const pushThreshold = Math.max(15, Math.floor(remoteCountVal * 0.4));
+      if (remoteCountVal > 0 && toPush.length > pushThreshold) {
+        console.warn(`[Nimbus 安全熔断] 拦截异常大批量推送: 尝试上传 ${toPush.length} 篇，云端总数: ${remoteCountVal}`);
+        new Notice(`⚠️ [Nimbus 安全熔断] 检测到当前设备尝试单次向云端推送 ${toPush.length} 篇笔记（超过安全阈值）！\n已自动暂停大批量推送以防意外覆盖云端较新笔记。请在控制台核对。`, 12000);
+        toPush.length = 0;
+      }
+
       const pullCount = toPull.length;
       const pushCount = toPush.length;
       const localDelCount = toLocalDelete.length;
       const remoteDelCount = toRemoteDelete.length;
+      const conflictBackupCount = toLocalConflictBackup.length;
 
-      if (pullCount === 0 && pushCount === 0 && localDelCount === 0 && remoteDelCount === 0) {
+      if (pullCount === 0 && pushCount === 0 && localDelCount === 0 && remoteDelCount === 0 && conflictBackupCount === 0) {
         if (!this.baselinesCache) this.baselinesCache = {};
         this.baselinesCache[vaultId] = baseline;
         await this.saveBaselineCache();
@@ -1002,7 +1019,12 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         return;
       }
 
-      new Notice(`⚡ 3-Way 同步开始: 上传 ${pushCount}，下载 ${pullCount}，本地删除 ${localDelCount}，云端删除 ${remoteDelCount}`);
+      new Notice(`⚡ 3-Way 同步开始: 上传 ${pushCount}，下载 ${pullCount}，本地删除 ${localDelCount}，云端删除 ${remoteDelCount}${conflictBackupCount > 0 ? `，冲突备份 ${conflictBackupCount}` : ''}`);
+
+      // 0. 为离线并发冲突生成本地版本备份
+      for (const item of toLocalConflictBackup) {
+        await this.backupLocalConflictFile(item.file, item.path);
+      }
 
       // 1. 执行本地删除 (云端已删)
       for (const delPath of toLocalDelete) {
@@ -1062,6 +1084,59 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     } catch (err) {
       console.error('[Nimbus] 3-Way 自动同步异常:', err);
       new Notice(`❌ 自动同步异常: ${err.message}`);
+    }
+  }
+
+  async flushPendingLocalChangesAfterBarrier() {
+    this.syncBarrierActive = false;
+    if (!this.pendingLocalQueueWhileBarrier || this.pendingLocalQueueWhileBarrier.size === 0) {
+      return;
+    }
+    const pathsToCheck = Array.from(this.pendingLocalQueueWhileBarrier);
+    this.pendingLocalQueueWhileBarrier.clear();
+
+    const vaultId = this.settings.vaultId || 'default';
+    const baseline = this.getVaultBaseline(vaultId);
+
+    for (const path of pathsToCheck) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (file instanceof TFile) {
+        const currentHash = await this.computeFileHash(file);
+        const baseMeta = baseline[path];
+        // 关键判定：只有当本地当前内容 Hash 确实与基线不一致时，说明离线期间用户确实编辑了该文件，才进行上传
+        if (currentHash && (!baseMeta || currentHash !== baseMeta.hash)) {
+          await this.pushLocalFile(file);
+        }
+      }
+    }
+  }
+
+  async backupLocalConflictFile(localFile, relPath) {
+    if (!localFile || !(localFile instanceof TFile)) return null;
+    try {
+      const ext = localFile.extension ? `.${localFile.extension}` : '';
+      const base = relPath.slice(0, relPath.length - ext.length);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const conflictPath = `${base}.conflict-offline-${stamp}${ext}`;
+      const buffer = await this.app.vault.readBinary(localFile);
+
+      // 确保父目录存在
+      const parts = conflictPath.split('/');
+      if (parts.length > 1) {
+        let currentPath = '';
+        for (let i = 0; i < parts.length - 1; i++) {
+          currentPath += (currentPath ? '/' : '') + parts[i];
+          if (!this.app.vault.getAbstractFileByPath(currentPath)) {
+            await this.app.vault.createFolder(currentPath);
+          }
+        }
+      }
+      await this.app.vault.createBinary(conflictPath, buffer);
+      new Notice(`⚠️ 检测到离线并发冲突，已保留本地版本备份:\n${conflictPath}`, 7000);
+      return conflictPath;
+    } catch (e) {
+      console.warn('[Nimbus] 创建本地离线冲突备份失败:', relPath, e);
+      return null;
     }
   }
 
@@ -1238,6 +1313,15 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     if (this.isApplyingRemoteChange || (this.applyingRemotePaths && this.applyingRemotePaths.has(file.path))) return;
     if (this.isIgnoredLocalPath(file.path)) return;
 
+    // 🛡️ 启动期下行优先屏障保护 (Pull-First Sync Barrier)
+    // 在首轮与云端完成下行增量或清单对齐前，禁止向云端盲目外发本地文件
+    if (this.syncBarrierActive) {
+      if (this.pendingLocalQueueWhileBarrier) {
+        this.pendingLocalQueueWhileBarrier.add(file.path);
+      }
+      return;
+    }
+
     // 清除该文件之前的未执行防抖计时器
     if (this.localChangeQueue.has(file.path)) {
       clearTimeout(this.localChangeQueue.get(file.path));
@@ -1254,7 +1338,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   }
 
   async onLocalFileDelete(file) {
-    if (!this.isVaultReady || this.isApplyingRemoteChange) return;
+    if (!this.isVaultReady || this.isApplyingRemoteChange || this.syncBarrierActive) return;
     if (file instanceof TFile) {
       if (this.applyingRemotePaths && this.applyingRemotePaths.has(file.path)) return;
       if (this.isIgnoredLocalPath(file.path)) return;
@@ -1297,7 +1381,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   }
 
   async onLocalFileRename(file, oldPath) {
-    if (!this.isVaultReady || this.isApplyingRemoteChange) return;
+    if (!this.isVaultReady || this.isApplyingRemoteChange || this.syncBarrierActive) return;
     if (file instanceof TFile) {
       if (this.applyingRemotePaths && (this.applyingRemotePaths.has(file.path) || this.applyingRemotePaths.has(oldPath))) return;
       if (this.isIgnoredLocalPath(file.path) && this.isIgnoredLocalPath(oldPath)) return;

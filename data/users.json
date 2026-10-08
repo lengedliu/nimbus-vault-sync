@@ -3,7 +3,7 @@
     {
       "id": "admin-root-0001",
       "username": "admin",
-      "passwordHash": "$2a$10$atD9lQ.CRktisdIhIXvyHeUfnn8rl2NBiP5xSMLi5MZdhl6i8uQMK",
+      "passwordHash": "$2a$10$ufPa..EYQREJmPuvqTYMNeTAyFeC8Lsg3VJ0eILq/nhqolhd.8vz.",
       "role": "admin",
       "createdAt": "2026-09-18T07:45:00.000Z"
     },
@@ -34,6 +34,20 @@
       "passwordHash": "$2a$10$.WCBitiZJyYgeQSIrbOFVek/lEu5zzpaWjrzjQlJLdb.0VqKZ/6Sm",
       "role": "user",
       "createdAt": "2026-09-29T17:22:37.563Z"
+    },
+    {
+      "id": "65252027-e655-4ded-9671-8b7481c57f17",
+      "username": "tag_tester_1791477146163",
+      "passwordHash": "$2a$10$YMpGUY.wPVa8uqcP7UUJ5eNhPLm0EuE5jV0dC9r.ZW0Kxj91wk3zq",
+      "role": "user",
+      "createdAt": "2026-10-08T16:32:26.287Z"
+    },
+    {
+      "id": "54c74bd5-d15a-4286-996a-9a8c3e3f2ff5",
+      "username": "tag_tester_1791477437184",
+      "passwordHash": "$2a$10$zlCLki1Ni9HTrcnaoWEmheCMo53p5TMTZDL4ZMgwFceWdZzctZjom",
+      "role": "user",
+      "createdAt": "2026-10-08T16:37:17.293Z"
     }
   ]
 }

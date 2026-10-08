@@ -1,0 +1,41 @@
+{
+  "latestCursor": 4,
+  "changes": [
+    {
+      "cursor": 1,
+      "path": "test-mcp-note.md",
+      "action": "UPSERT",
+      "size": 16,
+      "mtime": 1791478127917,
+      "hash": "1a157d2908a454190c8634e63d160e63788dc497c7709fa7eadeb2c14882ca85",
+      "createdAt": 1791478127919
+    },
+    {
+      "cursor": 2,
+      "path": "another-note.md",
+      "action": "UPSERT",
+      "size": 10,
+      "mtime": 1791478137133,
+      "hash": "2fbec3dede0ba06f6da96d1796efe126255cc70e908459c9eb846a153260e9ba",
+      "createdAt": 1791478137137
+    },
+    {
+      "cursor": 3,
+      "path": "test3.md",
+      "action": "UPSERT",
+      "size": 10,
+      "mtime": 1791478145005,
+      "hash": "abc",
+      "createdAt": 1791478145005
+    },
+    {
+      "cursor": 4,
+      "path": "mcp_test_file.md",
+      "action": "UPSERT",
+      "size": 11,
+      "mtime": 1791478187723,
+      "hash": "96b7f040c5c7bf6806e18d73c9576326d863d8b704139c0c0b4e7e12f10c0c1f",
+      "createdAt": 1791478187788
+    }
+  ]
+}
