@@ -1,0 +1,1759 @@
+const { Plugin, PluginSettingTab, Setting, Notice, TFile, TFolder, Platform, arrayBufferToBase64, base64ToArrayBuffer } = require('obsidian');
+let nodeCrypto = null;
+try {
+  nodeCrypto = require('crypto');
+} catch (_) {}
+
+async function computeSha256(arrayBuffer) {
+  if (nodeCrypto && typeof nodeCrypto.createHash === 'function') {
+    try {
+      return nodeCrypto.createHash('sha256').update(Buffer.from(arrayBuffer)).digest('hex');
+    } catch (_) {}
+  }
+  const cryptoObj = (typeof crypto !== 'undefined' && crypto.subtle) ? crypto : (typeof window !== 'undefined' && window.crypto ? window.crypto : null);
+  if (cryptoObj && cryptoObj.subtle) {
+    try {
+      const hashBuffer = await cryptoObj.subtle.digest('SHA-256', arrayBuffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch (_) {}
+  }
+  return null;
+}
+
+const DEFAULT_SETTINGS = {
+  serverUrl: 'http://192.168.50.154:8787',
+  username: '',
+  password: '',
+  token: '',
+  authToken: '',
+  vaultId: '',
+  vaultName: '',
+  deviceId: 'Obsidian Device',
+  autoSync: true,
+  syncIntervalSeconds: 30,
+  syncBaselines: {},
+  syncCursors: {}
+};
+
+module.exports = class NimbusSyncPlugin extends Plugin {
+  async onload() {
+    await this.loadSettings();
+    await this.loadBaselineCache();
+
+    // Default device ID if empty
+    if (!this.settings.deviceId) {
+      this.settings.deviceId = 'Obsidian-' + Math.random().toString(36).substring(2, 7);
+      await this.saveSettings();
+    }
+
+    this.localChangeQueue = new Map();
+    this.isApplyingRemoteChange = false;
+    this.remoteApplyingCount = 0;
+    this.applyingRemotePaths = new Set();
+    this.isVaultReady = false;
+    this.fileHashes = new Map();
+    this.reconnectTimer = null;
+    this.pingTimer = null;
+    this._saveSettingsTimer = null;
+    this._saveBaselineTimer = null;
+
+    // Load initial file hashes from baseline if present
+    const initialBaseline = this.getVaultBaseline();
+    for (const [path, meta] of Object.entries(initialBaseline)) {
+      if (meta && meta.hash) {
+        this.fileHashes.set(path, meta.hash);
+      }
+    }
+
+    // Ribbon icon for quick sync / full sync
+    this.addRibbonIcon('refresh-cw', 'Nimbus: 一键全量同步', async () => {
+      await this.fullSyncAllFiles();
+    });
+
+    // Command palette commands
+    this.addCommand({
+      id: 'nimbus-full-sync',
+      name: '立即执行全量双向同步 (Full Sync Now)',
+      callback: async () => {
+        await this.fullSyncAllFiles();
+      }
+    });
+    this.addCommand({
+      id: 'nimbus-force-push',
+      name: '强制推送所有本地笔记到云端 (Force Push to Cloud)',
+      callback: async () => {
+        await this.forcePushAllLocalFiles();
+      }
+    });
+
+    // Status bar indicator
+    this.statusBarItem = this.addStatusBarItem();
+    this.updateStatusBar('idle', '☁️ Nimbus: 就绪');
+
+    // Setting Tab
+    this.addSettingTab(new NimbusSettingTab(this.app, this));
+
+    // 🔗 注册 Obsidian 原生 URI 协议处理器: obsidian://nimbus-sync?...
+    this.registerObsidianProtocolHandler('nimbus-sync', async (params) => {
+      try {
+        const server = params.server || params.serverUrl;
+        const token = params.token || params.authToken;
+        const vaultId = params.vaultId;
+        const vaultName = params.vaultName || '';
+        const device = params.device || params.deviceId;
+        const autoSync = params.autoSync === '1' || params.autoSync === 'true';
+
+        if (!server || !token) {
+          new Notice('❌ Nimbus DeepLink 缺少必要的服务器地址或 Token 授权参数');
+          return;
+        }
+
+        this.settings.serverUrl = server.replace(/\/+$/, '');
+        this.settings.token = token.trim().replace(/^Bearer\s+/i, '');
+        this.settings.authToken = this.settings.token;
+        this.settings.authMode = 'token';
+        if (vaultId) this.settings.vaultId = vaultId;
+        if (vaultName) this.settings.vaultName = vaultName;
+        if (device) this.settings.deviceId = device;
+        if (params.autoSync !== undefined) this.settings.autoSync = autoSync;
+
+        await this.saveSettings();
+        new Notice(`✅ 已成功通过 DeepLink 导入 Nimbus 同步配置！\n目标库: ${vaultName || vaultId || '默认库'}`);
+
+        this.disconnectWebSocket();
+        if (this.settings.vaultId) {
+          this.connectWebSocket();
+        } else {
+          await this.autoMatchOrCreateVault();
+          if (this.settings.vaultId) this.connectWebSocket();
+        }
+      } catch (err) {
+        new Notice('❌ 解析 Nimbus DeepLink 参数失败: ' + err.message);
+      }
+    });
+
+    // Vault Event Listeners (protected by isVaultReady)
+    this.registerEvent(this.app.vault.on('modify', (file) => this.onLocalFileChange('modify', file)));
+    this.registerEvent(this.app.vault.on('create', (file) => this.onLocalFileChange('create', file)));
+    this.registerEvent(this.app.vault.on('delete', (file) => this.onLocalFileDelete(file)));
+    this.registerEvent(this.app.vault.on('rename', (file, oldPath) => this.onLocalFileRename(file, oldPath)));
+
+    // 🛡️ 等待 Obsidian 工作区与本地文件系统完全索引就绪 (尤其防止移动端冷启动文件列表为空)
+    this.app.workspace.onLayoutReady(async () => {
+      await this.ensureVaultReady();
+      this.isVaultReady = true;
+
+      // Auto connect or auto-bind on startup
+      if (this.settings.autoSync && this.settings.token) {
+        if (this.settings.vaultId) {
+          this.connectWebSocket();
+        } else {
+          this.autoMatchOrCreateVault().then(() => {
+            if (this.settings.vaultId) this.connectWebSocket();
+          });
+        }
+      }
+    });
+  }
+
+  async ensureVaultReady() {
+    // 移动端沙盒文件扫描速度较慢，给足稳定探测时间
+    const isMobile = Platform ? Platform.isMobile : false;
+    const maxWaitTime = isMobile ? 3500 : 800;
+    const startTime = Date.now();
+    let lastCount = this.app.vault.getFiles().length;
+
+    while (Date.now() - startTime < maxWaitTime) {
+      await new Promise((r) => setTimeout(r, isMobile ? 400 : 150));
+      const currentCount = this.app.vault.getFiles().length;
+      if (currentCount > 0 && currentCount === lastCount) {
+        // 文件数量稳定且大于 0，说明扫描完成
+        break;
+      }
+      lastCount = currentCount;
+    }
+  }
+
+  onunload() {
+    this.disconnectWebSocket();
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.pingTimer) clearInterval(this.pingTimer);
+    if (this.localChangeQueue) {
+      for (const timer of this.localChangeQueue.values()) {
+        clearTimeout(timer);
+      }
+      this.localChangeQueue.clear();
+    }
+  }
+
+  async loadSettings() {
+    const data = (await this.loadData()) || {};
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+
+    // 智能双向对齐 token 与 authToken 引用
+    if (!this.settings.token && this.settings.authToken) {
+      this.settings.token = this.settings.authToken;
+    }
+    if (!this.settings.authToken && this.settings.token) {
+      this.settings.authToken = this.settings.token;
+    }
+
+    // 容错：如果粘贴配置中携带 wsUrl 且包含 token 参数，提取作为令牌兜底
+    if (!this.settings.token && this.settings.wsUrl) {
+      try {
+        const dummyUrl = new URL(this.settings.wsUrl.replace(/^wss?:\/\//i, 'http://'));
+        const extracted = dummyUrl.searchParams.get('token') || dummyUrl.searchParams.get('authToken');
+        if (extracted) {
+          this.settings.token = extracted;
+          this.settings.authToken = extracted;
+        }
+      } catch {}
+    }
+  }
+
+  async saveSettings() {
+    if (this.settings.token && !this.settings.authToken) {
+      this.settings.authToken = this.settings.token;
+    } else if (this.settings.authToken && !this.settings.token) {
+      this.settings.token = this.settings.authToken;
+    }
+    await this.saveData(this.settings);
+  }
+
+  scheduleSaveSettings() {
+    if (this._saveSettingsTimer) {
+      clearTimeout(this._saveSettingsTimer);
+    }
+    this._saveSettingsTimer = setTimeout(async () => {
+      this._saveSettingsTimer = null;
+      await this.saveSettings();
+    }, 400);
+  }
+
+  async loadBaselineCache() {
+    this.baselinesCache = {};
+    const configDir = (this.app.vault && this.app.vault.configDir) || '.obsidian';
+    const baselineFilePath = `${configDir}/plugins/nimbus-sync/baseline.cache.json`;
+    try {
+      if (this.app.vault && this.app.vault.adapter && await this.app.vault.adapter.exists(baselineFilePath)) {
+        const raw = await this.app.vault.adapter.read(baselineFilePath);
+        this.baselinesCache = JSON.parse(raw);
+      }
+    } catch (e) {
+      console.warn('[Nimbus] 读取独立基线缓存异常:', e);
+    }
+
+    // 兼容迁移：如果以前保存在 settings.syncBaselines 中，自动迁出到独立基线文件
+    if (this.settings.syncBaselines && typeof this.settings.syncBaselines === 'object' && Object.keys(this.settings.syncBaselines).length > 0) {
+      for (const [vId, bMap] of Object.entries(this.settings.syncBaselines)) {
+        if (!this.baselinesCache[vId] || Object.keys(this.baselinesCache[vId]).length === 0) {
+          this.baselinesCache[vId] = bMap;
+        }
+      }
+      delete this.settings.syncBaselines;
+      await this.saveSettings();
+      await this.saveBaselineCache();
+    }
+  }
+
+  async saveBaselineCache() {
+    const configDir = (this.app.vault && this.app.vault.configDir) || '.obsidian';
+    const baselineFilePath = `${configDir}/plugins/nimbus-sync/baseline.cache.json`;
+    try {
+      if (this.app.vault && this.app.vault.adapter) {
+        const json = JSON.stringify(this.baselinesCache || {});
+        await this.app.vault.adapter.write(baselineFilePath, json);
+      }
+    } catch (e) {
+      console.warn('[Nimbus] 写入独立基线缓存异常:', e);
+    }
+  }
+
+  scheduleSaveBaselineCache() {
+    if (this._saveBaselineTimer) {
+      clearTimeout(this._saveBaselineTimer);
+    }
+    this._saveBaselineTimer = setTimeout(async () => {
+      this._saveBaselineTimer = null;
+      await this.saveBaselineCache();
+    }, 400);
+  }
+
+  getVaultBaseline(vaultId = this.settings.vaultId) {
+    if (!vaultId) return {};
+    if (!this.baselinesCache) {
+      this.baselinesCache = {};
+    }
+    return this.baselinesCache[vaultId] || {};
+  }
+
+  getBaselineEntry(vaultId = this.settings.vaultId, filePath) {
+    if (!vaultId || !filePath) return null;
+    const baseline = this.getVaultBaseline(vaultId);
+    return baseline ? baseline[filePath] || null : null;
+  }
+
+  updateBaselineEntry(vaultId, filePath, meta) {
+    if (!vaultId || !filePath) return;
+    if (!this.baselinesCache) {
+      this.baselinesCache = {};
+    }
+    if (!this.baselinesCache[vaultId]) {
+      this.baselinesCache[vaultId] = {};
+    }
+    if (meta === null || meta === undefined) {
+      delete this.baselinesCache[vaultId][filePath];
+    } else {
+      this.baselinesCache[vaultId][filePath] = {
+        hash: meta.hash,
+        mtime: meta.mtime || Date.now(),
+        size: meta.size || 0
+      };
+    }
+    this.scheduleSaveBaselineCache();
+  }
+
+  getVaultCursor(vaultId = this.settings.vaultId) {
+    if (!vaultId) return 0;
+    if (!this.settings.syncCursors) this.settings.syncCursors = {};
+    return this.settings.syncCursors[vaultId] || 0;
+  }
+
+  setVaultCursor(vaultId, cursor) {
+    if (!vaultId || typeof cursor !== 'number') return;
+    if (!this.settings.syncCursors) this.settings.syncCursors = {};
+    this.settings.syncCursors[vaultId] = cursor;
+    this.scheduleSaveSettings();
+  }
+
+  isIgnoredLocalPath(filePath) {
+    if (!filePath) return true;
+    const ignoredPatterns = [
+      /^\.git(\/|$)/,
+      /^\.obsidian\/workspace.*\.json$/,
+      /^\.trash(\/|$)/,
+      /\.DS_Store$/,
+      /Thumbs\.db$/,
+      /desktop\.ini$/,
+      /\.tmp$/,
+      /\.swp$/
+    ];
+    return ignoredPatterns.some((rx) => rx.test(filePath));
+  }
+
+  updateStatusBar(status, customText) {
+    if (!this.statusBarItem) return;
+    switch (status) {
+      case 'syncing':
+        this.statusBarItem.setText('☁️ Nimbus: 正在同步...');
+        break;
+      case 'connected':
+        this.statusBarItem.setText('☁️ Nimbus: 实时连接中');
+        break;
+      case 'error':
+        this.statusBarItem.setText('☁️ Nimbus: 同步中断');
+        break;
+      case 'idle':
+      default:
+        this.statusBarItem.setText(customText || '☁️ Nimbus: 就绪');
+        break;
+    }
+  }
+
+  getCleanServerUrl() {
+    return (this.settings.serverUrl || '').trim().replace(/\/+$/, '');
+  }
+
+  // --- API Authentication & Vaults ---
+  async autoMatchOrCreateVault() {
+    if (!this.settings.token) return null;
+    const localVaultName = this.app.vault.getName() || 'DefaultVault';
+    const vaults = await this.fetchVaults();
+
+    // 1. Check if server already has a vault matching current local vault name
+    let targetVault = vaults.find(v => v.name.toLowerCase() === localVaultName.toLowerCase());
+
+    // 2. If not matched, check if current settings vault exists
+    if (!targetVault && this.settings.vaultId) {
+      targetVault = vaults.find(v => v.id === this.settings.vaultId);
+    }
+
+    // 3. If still no vault or server has 0 vaults, auto-create one matching local vault name!
+    if (!targetVault) {
+      if (vaults.length === 0) {
+        new Notice(`☁️ 服务端暂无 Vault，正在自动为您创建并绑定「${localVaultName}」...`);
+        targetVault = await this.createVault(localVaultName);
+      } else {
+        // Use first vault or auto-create local vault
+        targetVault = vaults[0];
+      }
+    }
+
+    if (targetVault) {
+      this.settings.vaultId = targetVault.id;
+      this.settings.vaultName = targetVault.name;
+      await this.saveSettings();
+      new Notice(`🎯 已自动加载并绑定知识库:「${targetVault.name}」`);
+    }
+
+    return targetVault;
+  }
+
+  async login() {
+    const baseUrl = this.getCleanServerUrl();
+    if (!baseUrl) {
+      new Notice('❌ 请先填写服务器地址');
+      return false;
+    }
+
+    try {
+      const resp = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: this.settings.username,
+          password: this.settings.password
+        })
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${resp.status}`);
+      }
+
+      const data = await resp.json();
+      this.settings.token = data.token;
+      this.settings.authToken = data.token;
+      await this.saveSettings();
+
+      new Notice('✅ 成功登录到 Nimbus 服务器！');
+
+      // Automatically detect, match or create vault for the current local vault!
+      await this.autoMatchOrCreateVault();
+
+      if (this.settings.vaultId && this.settings.autoSync) {
+        this.connectWebSocket();
+      }
+
+      return true;
+    } catch (e) {
+      new Notice(`❌ 登录失败: ${e.message}`);
+      return false;
+    }
+  }
+
+  async fetchVaults() {
+    const baseUrl = this.getCleanServerUrl();
+    if (!this.settings.token) return [];
+
+    try {
+      const resp = await fetch(`${baseUrl}/api/vaults`, {
+        headers: { 'Authorization': `Bearer ${this.settings.token}` }
+      });
+      if (!resp.ok) return [];
+      const data = await resp.json();
+      this.availableVaults = data.vaults || [];
+      
+      // Auto select first vault if none selected
+      if (this.availableVaults.length > 0 && (!this.settings.vaultId || !this.availableVaults.some(v => v.id === this.settings.vaultId))) {
+        this.settings.vaultId = this.availableVaults[0].id;
+        this.settings.vaultName = this.availableVaults[0].name;
+        await this.saveSettings();
+      }
+      return this.availableVaults;
+    } catch (err) {
+      console.error('[Nimbus] 获取 Vault 列表失败:', err);
+      return [];
+    }
+  }
+
+  async createVault(name) {
+    const baseUrl = this.getCleanServerUrl();
+    if (!this.settings.token) return null;
+
+    try {
+      const resp = await fetch(`${baseUrl}/api/vaults`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.settings.token}`
+        },
+        body: JSON.stringify({ name })
+      });
+      if (!resp.ok) throw new Error('创建失败');
+      const data = await resp.json();
+      await this.fetchVaults();
+      return data.vault;
+    } catch (err) {
+      new Notice(`❌ 创建 Vault 失败: ${err.message}`);
+      return null;
+    }
+  }
+
+  // --- WebSocket Connection ---
+  connectWebSocket() {
+    this.disconnectWebSocket();
+
+    const rawToken = (this.settings.token || this.settings.authToken || '').trim();
+    if (!rawToken || !this.settings.vaultId) {
+      this.updateStatusBar('idle', '☁️ Nimbus: 未配置');
+      return;
+    }
+
+    const cleanToken = rawToken.replace(/^Bearer\s+/i, '').trim();
+
+    const baseUrl = this.getCleanServerUrl();
+    const wsProto = baseUrl.startsWith('https:') ? 'wss:' : 'ws:';
+    const host = baseUrl.replace(/^https?:\/\//i, '');
+    const localCursor = this.getVaultCursor(this.settings.vaultId || 'default');
+    const wsUrl = `${wsProto}//${host}/ws?token=${encodeURIComponent(cleanToken)}&vaultId=${encodeURIComponent(this.settings.vaultId)}&deviceId=${encodeURIComponent(this.settings.deviceId)}&cursor=${encodeURIComponent(localCursor)}`;
+
+    try {
+      this.ws = new WebSocket(wsUrl);
+
+      this.ws.onopen = () => {
+        this.updateStatusBar('connected');
+        new Notice('☁️ Nimbus 实时双向同步已连接');
+
+        // Start ping heartbeat
+        if (this.pingTimer) clearInterval(this.pingTimer);
+        this.pingTimer = setInterval(() => {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: 'ping' }));
+          }
+        }, 25000);
+      };
+
+      this.ws.onmessage = async (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          await this.handleServerMessage(msg);
+        } catch (err) {
+          console.error('[Nimbus] 解析服务器消息异常:', err);
+        }
+      };
+
+      this.ws.onclose = (e) => {
+        if (this.pingTimer) clearInterval(this.pingTimer);
+        if (e && (e.code === 4001 || e.code === 4003)) {
+          this.updateStatusBar('error', '☁️ Nimbus: 令牌已失效');
+          return;
+        }
+        this.updateStatusBar('idle', '☁️ Nimbus: 连接已断开');
+        // Auto reconnect
+        if (this.settings.autoSync) {
+          if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = setTimeout(() => this.connectWebSocket(), 5000);
+        }
+      };
+
+      this.ws.onerror = (err) => {
+        console.error('[Nimbus] WebSocket 错误:', err);
+        this.updateStatusBar('error');
+      };
+    } catch (err) {
+      console.error('[Nimbus] 连接初始化失败:', err);
+      this.updateStatusBar('error');
+    }
+  }
+
+  disconnectWebSocket() {
+    if (this.pingTimer) clearInterval(this.pingTimer);
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+  }
+
+  // --- Server Message Handling ---
+  async handleServerMessage(msg) {
+    if (!msg || !msg.type) return;
+
+    switch (msg.type) {
+      case 'init': {
+        const serverCursor = typeof msg.cursor === 'number' ? msg.cursor : 0;
+        const vaultId = this.settings.vaultId || 'default';
+        const localCursor = this.getVaultCursor(vaultId);
+
+        // 如果本地已存在有效游标且服务端游标大于本地游标，优先执行秒级增量追更 (Delta Sync)
+        if (localCursor > 0 && serverCursor > localCursor) {
+          const deltaOk = await this.syncDeltaChanges(localCursor);
+          if (deltaOk) {
+            break;
+          }
+          // 🛡️ 增量追更若因网络波动或部分拉取未完成，保留游标断点续传，绝不冒然降级全量并推进游标导致漏拉
+          console.warn('[Nimbus] 增量追更有未完成项，保留当前游标等待下次重试');
+          break;
+        } else if (localCursor > 0 && serverCursor === localCursor) {
+          // 游标完全吻合，秒级对齐完成
+          new Notice('✅ 本地已与 Nimbus 云端完全对齐');
+          break;
+        }
+
+        // 首次同步或游标断层时，执行 3-Way 双向对比
+        let manifest = msg.manifest;
+        if (!manifest || Object.keys(manifest).length === 0) {
+          manifest = await this.fetchManifestHttp(vaultId);
+        }
+        await this.syncManifest(manifest || {}, serverCursor);
+        break;
+      }
+
+      case 'change':
+        // A file was created/updated remotely
+        if (typeof msg.cursor === 'number') {
+          this.setVaultCursor(this.settings.vaultId, msg.cursor);
+        }
+        if (msg.path && msg.hash && this.fileHashes.get(msg.path) === msg.hash) {
+          // 本地已是目标相同哈希版本（如本设备自产生上传或已同步），无需重复拉取，拦截自反回声
+          return;
+        }
+        if (msg.pullRequired || !msg.content) {
+          await this.pullRemoteFileViaHttp(msg.path, msg.mtime, msg.hash);
+        } else {
+          await this.applyRemoteChange(msg.path, msg.content, msg.mtime, msg.hash);
+        }
+        break;
+
+      case 'batch_file_change':
+      case 'batch_change':
+        if (typeof msg.cursor === 'number') {
+          this.setVaultCursor(this.settings.vaultId, msg.cursor);
+        }
+        // Handle coalesced or server batch change notifications
+        if (msg.pullRequired) {
+          await this.fullSyncAllFiles();
+        } else if (Array.isArray(msg.changes)) {
+          for (const item of msg.changes) {
+            if (!item || !item.path) continue;
+            if (item.action === 'delete') {
+              await this.applyRemoteDelete(item.path);
+            } else {
+              const localHash = this.fileHashes.get(item.path);
+              if (item.hash && localHash === item.hash) {
+                continue;
+              }
+              if (item.size && item.size > 2 * 1024 * 1024) {
+                await this.pullRemoteFileViaHttp(item.path, item.mtime, item.hash);
+              } else {
+                this.sendWsMessage({ type: 'pull', path: item.path });
+              }
+            }
+          }
+        }
+        break;
+
+      case 'pull_stream':
+        // Server directed large file pull via streaming HTTP
+        await this.pullRemoteFileViaHttp(msg.path, msg.mtime, msg.hash);
+        break;
+
+      case 'deleted':
+        // A file was deleted remotely
+        if (typeof msg.cursor === 'number') {
+          this.setVaultCursor(this.settings.vaultId, msg.cursor);
+        }
+        await this.applyRemoteDelete(msg.path);
+        break;
+
+      case 'conflict':
+        new Notice(`⚠️ 检测到并发冲突！已自动创建云端分支副本: ${msg.conflictPath}`);
+        // 1. 自动拉取云端新创建的分支副本保存至本地
+        if (msg.conflictPath) {
+          this.sendWsMessage({ type: 'pull', path: msg.conflictPath });
+        }
+        // 2. 自动拉取云端主文件当前胜出版本同步至本地
+        if (msg.path) {
+          this.sendWsMessage({ type: 'pull', path: msg.path });
+        }
+        break;
+
+      case 'permission_updated':
+        new Notice(`ℹ️ ${msg.message || '您的笔记库权限已更新'}`);
+        break;
+
+      case 'file':
+        // Response to pull
+        await this.applyRemoteChange(msg.path, msg.content, msg.mtime, msg.hash);
+        break;
+
+      case 'ack':
+        if (msg.hash) {
+          this.fileHashes.set(msg.path, msg.hash);
+          this.updateBaselineEntry(this.settings.vaultId, msg.path, {
+            hash: msg.hash,
+            mtime: msg.mtime || Date.now()
+          });
+        }
+        break;
+
+      case 'pong':
+        break;
+
+      case 'auth_revoked':
+        new Notice(`❌ 令牌凭据已撤销: ${msg.message || '请重新配置设备令牌'}`);
+        this.updateStatusBar('error', '☁️ Nimbus: 令牌已撤销');
+        this.disconnectWebSocket();
+        break;
+
+      case 'error':
+        console.warn('[Nimbus] 服务器返回错误:', msg.message);
+        break;
+    }
+  }
+
+  async syncDeltaChanges(sinceCursor) {
+    try {
+      const baseUrl = this.getCleanServerUrl();
+      const vaultId = this.settings.vaultId;
+      if (!baseUrl || !vaultId || !this.settings.token) return false;
+
+      const url = `${baseUrl}/api/vaults/${encodeURIComponent(vaultId)}/changes?since=${sinceCursor}&limit=500&compact=true`;
+      const res = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${this.settings.token}` }
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (data.full || data.fullSyncRequired) {
+        console.warn('[Nimbus] 服务端要求全量快照同步, 原因:', data.reason);
+        await this.syncManifest(data.manifest || {}, data.cursor || 0);
+        return true;
+      }
+
+      const updates = Array.isArray(data.updates) ? data.updates : [];
+      const deletes = Array.isArray(data.deletes) ? data.deletes : [];
+      const totalChanges = updates.length + deletes.length;
+
+      if (totalChanges > 0) {
+        new Notice(`⚡ 正在应用增量追更: 下载 ${updates.length} 篇，删除 ${deletes.length} 篇...`);
+        // 1. 删除远程已删文件
+        for (const del of deletes) {
+          if (del && del.path) {
+            await this.applyRemoteDelete(del.path);
+          }
+        }
+        // 2. 更新远程改动文件：严格使用 HTTP 并发流式拉取并等待落盘屏障 (Promise Barrier)
+        let hasPullFailure = false;
+        const PULL_CONCURRENCY = 4;
+        for (let i = 0; i < updates.length; i += PULL_CONCURRENCY) {
+          const batch = updates.slice(i, i + PULL_CONCURRENCY);
+          const results = await Promise.all(batch.map(async (item) => {
+            if (!item || !item.path) return true;
+            const localHash = this.fileHashes.get(item.path);
+            if (item.hash && localHash === item.hash) {
+              return true;
+            }
+            const ok = await this.pullRemoteFileViaHttp(item.path, item.mtime, item.hash);
+            return ok !== false;
+          }));
+          if (results.some((r) => !r)) {
+            hasPullFailure = true;
+          }
+          if (i + PULL_CONCURRENCY < updates.length) {
+            await new Promise((r) => setTimeout(r, 30));
+          }
+        }
+
+        // 🛡️ 增量一致性防线：若有文件拉取或写入失败，绝不冒然推进游标，保留现场以备下次重试完整补齐
+        if (hasPullFailure) {
+          console.warn('[Nimbus] 增量追更有部分文件未能成功落地，已中止推进游标以防永久漏拉');
+          new Notice('⚠️ 部分增量文件拉取受阻，已暂停游标推进以防漏拉，将在网络恢复后自动重试');
+          return false;
+        }
+      }
+
+      const nextCursor = typeof data.cursor === 'number' ? data.cursor : (typeof data.latestCursor === 'number' ? data.latestCursor : sinceCursor);
+      if (nextCursor) {
+        this.setVaultCursor(vaultId, nextCursor);
+      }
+
+      // 如果有分页数据且游标有向前推进，继续追更下一页
+      if (data.hasMore && nextCursor > sinceCursor) {
+        return await this.syncDeltaChanges(nextCursor);
+      }
+
+      if (totalChanges > 0) {
+        new Notice(`✅ 增量追更完成 (共 ${totalChanges} 项)，游标已推进至 #${nextCursor}`);
+      }
+      return true;
+    } catch (err) {
+      console.warn('[Nimbus] 增量追更发生异常，将回退至全量对比:', err);
+      return false;
+    }
+  }
+
+  async fetchManifestHttp(vaultId) {
+    try {
+      const baseUrl = this.getCleanServerUrl();
+      if (!baseUrl || !vaultId || !this.settings.token) return null;
+      const res = await fetch(`${baseUrl}/api/vaults/${encodeURIComponent(vaultId)}/manifest`, {
+        headers: { 'Authorization': `Bearer ${this.settings.token}` }
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data.manifest || null;
+    } catch (err) {
+      console.error('[Nimbus] 获取云端全量清单失败:', err);
+      return null;
+    }
+  }
+
+  async computeFileHash(file) {
+    if (!file || !(file instanceof TFile)) return null;
+    try {
+      const buffer = await this.app.vault.readBinary(file);
+      return await computeSha256(buffer);
+    } catch (err) {
+      console.warn('[Nimbus] 计算本地文件哈希失败:', file.path, err);
+      return null;
+    }
+  }
+
+  async syncManifest(remoteManifest, remoteCursor = 0) {
+    new Notice('☁️ Nimbus 正在检查笔记库并自动同步 (3-Way Diff)...');
+    try {
+      const vaultId = this.settings.vaultId || 'default';
+      let baseline = { ...this.getVaultBaseline(vaultId) };
+      const files = this.app.vault.getFiles();
+      const localFileMap = new Map();
+      for (const f of files) {
+        if (!this.isIgnoredLocalPath(f.path)) {
+          localFileMap.set(f.path, f);
+        }
+      }
+
+      const remoteEntries = Object.entries(remoteManifest || {});
+      const remoteCount = remoteEntries.length;
+      const localCount = localFileMap.size;
+
+      // =========================================================================
+      // 🛡️ 防御机制 1: 本地空库 / 新设备换机自愈 (Fresh Vault / New Device Auto-Heal)
+      // 若本地为 0 个文件而云端有笔记，这 100% 是新设备安装或配置迁移，绝非用户主动删库！
+      // 彻底清空任何历史/拷贝带来的幽灵基线 (Phantom Baseline)，禁止产生任何删除，转为全量初始拉取！
+      // =========================================================================
+      if (localCount === 0 && remoteCount > 0) {
+        console.warn(`[Nimbus] 检测到本地库为空 (0 个文件)，而云端有 ${remoteCount} 个文件。判定为新设备/初次拉取，自动重置基线并全量拉取！`);
+        new Notice(`🌱 首次同步 / 换机恢复：正在从云端拉取全部 ${remoteCount} 篇笔记...`);
+
+        // 重置该库基线，防止误用 PC 端复制过来的 baseline
+        if (!this.baselinesCache) this.baselinesCache = {};
+        this.baselinesCache[vaultId] = {};
+        await this.saveBaselineCache();
+        if (remoteCursor) {
+          this.setVaultCursor(vaultId, remoteCursor);
+        }
+
+        const toPull = remoteEntries.map(([p, meta]) => ({ path: p, meta }));
+        const PULL_CONCURRENCY = 6;
+        for (let i = 0; i < toPull.length; i += PULL_CONCURRENCY) {
+          const batch = toPull.slice(i, i + PULL_CONCURRENCY);
+          for (const item of batch) {
+            if (item.meta && item.meta.size && item.meta.size > 2 * 1024 * 1024) {
+              await this.pullRemoteFileViaHttp(item.path, item.meta.mtime, item.meta.hash);
+            } else {
+              this.sendWsMessage({ type: 'pull', path: item.path });
+            }
+          }
+          if (i + PULL_CONCURRENCY < toPull.length) {
+            await new Promise((r) => setTimeout(r, 40));
+          }
+        }
+        return;
+      }
+
+      const allPaths = new Set([
+        ...localFileMap.keys(),
+        ...Object.keys(remoteManifest || {}),
+        ...Object.keys(baseline)
+      ]);
+
+      const toPull = [];
+      const toPush = [];
+      const toLocalDelete = [];
+      const toRemoteDelete = [];
+
+      // 3-Way 对比分析：Local (本地当前) vs Remote (云端当前) vs Base (上次同步基线)
+      for (const path of allPaths) {
+        if (this.isIgnoredLocalPath(path)) continue;
+
+        const localFile = localFileMap.get(path);
+        const remoteMeta = remoteManifest ? remoteManifest[path] : null;
+        const baseMeta = baseline[path];
+
+        if (localFile && remoteMeta && baseMeta) {
+          // 场景 1: 三方均存在
+          const localHash = await this.computeFileHash(localFile);
+          if (localHash === remoteMeta.hash) {
+            // 内容一致，更新内存与基线
+            this.fileHashes.set(path, remoteMeta.hash);
+            baseline[path] = { hash: remoteMeta.hash, mtime: remoteMeta.mtime, size: remoteMeta.size };
+          } else {
+            const localChanged = (localHash !== baseMeta.hash);
+            const remoteChanged = (remoteMeta.hash !== baseMeta.hash);
+
+            if (localChanged && !remoteChanged) {
+              // 仅本地修改 -> 推送至云端
+              toPush.push(localFile);
+            } else if (!localChanged && remoteChanged) {
+              // 仅云端修改 -> 拉取至本地
+              toPull.push({ path, meta: remoteMeta });
+            } else {
+              // 并发修改/时间戳比对
+              const localMtime = (localFile.stat && localFile.stat.mtime) ? localFile.stat.mtime : 0;
+              const remoteMtime = (remoteMeta.mtime) ? remoteMeta.mtime : 0;
+              if (remoteMtime > localMtime) {
+                toPull.push({ path, meta: remoteMeta });
+              } else {
+                toPush.push(localFile);
+              }
+            }
+          }
+        } else if (localFile && !remoteMeta && baseMeta) {
+          // 场景 2: 本地存在，基线存在，但云端已不存在 (例如 PC 端删除了云端文件)
+          const localHash = await this.computeFileHash(localFile);
+          const localChanged = (localHash !== baseMeta.hash);
+          if (!localChanged) {
+            // 本地未修改过 -> 遵从云端删除指令，删除本地文件，避免复活云端！
+            toLocalDelete.push(path);
+            delete baseline[path];
+            this.fileHashes.delete(path);
+          } else {
+            // 本地离线有新编辑 -> 保留本地修改，作为新文件重新推送
+            this.fileHashes.set(path, localHash);
+            toPush.push(localFile);
+          }
+        } else if (!localFile && remoteMeta && baseMeta) {
+          // 场景 3: 云端存在，基线存在，但本地已不存在 (例如本端离线时删除了该笔记)
+          const remoteChanged = (remoteMeta.hash !== baseMeta.hash);
+          if (!remoteChanged) {
+            // 云端未被其他设备修改 -> 遵从本地删除，向云端发送删除指令
+            toRemoteDelete.push(path);
+            delete baseline[path];
+            this.fileHashes.delete(path);
+          } else {
+            // 云端被其他设备更新了 -> 保留云端新内容，拉取到本地
+            toPull.push({ path, meta: remoteMeta });
+          }
+        } else if (localFile && !remoteMeta && !baseMeta) {
+          // 场景 4: 本地纯新增文件 (无基线，云端无) -> 推送
+          const localHash = await this.computeFileHash(localFile);
+          if (localHash) {
+            this.fileHashes.set(path, localHash);
+          }
+          toPush.push(localFile);
+        } else if (!localFile && remoteMeta && !baseMeta) {
+          // 场景 5: 云端纯新增文件 (无基线，本地无) -> 拉取
+          toPull.push({ path, meta: remoteMeta });
+        } else if (localFile && remoteMeta && !baseMeta) {
+          // 场景 6: 两端均存在但无历史基线 (首次绑定/基线重置)
+          const localHash = await this.computeFileHash(localFile);
+          if (localHash && remoteMeta.hash && localHash === remoteMeta.hash) {
+            this.fileHashes.set(path, remoteMeta.hash);
+            baseline[path] = { hash: remoteMeta.hash, mtime: remoteMeta.mtime, size: remoteMeta.size };
+          } else {
+            const localMtime = (localFile.stat && localFile.stat.mtime) ? localFile.stat.mtime : 0;
+            const remoteMtime = (remoteMeta.mtime) ? remoteMeta.mtime : 0;
+            if (remoteMtime > localMtime) {
+              toPull.push({ path, meta: remoteMeta });
+            } else {
+              if (localHash) this.fileHashes.set(path, localHash);
+              toPush.push(localFile);
+            }
+          }
+        } else if (!localFile && !remoteMeta && baseMeta) {
+          // 场景 7: 两端均已删除
+          delete baseline[path];
+          this.fileHashes.delete(path);
+        }
+      }
+
+      // =========================================================================
+      // 🛡️ 防御机制 2: 批量删除安全熔断阀 (Safety Circuit Breaker)
+      // 若单次尝试删除超过安全阈值（例如 > 5 篇且占总比 > 35%），自动强制拦截！
+      // =========================================================================
+      const remoteDelThreshold = Math.max(5, Math.floor(remoteCount * 0.35));
+      if (toRemoteDelete.length > remoteDelThreshold) {
+        console.error(`[Nimbus 安全熔断] 拦截异常大批量云端删除！尝试删除: ${toRemoteDelete.length} 篇，云端总数: ${remoteCount}`);
+        new Notice(`⚠️ [Nimbus 安全熔断] 拦截到单次尝试删除 ${toRemoteDelete.length} 篇云端笔记！\n已自动暂停云端删除以防意外清空。若确需批量删除，请在控制台操作。`, 10000);
+        toRemoteDelete.length = 0; // 清空删除任务
+      }
+
+      const localDelThreshold = Math.max(5, Math.floor(localCount * 0.35));
+      if (toLocalDelete.length > localDelThreshold) {
+        console.error(`[Nimbus 安全熔断] 拦截异常大批量本地删除！尝试删除: ${toLocalDelete.length} 篇，本地总数: ${localCount}`);
+        new Notice(`⚠️ [Nimbus 安全熔断] 拦截到单次尝试删除本地 ${toLocalDelete.length} 篇笔记！\n已自动暂停本地删除以防数据丢失。`, 10000);
+        toLocalDelete.length = 0; // 清空本地删除任务
+      }
+
+      const pullCount = toPull.length;
+      const pushCount = toPush.length;
+      const localDelCount = toLocalDelete.length;
+      const remoteDelCount = toRemoteDelete.length;
+
+      if (pullCount === 0 && pushCount === 0 && localDelCount === 0 && remoteDelCount === 0) {
+        if (!this.baselinesCache) this.baselinesCache = {};
+        this.baselinesCache[vaultId] = baseline;
+        await this.saveBaselineCache();
+        if (remoteCursor) {
+          this.setVaultCursor(vaultId, remoteCursor);
+        }
+        new Notice('✅ 本地笔记与 Nimbus 云端已保持一致 (3-Way 基线校验完成)');
+        return;
+      }
+
+      new Notice(`⚡ 3-Way 同步开始: 上传 ${pushCount}，下载 ${pullCount}，本地删除 ${localDelCount}，云端删除 ${remoteDelCount}`);
+
+      // 1. 执行本地删除 (云端已删)
+      for (const delPath of toLocalDelete) {
+        await this.applyRemoteDelete(delPath);
+      }
+
+      // 2. 执行云端删除 (本地已删)
+      for (const delPath of toRemoteDelete) {
+        this.sendWsMessage({ type: 'delete', path: delPath });
+      }
+
+      // 3. 并发节流执行拉取 (PULL)，等待所有文件确认落地落盘
+      let hasPullFailure = false;
+      const PULL_CONCURRENCY = 4;
+      for (let i = 0; i < toPull.length; i += PULL_CONCURRENCY) {
+        const batch = toPull.slice(i, i + PULL_CONCURRENCY);
+        const results = await Promise.all(batch.map((item) => this.pullRemoteFileViaHttp(item.path, item.meta?.mtime, item.meta?.hash)));
+        if (results.some((r) => r === false)) {
+          hasPullFailure = true;
+        }
+        if (i + PULL_CONCURRENCY < toPull.length) {
+          await new Promise((r) => setTimeout(r, 40));
+        }
+      }
+
+      // 4. 并发节流执行推送 (PUSH)
+      const PUSH_CONCURRENCY = 4;
+      for (let i = 0; i < toPush.length; i += PUSH_CONCURRENCY) {
+        const batch = toPush.slice(i, i + PUSH_CONCURRENCY);
+        await Promise.all(batch.map((f) => this.pushLocalFile(f)));
+        if (i + PUSH_CONCURRENCY < toPush.length) {
+          await new Promise((r) => setTimeout(r, 30));
+        }
+      }
+
+      // 🛡️ 防御机制 3: 仅固化本地已经存在且内容确认的文件基线，新拉取落盘的文件也一并纳入
+      const currentVaultFiles = this.app.vault.getFiles();
+      const currentLocalPaths = new Set(currentVaultFiles.map((f) => f.path));
+      const sanitizedBaseline = {};
+      for (const [p, bInfo] of Object.entries(baseline)) {
+        if (currentLocalPaths.has(p)) {
+          sanitizedBaseline[p] = bInfo;
+        }
+      }
+
+      if (!this.baselinesCache) this.baselinesCache = {};
+      this.baselinesCache[vaultId] = sanitizedBaseline;
+      await this.saveBaselineCache();
+      if (remoteCursor && !hasPullFailure) {
+        this.setVaultCursor(vaultId, remoteCursor);
+      } else if (hasPullFailure) {
+        console.warn('[Nimbus] 3-Way 同步有部分文件未能成功拉取，暂不推进最新游标以备下次重试完整对齐');
+        new Notice('⚠️ 部分文件拉取遇阻，未推进游标以防漏拉，将在网络稳定后自动重试');
+      }
+
+      new Notice(`✅ 3-Way 自动同步完成: 成功处理 ${pushCount + pullCount + localDelCount + remoteDelCount} 个变更任务`);
+    } catch (err) {
+      console.error('[Nimbus] 3-Way 自动同步异常:', err);
+      new Notice(`❌ 自动同步异常: ${err.message}`);
+    }
+  }
+
+  async fullSyncAllFiles() {
+    new Notice('☁️ 开始全量双向同步...');
+    if (!this.settings.token || !this.settings.vaultId) {
+      new Notice('❌ 请先在 Nimbus 设置中完成登录并绑定 Vault');
+      return;
+    }
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.connectWebSocket();
+    }
+
+    try {
+      const baseUrl = this.getCleanServerUrl();
+      const res = await fetch(`${baseUrl}/api/vaults/${encodeURIComponent(this.settings.vaultId)}/manifest`, {
+        headers: {
+          'Authorization': `Bearer ${this.settings.token}`,
+        },
+      });
+
+      if (!res.ok) {
+        throw new Error(`获取云端清单失败 (HTTP ${res.status})`);
+      }
+
+      const data = await res.json();
+      const remoteManifest = data.manifest || {};
+      const remoteCursor = data.cursor || data.latestCursor || 0;
+      await this.syncManifest(remoteManifest, remoteCursor);
+    } catch (err) {
+      console.error('[Nimbus] 全量双向同步失败:', err);
+      new Notice(`❌ 全量双向同步失败: ${err.message}`);
+    }
+  }
+
+  async forcePushAllLocalFiles() {
+    new Notice('☁️ 开始强制推送本地所有笔记到云端...');
+    const files = this.app.vault.getFiles();
+    if (!this.settings.token || !this.settings.vaultId) {
+      new Notice('❌ 请先在 Nimbus 设置中完成登录并绑定 Vault');
+      return;
+    }
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.connectWebSocket();
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+
+    let pushed = 0;
+    const CONCURRENCY = 4;
+    for (let i = 0; i < files.length; i += CONCURRENCY) {
+      const batch = files.slice(i, i + CONCURRENCY);
+      await Promise.all(batch.map(async (f) => {
+        await this.pushLocalFile(f);
+        pushed++;
+      }));
+      if (i + CONCURRENCY < files.length) {
+        await new Promise((r) => setTimeout(r, 30));
+      }
+    }
+    new Notice(`✅ 强制推送完成: 共扫描并推送 ${pushed} 个笔记/附件至云端`);
+  }
+
+  async applyRemoteChange(filePath, base64Content, mtime, hash) {
+    if (!filePath || !base64Content) return;
+    const buffer = base64ToArrayBuffer(base64Content);
+    await this.applyRemoteBinaryChange(filePath, buffer, mtime, hash);
+  }
+
+  async applyRemoteBinaryChange(filePath, buffer, mtime, hash) {
+    if (!filePath || !buffer) return false;
+    if (!this.applyingRemotePaths) this.applyingRemotePaths = new Set();
+    this.applyingRemotePaths.add(filePath);
+    this.remoteApplyingCount = (this.remoteApplyingCount || 0) + 1;
+    this.isApplyingRemoteChange = true;
+
+    try {
+      const existing = this.app.vault.getAbstractFileByPath(filePath);
+
+      if (existing instanceof TFile) {
+        await this.app.vault.modifyBinary(existing, buffer);
+      } else {
+        // Ensure parent directories exist
+        const parts = filePath.split('/');
+        if (parts.length > 1) {
+          let currentPath = '';
+          for (let i = 0; i < parts.length - 1; i++) {
+            currentPath += (currentPath ? '/' : '') + parts[i];
+            if (!this.app.vault.getAbstractFileByPath(currentPath)) {
+              await this.app.vault.createFolder(currentPath);
+            }
+          }
+        }
+        await this.app.vault.createBinary(filePath, buffer);
+      }
+
+      const calculatedHash = hash || (await computeSha256(buffer));
+      if (calculatedHash) {
+        this.fileHashes.set(filePath, calculatedHash);
+        this.updateBaselineEntry(this.settings.vaultId, filePath, {
+          hash: calculatedHash,
+          mtime: mtime || Date.now(),
+          size: buffer.byteLength
+        });
+      }
+      return true;
+    } catch (err) {
+      console.error('[Nimbus] 写入远程文件失败:', filePath, err);
+      return false;
+    } finally {
+      this.applyingRemotePaths.delete(filePath);
+      this.remoteApplyingCount = Math.max(0, (this.remoteApplyingCount || 1) - 1);
+      this.isApplyingRemoteChange = (this.remoteApplyingCount > 0);
+    }
+  }
+
+  async pullRemoteFileViaHttp(filePath, mtime, expectedHash) {
+    if (!filePath || !this.settings.vaultId || !this.settings.token) return false;
+    if (expectedHash && this.fileHashes.get(filePath) === expectedHash) {
+      return true;
+    }
+    try {
+      const serverUrl = this.settings.serverUrl.replace(/\/+$/, '');
+      const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+      const url = `${serverUrl}/api/vaults/${encodeURIComponent(this.settings.vaultId)}/files/${encodedPath}`;
+      const headers = {
+        'Authorization': `Bearer ${this.settings.token}`,
+      };
+      if (this.settings.deviceId) {
+        headers['x-device-id'] = this.settings.deviceId;
+      }
+      const res = await fetch(url, { headers });
+      if (!res.ok) {
+        console.warn(`[Nimbus] HTTP 拉取文件失败 (${res.status}): ${filePath}`);
+        return false;
+      }
+      const arrayBuffer = await res.arrayBuffer();
+      const written = await this.applyRemoteBinaryChange(filePath, arrayBuffer, mtime, expectedHash);
+      return written !== false;
+    } catch (err) {
+      console.error('[Nimbus] HTTP 流式拉取远程文件失败:', filePath, err);
+      return false;
+    }
+  }
+
+  async applyRemoteDelete(filePath) {
+    if (!filePath) return false;
+    if (!this.applyingRemotePaths) this.applyingRemotePaths = new Set();
+    this.applyingRemotePaths.add(filePath);
+    this.remoteApplyingCount = (this.remoteApplyingCount || 0) + 1;
+    this.isApplyingRemoteChange = true;
+    try {
+      const existing = this.app.vault.getAbstractFileByPath(filePath);
+      if (existing instanceof TFile) {
+        await this.app.vault.delete(existing);
+      }
+      this.fileHashes.delete(filePath);
+      this.updateBaselineEntry(this.settings.vaultId, filePath, null);
+      return true;
+    } catch (err) {
+      console.error('[Nimbus] 删除本地文件失败:', filePath, err);
+      return false;
+    } finally {
+      this.applyingRemotePaths.delete(filePath);
+      this.remoteApplyingCount = Math.max(0, (this.remoteApplyingCount || 1) - 1);
+      this.isApplyingRemoteChange = (this.remoteApplyingCount > 0);
+    }
+  }
+
+  // --- Local File Changes ---
+  async onLocalFileChange(type, file) {
+    if (!this.isVaultReady || !(file instanceof TFile)) return;
+    if (this.isApplyingRemoteChange || (this.applyingRemotePaths && this.applyingRemotePaths.has(file.path))) return;
+    if (this.isIgnoredLocalPath(file.path)) return;
+
+    // 清除该文件之前的未执行防抖计时器
+    if (this.localChangeQueue.has(file.path)) {
+      clearTimeout(this.localChangeQueue.get(file.path));
+    }
+
+    // 新建文件立即或短延时推送，修改文件使用 400ms 防抖避免击穿 WebSocket 与产生多余历史版本
+    const delay = type === 'create' ? 50 : 400;
+    const timer = setTimeout(async () => {
+      this.localChangeQueue.delete(file.path);
+      await this.pushLocalFile(file);
+    }, delay);
+
+    this.localChangeQueue.set(file.path, timer);
+  }
+
+  async onLocalFileDelete(file) {
+    if (!this.isVaultReady || this.isApplyingRemoteChange) return;
+    if (file instanceof TFile) {
+      if (this.applyingRemotePaths && this.applyingRemotePaths.has(file.path)) return;
+      if (this.isIgnoredLocalPath(file.path)) return;
+      if (this.localChangeQueue.has(file.path)) {
+        clearTimeout(this.localChangeQueue.get(file.path));
+        this.localChangeQueue.delete(file.path);
+      }
+      this.sendWsMessage({
+        type: 'delete',
+        path: file.path
+      });
+      this.fileHashes.delete(file.path);
+      this.updateBaselineEntry(this.settings.vaultId, file.path, null);
+    } else if (file instanceof TFolder) {
+      const folderPrefix = file.path ? `${file.path}/` : '';
+      for (const [queuedPath, timer] of this.localChangeQueue.entries()) {
+        if (queuedPath.startsWith(folderPrefix)) {
+          clearTimeout(timer);
+          this.localChangeQueue.delete(queuedPath);
+        }
+      }
+      const matchedPaths = [];
+      for (const knownPath of Array.from(this.fileHashes.keys())) {
+        if (knownPath.startsWith(folderPrefix) && !this.isIgnoredLocalPath(knownPath)) {
+          matchedPaths.push(knownPath);
+        }
+      }
+      // 🛡️ 文件夹级批量删除安全熔断保护
+      if (matchedPaths.length > 10 && matchedPaths.length >= Math.max(1, this.fileHashes.size * 0.4)) {
+        console.warn(`[Nimbus 安全熔断] 拦截异常文件夹批量删除: ${file.path}, 涉及文件: ${matchedPaths.length}`);
+        new Notice(`⚠️ [Nimbus 安全熔断] 检测到删除文件夹包含 ${matchedPaths.length} 篇笔记（超安全阈值），已阻止向云端同步清空！`, 8000);
+        return;
+      }
+      for (const knownPath of matchedPaths) {
+        this.sendWsMessage({ type: 'delete', path: knownPath });
+        this.fileHashes.delete(knownPath);
+        this.updateBaselineEntry(this.settings.vaultId, knownPath, null);
+      }
+    }
+  }
+
+  async onLocalFileRename(file, oldPath) {
+    if (!this.isVaultReady || this.isApplyingRemoteChange) return;
+    if (file instanceof TFile) {
+      if (this.applyingRemotePaths && (this.applyingRemotePaths.has(file.path) || this.applyingRemotePaths.has(oldPath))) return;
+      if (this.isIgnoredLocalPath(file.path) && this.isIgnoredLocalPath(oldPath)) return;
+      if (this.localChangeQueue.has(oldPath)) {
+        clearTimeout(this.localChangeQueue.get(oldPath));
+        this.localChangeQueue.delete(oldPath);
+      }
+      // Delete old path on server and push new path
+      if (!this.isIgnoredLocalPath(oldPath)) {
+        this.sendWsMessage({ type: 'delete', path: oldPath });
+        this.fileHashes.delete(oldPath);
+        this.updateBaselineEntry(this.settings.vaultId, oldPath, null);
+      }
+      if (!this.isIgnoredLocalPath(file.path)) {
+        await this.pushLocalFile(file);
+      }
+    } else if (file instanceof TFolder) {
+      // 文件夹重命名：同步重命名并推送该目录下所有子文件
+      const oldPrefix = oldPath ? `${oldPath}/` : '';
+      const newPrefix = file.path ? `${file.path}/` : '';
+      for (const [queuedPath, timer] of this.localChangeQueue.entries()) {
+        if (queuedPath.startsWith(oldPrefix)) {
+          clearTimeout(timer);
+          this.localChangeQueue.delete(queuedPath);
+        }
+      }
+      const allFiles = this.app.vault.getFiles();
+      for (const f of allFiles) {
+        if (f.path.startsWith(newPrefix)) {
+          if (this.isIgnoredLocalPath(f.path)) continue;
+          const relativePart = f.path.substring(newPrefix.length);
+          const oldFilePath = oldPrefix + relativePart;
+          this.sendWsMessage({ type: 'delete', path: oldFilePath });
+          const oldHash = this.fileHashes.get(oldFilePath);
+          this.fileHashes.delete(oldFilePath);
+          this.updateBaselineEntry(this.settings.vaultId, oldFilePath, null);
+          if (oldHash) {
+            this.fileHashes.set(f.path, oldHash);
+          }
+          await this.pushLocalFile(f);
+        }
+      }
+    }
+  }
+
+  async pushLocalFile(file) {
+    if (this.isIgnoredLocalPath(file.path)) return;
+    if (this.applyingRemotePaths && this.applyingRemotePaths.has(file.path)) return;
+    try {
+      const buffer = await this.app.vault.readBinary(file);
+      const baseMeta = this.getBaselineEntry(this.settings.vaultId, file.path);
+      const baseHash = (baseMeta && baseMeta.hash) || this.fileHashes.get(file.path) || null;
+      const currentHash = await computeSha256(buffer);
+
+      // 🛡️ 内容无变化前置拦截：若内容与缓存哈希完全一致，跳过冗余的网络序列化与上传
+      if (currentHash && this.fileHashes.get(file.path) === currentHash) {
+        return;
+      }
+      const MAX_WS_INLINE = 2 * 1024 * 1024; // 2MB
+
+      // If file exceeds 2MB, stream via HTTP PUT to avoid WebSocket buffer memory pressure
+      if (buffer.byteLength > MAX_WS_INLINE && this.settings.serverUrl && this.settings.vaultId && this.settings.token) {
+        const serverUrl = this.settings.serverUrl.replace(/\/+$/, '');
+        const encodedPath = file.path.split('/').map(encodeURIComponent).join('/');
+        const url = `${serverUrl}/api/vaults/${encodeURIComponent(this.settings.vaultId)}/files/${encodedPath}`;
+        const headers = {
+          'Authorization': `Bearer ${this.settings.token}`,
+          'Content-Type': 'application/octet-stream',
+        };
+        if (baseHash) headers['x-base-hash'] = baseHash;
+        if (file.stat && file.stat.mtime) headers['x-mtime'] = String(file.stat.mtime);
+        if (this.settings.deviceId) headers['x-device-id'] = this.settings.deviceId;
+
+        const res = await fetch(url, {
+          method: 'PUT',
+          headers,
+          body: buffer,
+        });
+
+        if (res.ok) {
+          const body = await res.json();
+          const returnedHash = body && (body.currentHash || body.hash || currentHash);
+          if (returnedHash) {
+            this.fileHashes.set(file.path, returnedHash);
+            this.updateBaselineEntry(this.settings.vaultId, file.path, {
+              hash: returnedHash,
+              mtime: file.stat ? file.stat.mtime : Date.now(),
+              size: buffer.byteLength
+            });
+          }
+          if (body && body.conflict) {
+            new Notice(`⚠️ 检测到并发冲突！已自动创建冲突副本: ${body.conflict}`);
+          }
+        } else {
+          console.warn(`[Nimbus] 大文件 HTTP PUT 推送失败 (${res.status}):`, file.path);
+        }
+        return;
+      }
+
+      if (currentHash) {
+        this.fileHashes.set(file.path, currentHash);
+        this.updateBaselineEntry(this.settings.vaultId, file.path, {
+          hash: currentHash,
+          mtime: file.stat ? file.stat.mtime : Date.now(),
+          size: buffer.byteLength
+        });
+      }
+
+      const base64 = arrayBufferToBase64(buffer);
+      this.sendWsMessage({
+        type: 'push',
+        path: file.path,
+        content: base64,
+        mtime: file.stat ? file.stat.mtime : Date.now(),
+        baseHash: baseHash || undefined,
+      });
+    } catch (err) {
+      console.error('[Nimbus] 读取本地文件准备上传失败:', file.path, err);
+    }
+  }
+
+  sendWsMessage(payload) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(payload));
+    }
+  }
+
+  async manualSync() {
+    this.updateStatusBar('syncing');
+    if (!this.settings.token) {
+      const ok = await this.login();
+      if (!ok) return;
+    }
+    this.connectWebSocket();
+    new Notice('☁️ 正在触发 Nimbus 同步...');
+  }
+};
+
+// --- Settings UI ---
+class NimbusSettingTab extends PluginSettingTab {
+  constructor(app, plugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+
+  async display() {
+    const { containerEl } = this;
+    containerEl.empty();
+
+    containerEl.createEl('h2', { text: '☁️ Nimbus 同步插件设置' });
+    containerEl.createEl('p', { text: '连接您的私有 Nimbus 服务端，实现多设备极速双向无缝同步。', cls: 'setting-item-description' });
+
+    // ⚡ Quick Import from Clipboard (DeepLink / data.json / JSON)
+    new Setting(containerEl)
+      .setName('⚡ 快速导入与扫码直连')
+      .setDesc('一键从系统剪贴板导入网页端复制的 DeepLink 直连链接或 JSON 配置')
+      .addButton(btn => btn
+        .setButtonText('📋 从剪贴板一键导入')
+        .setCta()
+        .onClick(async () => {
+          try {
+            let clipboardText = '';
+            if (navigator.clipboard && navigator.clipboard.readText) {
+              clipboardText = await navigator.clipboard.readText();
+            } else {
+              new Notice('❌ 浏览器安全限制，无法直接读取剪贴板，请在下方手动填入');
+              return;
+            }
+
+            clipboardText = (clipboardText || '').trim();
+            if (!clipboardText) {
+              new Notice('⚠️ 剪贴板为空，请先在 Nimbus 网页端点击「复制 DeepLink」或「复制配置」');
+              return;
+            }
+
+            // Case A: obsidian://nimbus-sync?... URI
+            if (clipboardText.startsWith('obsidian://nimbus-sync')) {
+              const url = new URL(clipboardText);
+              const params = url.searchParams;
+              const server = params.get('server') || params.get('serverUrl');
+              const token = params.get('token') || params.get('authToken');
+              const vaultId = params.get('vaultId');
+              const vaultName = params.get('vaultName');
+              const device = params.get('device') || params.get('deviceId');
+
+              if (server) this.plugin.settings.serverUrl = server.replace(/\/+$/, '');
+              if (token) {
+                this.plugin.settings.token = token.trim().replace(/^Bearer\s+/i, '');
+                this.plugin.settings.authToken = this.plugin.settings.token;
+              }
+              if (vaultId) this.plugin.settings.vaultId = vaultId;
+              if (vaultName) this.plugin.settings.vaultName = vaultName;
+              if (device) this.plugin.settings.deviceId = device;
+              this.plugin.settings.authMode = 'token';
+
+              await this.plugin.saveSettings();
+              new Notice('✅ 成功从剪贴板导入 Nimbus DeepLink 直连配置！');
+              await this.display();
+              this.plugin.connectWebSocket();
+              return;
+            }
+
+            // Case B: JSON format
+            if (clipboardText.startsWith('{') && clipboardText.endsWith('}')) {
+              const parsed = JSON.parse(clipboardText);
+              if (parsed.serverUrl) this.plugin.settings.serverUrl = parsed.serverUrl.replace(/\/+$/, '');
+              if (parsed.token || parsed.authToken) {
+                const t = parsed.token || parsed.authToken;
+                this.plugin.settings.token = t.trim().replace(/^Bearer\s+/i, '');
+                this.plugin.settings.authToken = this.plugin.settings.token;
+              }
+              if (parsed.vaultId) this.plugin.settings.vaultId = parsed.vaultId;
+              if (parsed.vaultName) this.plugin.settings.vaultName = parsed.vaultName;
+              if (parsed.deviceId || parsed.deviceName) this.plugin.settings.deviceId = parsed.deviceId || parsed.deviceName;
+              this.plugin.settings.authMode = 'token';
+
+              await this.plugin.saveSettings();
+              new Notice('✅ 成功从剪贴板导入 Nimbus JSON 配置！');
+              await this.display();
+              this.plugin.connectWebSocket();
+              return;
+            }
+
+            new Notice('⚠️ 剪贴板内容不是有效的 Nimbus DeepLink 或 JSON 配置');
+          } catch (e) {
+            new Notice('❌ 导入失败: ' + e.message);
+          }
+        }));
+
+    // 1. Auth Mode Switch
+    new Setting(containerEl)
+      .setName('🔑 认证模式 (Auth Method)')
+      .setDesc('支持直接使用账号密码登录，或粘贴网页端生成的「设备专属令牌」')
+      .addDropdown(dd => {
+        dd.addOption('password', '账号密码登录 (默认)')
+          .addOption('token', '设备专属令牌 (Token 免密)')
+          .setValue(this.plugin.settings.authMode || 'password')
+          .onChange(async (val) => {
+            this.plugin.settings.authMode = val;
+            await this.plugin.saveSettings();
+            await this.display();
+          });
+      });
+
+    // 2. Server URL
+    new Setting(containerEl)
+      .setName('服务器地址 (Server URL)')
+      .setDesc('Nimbus 服务端完整访问地址 (例如 http://192.168.50.154:8787)')
+      .addText(text => text
+        .setPlaceholder('http://192.168.50.154:8787')
+        .setValue(this.plugin.settings.serverUrl)
+        .onChange(async (val) => {
+          this.plugin.settings.serverUrl = val;
+          await this.plugin.saveSettings();
+        }));
+
+    const currentAuthMode = this.plugin.settings.authMode || 'password';
+
+    if (currentAuthMode === 'password') {
+      // 3. Username
+      new Setting(containerEl)
+        .setName('用户名 (Username)')
+        .setDesc('Nimbus 管理后台账号')
+        .addText(text => text
+          .setValue(this.plugin.settings.username)
+          .onChange(async (val) => {
+            this.plugin.settings.username = val;
+            await this.plugin.saveSettings();
+          }));
+
+      // 4. Password
+      new Setting(containerEl)
+        .setName('密码 (Password)')
+        .setDesc('Nimbus 账号登录密码')
+        .addText(text => {
+          text.inputEl.type = 'password';
+          text.setValue(this.plugin.settings.password)
+            .onChange(async (val) => {
+              this.plugin.settings.password = val;
+              await this.plugin.saveSettings();
+            });
+        });
+    } else {
+      // Token input mode
+      new Setting(containerEl)
+        .setName('设备专属令牌 (Device Access Token)')
+        .setDesc('在 Nimbus 网页端 [设置] -> [设备专属令牌] 复制的 Token 字符串')
+        .addText(text => {
+          text.inputEl.type = 'password';
+          text.setPlaceholder('粘贴 eyJhbGciOi... 令牌')
+            .setValue(this.plugin.settings.token || this.plugin.settings.authToken || '')
+            .onChange(async (val) => {
+              const clean = val.trim().replace(/^Bearer\s+/i, '').trim();
+              this.plugin.settings.token = clean;
+              this.plugin.settings.authToken = clean;
+              await this.plugin.saveSettings();
+            });
+        });
+    }
+
+    // 4. Device ID
+    new Setting(containerEl)
+      .setName('设备标识 (Device Name)')
+      .setDesc('在 Nimbus 控制台管理时显示的设备名称')
+      .addText(text => text
+        .setValue(this.plugin.settings.deviceId)
+        .onChange(async (val) => {
+          this.plugin.settings.deviceId = val;
+          await this.plugin.saveSettings();
+        }));
+
+    // 5. Auth Action Button
+    if (currentAuthMode === 'password') {
+      new Setting(containerEl)
+        .setName('身份验证')
+        .setDesc(this.plugin.settings.token ? '✅ 已获取登录凭证' : '尚未登录')
+        .addButton(btn => btn
+          .setButtonText(this.plugin.settings.token ? '重新登录' : '登录验证')
+          .setCta()
+          .onClick(async () => {
+            const success = await this.plugin.login();
+            if (success) {
+              await this.display();
+            }
+          }));
+    } else {
+      new Setting(containerEl)
+        .setName('令牌验证与连接')
+        .setDesc(this.plugin.settings.token ? '✅ 已填入令牌' : '请先粘贴设备专属令牌')
+        .addButton(btn => btn
+          .setButtonText('测试并连接')
+          .setCta()
+          .onClick(async () => {
+            if (!this.plugin.settings.token) {
+              new Notice('❌ 请先粘贴设备专属令牌');
+              return;
+            }
+            await this.plugin.autoMatchOrCreateVault();
+            if (this.plugin.settings.vaultId) {
+              this.plugin.connectWebSocket();
+            }
+            await this.display();
+          }));
+    }
+
+    // 6. Local Vault Detection & Cloud Vault Selection
+    if (this.plugin.settings.token) {
+      const localVaultName = this.app.vault.getName() || 'DefaultVault';
+      
+      // Auto-ensure matching vault if not selected
+      if (!this.plugin.settings.vaultId) {
+        await this.plugin.autoMatchOrCreateVault();
+      }
+
+      const vaults = await this.plugin.fetchVaults();
+
+      // Show local Vault notice
+      new Setting(containerEl)
+        .setName('📍 本地知识库 (Local Vault)')
+        .setDesc(`当前检测到本地 Vault:「${localVaultName}」`)
+        .addButton(btn => btn
+          .setButtonText('🔄 自动重新匹配')
+          .onClick(async () => {
+            await this.plugin.autoMatchOrCreateVault();
+            await this.display();
+          }));
+
+      // Cloud Vault selection
+      const vaultSetting = new Setting(containerEl)
+        .setName('☁️ 云端同步存储库 (Cloud Vault)')
+        .setDesc('选择当前本地库绑定的云端存储库');
+
+      if (vaults.length > 0) {
+        vaultSetting.addDropdown(dd => {
+          vaults.forEach(v => dd.addOption(v.id, v.name));
+          dd.setValue(this.plugin.settings.vaultId || vaults[0].id);
+          dd.onChange(async (val) => {
+            this.plugin.settings.vaultId = val;
+            const found = vaults.find(v => v.id === val);
+            this.plugin.settings.vaultName = found ? found.name : '';
+            await this.plugin.saveSettings();
+            this.plugin.connectWebSocket();
+          });
+        });
+      } else {
+        vaultSetting.setDesc('当前账号下暂无 Vault，系统将自动创建');
+      }
+
+      // One-click Push All Notes
+      new Setting(containerEl)
+        .setName('🚀 立即全量双向同步')
+        .setDesc('采用 3-Way 状态比对，自动双向同步、下载更新并精确清理已删除文件')
+        .addButton(btn => btn
+          .setButtonText('立即同步所有本地笔记')
+          .setCta()
+          .onClick(async () => {
+            await this.plugin.fullSyncAllFiles();
+          }));
+
+      // Baseline management
+      const currentVaultId = this.plugin.settings.vaultId || 'default';
+      const baselineCount = Object.keys((this.plugin.settings.syncBaselines && this.plugin.settings.syncBaselines[currentVaultId]) || {}).length;
+      new Setting(containerEl)
+        .setName('📋 同步基线快照 (Sync Baseline)')
+        .setDesc(`当前 Vault 已记录 ${baselineCount} 个文件的同步基线快照（用于识别跨端删除，防止已删文件复活）`)
+        .addButton(btn => btn
+          .setButtonText('重置基线快照')
+          .onClick(async () => {
+            if (!this.plugin.settings.syncBaselines) {
+              this.plugin.settings.syncBaselines = {};
+            }
+            this.plugin.settings.syncBaselines[currentVaultId] = {};
+            await this.plugin.saveSettings();
+            new Notice('✅ 已重置当前 Vault 的同步基线快照');
+            await this.display();
+          }));
+
+      // Add Create Vault option
+      new Setting(containerEl)
+        .setName('新建云端 Vault')
+        .setDesc('在服务器上手动创建一个新的笔记库')
+        .addText(text => {
+          text.setPlaceholder(`Vault 命名 (默认: ${localVaultName})`);
+          text.setValue(localVaultName);
+          this.newVaultInput = text;
+        })
+        .addButton(btn => btn
+          .setButtonText('创建并绑定')
+          .onClick(async () => {
+            const name = this.newVaultInput.getValue().trim() || localVaultName;
+            const created = await this.plugin.createVault(name);
+            if (created) {
+              this.plugin.settings.vaultId = created.id;
+              this.plugin.settings.vaultName = created.name;
+              await this.plugin.saveSettings();
+              new Notice(`✅ 成功创建并绑定 Vault: ${created.name}`);
+              await this.display();
+              this.plugin.connectWebSocket();
+            }
+          }));
+    }
+
+    // 7. Auto sync toggle
+    new Setting(containerEl)
+      .setName('实时自动同步 (Real-time Auto Sync)')
+      .setDesc('本地文件发生变动或服务端有新文件时自动同步')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.autoSync)
+        .onChange(async (val) => {
+          this.plugin.settings.autoSync = val;
+          await this.plugin.saveSettings();
+          if (val) {
+            this.plugin.connectWebSocket();
+          } else {
+            this.plugin.disconnectWebSocket();
+          }
+        }));
+  }
+}
