@@ -1,5 +1,5 @@
 // --------------------------- Global Search Modal (Ctrl+K) ---------------------------
-import { escapeHtml, formatBytes, $ } from '../core/state.js';
+import { state, escapeHtml, formatBytes, $ } from '../core/state.js';
 import { api } from '../core/api.js';
 import { showModal, closeModal } from '../core/dialogs.js';
 import { openFile } from './editorView.js';
@@ -8,11 +8,25 @@ import { openFile } from './editorView.js';
  * Opens full-text and path search modal across all accessible vaults.
  */
 export function openGlobalSearchModal(callbacks = {}) {
+  const prevTab = state.activeTab;
+  const prevVaultId = state.activeVaultId;
+  const prevSubtab = state.activeSubtab || 'files';
+
   const onOpenFile = callbacks.onOpenFile || (async (vaultId, path) => {
-    if (window.Nimbus?.openVault) {
-      await window.Nimbus.openVault(vaultId, 'files');
-    }
-    await openFile(vaultId, path);
+    closeModal();
+    await openFile(vaultId, path, {
+      onBack: () => {
+        if (prevTab === 'dashboard') {
+          if (window.Nimbus?.showTab) window.Nimbus.showTab('dashboard');
+        } else if (prevVaultId) {
+          if (window.Nimbus?.openVault) window.Nimbus.openVault(prevVaultId, prevSubtab);
+        } else if (prevTab) {
+          if (window.Nimbus?.showTab) window.Nimbus.showTab(prevTab);
+        } else {
+          if (window.Nimbus?.openVault) window.Nimbus.openVault(vaultId, 'files');
+        }
+      },
+    });
   });
 
   const modalHtml = `

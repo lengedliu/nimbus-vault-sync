@@ -460,6 +460,7 @@ export function renderVaultList() {
 }
 
 export function showTab(tab) {
+  if (window.Nimbus?.resetEditorHistory) window.Nimbus.resetEditorHistory();
   if (window.innerWidth <= 768) closeMobileSidebar();
   state.activeVaultId = null;
   state.activeTab = tab;

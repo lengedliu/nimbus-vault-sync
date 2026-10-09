@@ -165,6 +165,7 @@ export function connectVaultWs(vaultId) {
 }
 
 export async function openVault(vaultId, subtab = 'files') {
+  if (window.Nimbus?.resetEditorHistory) window.Nimbus.resetEditorHistory();
   if (window.innerWidth <= 768 && window.Nimbus?.closeMobileSidebar) {
     window.Nimbus.closeMobileSidebar();
   }

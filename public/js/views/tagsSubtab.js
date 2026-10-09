@@ -153,7 +153,13 @@ export async function renderTagsSubtab(vaultId, container) {
       notesPane.querySelectorAll('.tag-note-card').forEach((card) => {
         card.onclick = () => {
           const path = card.getAttribute('data-path');
-          if (path) openFile(vaultId, path);
+          if (path) {
+            openFile(vaultId, path, {
+              onBack: () => {
+                if (window.Nimbus?.openVault) window.Nimbus.openVault(vaultId, 'tags');
+              },
+            });
+          }
         };
       });
     }

@@ -26,7 +26,7 @@ import {
 import { showObsidianConnectModal, showMcpModal } from './views/connectModal.js';
 import { showDocsModal } from './views/docsModal.js';
 import { setupGlobalSearch, openGlobalSearchModal } from './views/searchModal.js';
-import { openFile, renderMediaViewer, saveFile, showFilePreviewModal } from './views/editorView.js';
+import { openFile, renderMediaViewer, saveFile, showFilePreviewModal, resetEditorHistory } from './views/editorView.js';
 import { renderDiff, showHistoryModal } from './views/diffView.js';
 import {
   renderFilesSubtab,
@@ -103,6 +103,7 @@ window.Nimbus = {
   initThreeColumnArchitecture,
   // Editor & Preview & Diff
   openFile,
+  resetEditorHistory,
   renderMediaViewer,
   saveFile,
   showFilePreviewModal,

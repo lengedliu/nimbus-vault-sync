@@ -1387,7 +1387,15 @@ function bindNoteOpenButtons(container, vaultId, openVault) {
     btn.onclick = () => {
       const p = btn.dataset.path;
       if (p) {
-        openFile(vaultId, p);
+        openFile(vaultId, p, {
+          onBack: () => {
+            if (window.Nimbus?.showTab) {
+              window.Nimbus.showTab('dashboard');
+            } else if (openVault) {
+              openVault(vaultId, 'files');
+            }
+          },
+        });
       }
     };
   });

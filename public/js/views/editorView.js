@@ -219,6 +219,15 @@ export function showFilePreviewModal(path, text) {
   showModal(html);
 }
 
+// Navigation history stack for editor workspace
+let editorHistoryStack = [];
+let currentEditorState = null;
+
+export function resetEditorHistory() {
+  editorHistoryStack = [];
+  currentEditorState = null;
+}
+
 /**
  * Opens and loads a file from the vault into the comprehensive editor workspace.
  */
@@ -226,9 +235,74 @@ export async function openFile(vaultId, path, callbacks = {}) {
   const mainPanel = $('#main-panel');
   if (!mainPanel) return;
 
-  const onBack = callbacks.onBack || (() => {
-    if (window.Nimbus?.openVault) window.Nimbus.openVault(vaultId, 'files');
-  });
+  // Determine base origin callback if not explicitly provided
+  let originBack = callbacks.onBack;
+  if (!originBack) {
+    const prevTab = state.activeTab;
+    const prevVaultId = state.activeVaultId;
+    const prevSubtab = state.activeSubtab || 'files';
+
+    if (prevTab === 'dashboard') {
+      originBack = () => {
+        resetEditorHistory();
+        if (window.Nimbus?.showTab) {
+          window.Nimbus.showTab('dashboard');
+        }
+      };
+    } else if (prevTab) {
+      originBack = () => {
+        resetEditorHistory();
+        if (window.Nimbus?.showTab) {
+          window.Nimbus.showTab(prevTab);
+        }
+      };
+    } else if (prevVaultId) {
+      originBack = () => {
+        resetEditorHistory();
+        if (window.Nimbus?.openVault) {
+          window.Nimbus.openVault(prevVaultId, prevSubtab);
+        }
+      };
+    } else {
+      originBack = () => {
+        resetEditorHistory();
+        if (window.Nimbus?.openVault) {
+          window.Nimbus.openVault(vaultId, 'files');
+        } else if (window.Nimbus?.showTab) {
+          window.Nimbus.showTab('dashboard');
+        }
+      };
+    }
+  }
+
+  // Handle nested navigation history (e.g. Wikilink navigation inside editor)
+  if (currentEditorState && currentEditorState.path !== path && !callbacks.fromHistory) {
+    editorHistoryStack.push({
+      vaultId: currentEditorState.vaultId,
+      path: currentEditorState.path,
+      onBack: currentEditorState.onBack,
+    });
+  } else if (!callbacks.fromHistory && !currentEditorState) {
+    editorHistoryStack = [];
+  }
+
+  const handleBack = () => {
+    if (editorHistoryStack.length > 0) {
+      const prev = editorHistoryStack.pop();
+      currentEditorState = null;
+      openFile(prev.vaultId, prev.path, { onBack: prev.onBack, fromHistory: true });
+    } else {
+      resetEditorHistory();
+      originBack();
+    }
+  };
+
+  const onBack = handleBack;
+  currentEditorState = {
+    vaultId,
+    path,
+    onBack: originBack,
+  };
 
   const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(path);
   const isHtml = /\.(html|htm)$/i.test(path);
