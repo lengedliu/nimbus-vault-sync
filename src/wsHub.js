@@ -302,7 +302,7 @@ class FnsHub {
     }));
   }
 
-  _onConnection(ws, user, vaultId, deviceMeta, permission = 'read-write', options = {}) {
+  async _onConnection(ws, user, vaultId, deviceMeta, permission = 'read-write', options = {}) {
     const deviceId = typeof deviceMeta === 'object' && deviceMeta ? deviceMeta.deviceId : 'device-' + user.id.slice(0, 6);
     const deviceName = typeof deviceMeta === 'object' && deviceMeta ? deviceMeta.deviceName : (deviceMeta || 'Obsidian Client');
     const token = typeof deviceMeta === 'object' && deviceMeta ? deviceMeta.token : null;
@@ -331,6 +331,14 @@ class FnsHub {
       client.isAlive = true;
     });
 
+    // 确保该 Vault 的增量状态已完成从持久化层加载，取得权威真实游标
+    try {
+      await deltaSync.initVault(vaultId);
+    } catch (e) {
+      console.warn('[wsHub] initVault error during connection handshake:', e.message);
+    }
+    if (ws.readyState !== ws.OPEN) return;
+
     const serverCursor = deltaSync.getLatestCursor(vaultId);
     // ⚡ 核心性能优化：当客户端游标有效且大于 0 时，绝不在 init 握手包中冗余下发数兆字节的全量 manifest
     // 只有初次绑定/换机 (clientCursor <= 0) 时才携带全量 manifest，日常秒级重连握手包体积缩小 99.9%
@@ -338,8 +346,15 @@ class FnsHub {
       ? deviceMeta.clientCursor
       : (options && typeof options.clientCursor === 'number' ? options.clientCursor : 0);
     const clientCursor = (!isNaN(cursorCandidate)) ? cursorCandidate : 0;
-    const needManifest = clientCursor <= 0;
-    const manifest = needManifest ? storage.getManifest(vaultId) : null;
+
+    // 握手包判定规则：
+    // 1. 客户端游标正常且服务端大于客户端游标：走秒级增量追更 (/changes)，无需下发庞大的 manifest
+    // 2. 客户端与服务端游标完全一致（且>0）：已完全对齐，无需下发 manifest
+    // 3. 其他所有情况（新客户端 clientCursor<=0、服务端游标异常/重置为0、或客户端游标超前）：下发 manifest 触发全量双向对比
+    const canDeltaSync = clientCursor > 0 && serverCursor > clientCursor;
+    const isAligned = clientCursor > 0 && serverCursor === clientCursor;
+    const needManifest = !canDeltaSync && !isAligned;
+    const manifest = needManifest ? storage.getManifest(vaultId, true) : null;
 
     this._send(ws, {
       type: 'init',
@@ -680,6 +695,7 @@ class FnsHub {
 
   /** Push a changed file to every connected client for this vault (except the sender WebSocket if provided). */
   broadcastFileChange(vaultId, relPath, result, fromUserId, excludeWs = null) {
+    relPath = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
     this._logActivity(vaultId, { type: 'change', path: relPath, userId: fromUserId });
     const room = this.rooms.get(vaultId);
     if (!room || room.size === 0) return;
@@ -786,6 +802,7 @@ class FnsHub {
 
   /** Push file deletion to all connected clients for this vault (except the sender WebSocket if provided). */
   broadcastFileDelete(vaultId, relPath, fromUserId, excludeWs = null) {
+    relPath = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
     this._logActivity(vaultId, { type: 'delete', path: relPath, userId: fromUserId });
     const room = this.rooms.get(vaultId);
     if (!room || room.size === 0) return;

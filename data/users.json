@@ -48,6 +48,20 @@
       "passwordHash": "$2a$10$zlCLki1Ni9HTrcnaoWEmheCMo53p5TMTZDL4ZMgwFceWdZzctZjom",
       "role": "user",
       "createdAt": "2026-10-08T16:37:17.293Z"
+    },
+    {
+      "id": "9ced7cfc-5252-4a22-bdc3-61db4479201d",
+      "username": "tag_tester_1791478950688",
+      "passwordHash": "$2a$10$pgdFSPiO40ROPTW0XAqpIu35ASr6DWcxv/FoA6PoMipeuFHGl5TAu",
+      "role": "user",
+      "createdAt": "2026-10-08T17:02:30.803Z"
+    },
+    {
+      "id": "465d43a0-1d62-45c3-a96c-b63c6a66b241",
+      "username": "tag_tester_1791504669640",
+      "passwordHash": "$2a$10$EkE.n0mbsrAB2ojm.XijbugSQijaxcWE9FKyVQhfln8ZnMQsGJ.xy",
+      "role": "user",
+      "createdAt": "2026-10-09T00:11:09.759Z"
     }
   ]
 }

@@ -28,11 +28,18 @@
       "createdAt": 1791477140414
     },
     {
-      "id": "1b0ef598-9ed9-4532-bd0d-f09c0e974837",
-      "vaultId": "bc0afc9b-e8e5-4fcd-9504-27f2b839a743",
+      "id": "93160b77-e660-4a54-bbe6-81fe26fcaffa",
+      "vaultId": "32de75a1-b434-456e-b36c-a0fcfd529aeb",
       "userId": "u_perm_member",
       "permission": "read-write",
-      "createdAt": 1791477426237
+      "createdAt": 1791478939460
+    },
+    {
+      "id": "bed7b729-ae5f-483d-9a80-9d0b213f98db",
+      "vaultId": "ab3a7f78-09c7-4f0b-bdee-93024e7be382",
+      "userId": "u_perm_member",
+      "permission": "read-write",
+      "createdAt": 1791504658638
     }
   ]
 }

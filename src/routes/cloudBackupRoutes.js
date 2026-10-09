@@ -2,6 +2,7 @@ const express = require('express');
 const { requireAuth } = require('../auth');
 const cloudBackup = require('../cloudBackup');
 const vaultsStore = require('../vaults');
+const { asyncHandler } = require('../utils/asyncHandler');
 
 const router = express.Router({ mergeParams: true });
 
@@ -40,7 +41,7 @@ router.post('/config', requireAuth, (req, res) => {
 });
 
 // POST /api/vaults/:vaultId/cloud-backup/test
-router.post('/test', requireAuth, async (req, res) => {
+router.post('/test', requireAuth, asyncHandler(async (req, res) => {
   const { vaultId } = req.params;
   if (!checkVaultWrite(req, res, vaultId)) return;
 
@@ -58,10 +59,10 @@ router.post('/test', requireAuth, async (req, res) => {
   } catch (err) {
     return res.status(400).json({ ok: false, error: err.message });
   }
-});
+}));
 
 // POST /api/vaults/:vaultId/cloud-backup/run
-router.post('/run', requireAuth, async (req, res) => {
+router.post('/run', requireAuth, asyncHandler(async (req, res) => {
   const { vaultId } = req.params;
   if (!checkVaultWrite(req, res, vaultId)) return;
 
@@ -72,6 +73,6 @@ router.post('/run', requireAuth, async (req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
-});
+}));
 
 module.exports = router;

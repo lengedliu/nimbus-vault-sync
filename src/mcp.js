@@ -193,6 +193,10 @@ function buildMcpServer(user, defaultVaultId) {
     return found.id;
   }
 
+  function normalizeVaultPath(p) {
+    return String(p || '').replace(/\\/g, '/').replace(/^\/+/, '').trim();
+  }
+
   /**
    * 和 resolveVaultId 一样，但额外要求当前用户对这个 vault 至少有"读写"权限——
    * 用于所有会修改/删除内容的工具。resolveVaultId 本身只保证"这个用户看得到这个库"，
@@ -452,8 +456,9 @@ function buildMcpServer(user, defaultVaultId) {
     },
     async ({ vaultId, path: notePath }) => {
       const id = resolveVaultId(vaultId);
-      const buf = storage.readFile(id, notePath);
-      if (buf === null) throw new Error(`File "${notePath}" not found.`);
+      const cleanPath = normalizeVaultPath(notePath);
+      const buf = storage.readFile(id, cleanPath);
+      if (buf === null) throw new Error(`File "${cleanPath}" not found.`);
       return textResult(buf.toString('utf8'));
     }
   );
@@ -469,20 +474,21 @@ function buildMcpServer(user, defaultVaultId) {
     },
     async ({ vaultId, path: notePath, content, baseHash }) => {
       const id = resolveWritableVaultId(vaultId);
+      const cleanPath = normalizeVaultPath(notePath);
       const manifest = storage.getManifest(id) || {};
-      const actualBaseHash = baseHash || manifest[notePath]?.hash;
+      const actualBaseHash = baseHash || manifest[cleanPath]?.hash;
       const buffer = Buffer.from(content, 'utf8');
-      const result = storage.writeFile(id, notePath, buffer, { mtime: Date.now(), baseHash: actualBaseHash });
+      const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash: actualBaseHash });
 
       if (!result.written && result.conflict) {
         fnsHub.broadcastFileChange(id, result.conflict, { currentHash: result.currentHash }, user.id, true);
         return textResult(
-          `Conflict detected: "${notePath}" was updated on server since last read. Your content was saved separately as "${result.conflict}".`
+          `Conflict detected: "${cleanPath}" was updated on server since last read. Your content was saved separately as "${result.conflict}".`
         );
       }
 
-      fnsHub.broadcastFileChange(id, notePath, result, user.id);
-      return textResult(`Successfully saved "${notePath}" (${buffer.length} bytes, hash: ${result.currentHash}). Real-time sync broadcasted.`);
+      fnsHub.broadcastFileChange(id, cleanPath, result, user.id);
+      return textResult(`Successfully saved "${cleanPath}" (${buffer.length} bytes, hash: ${result.currentHash}). Real-time sync broadcasted.`);
     }
   );
 
@@ -499,7 +505,8 @@ function buildMcpServer(user, defaultVaultId) {
     },
     async ({ vaultId, path: notePath, content, heading, withTimestamp = false, ensureNewline = true }) => {
       const id = resolveWritableVaultId(vaultId);
-      const buf = storage.readFile(id, notePath);
+      const cleanPath = normalizeVaultPath(notePath);
+      const buf = storage.readFile(id, cleanPath);
       let originalText = buf ? buf.toString('utf8') : '';
 
       let textToAppend = content;
@@ -532,12 +539,12 @@ function buildMcpServer(user, defaultVaultId) {
       }
 
       const manifest = storage.getManifest(id) || {};
-      const baseHash = manifest[notePath]?.hash;
+      const baseHash = manifest[cleanPath]?.hash;
       const buffer = Buffer.from(newText, 'utf8');
-      const result = storage.writeFile(id, notePath, buffer, { mtime: Date.now(), baseHash });
+      const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash });
 
-      fnsHub.broadcastFileChange(id, notePath, result, user.id);
-      return textResult(`Successfully appended content to "${notePath}". New size: ${buffer.length} bytes. Synced to all clients.`);
+      fnsHub.broadcastFileChange(id, cleanPath, result, user.id);
+      return textResult(`Successfully appended content to "${cleanPath}". New size: ${buffer.length} bytes. Synced to all clients.`);
     }
   );
 
@@ -552,7 +559,8 @@ function buildMcpServer(user, defaultVaultId) {
     },
     async ({ vaultId, path: notePath, content, withTimestamp = false }) => {
       const id = resolveWritableVaultId(vaultId);
-      const buf = storage.readFile(id, notePath);
+      const cleanPath = normalizeVaultPath(notePath);
+      const buf = storage.readFile(id, cleanPath);
       const originalText = buf ? buf.toString('utf8') : '';
 
       let textToPrepend = content;
@@ -574,12 +582,12 @@ function buildMcpServer(user, defaultVaultId) {
       }
 
       const manifest = storage.getManifest(id) || {};
-      const baseHash = manifest[notePath]?.hash;
+      const baseHash = manifest[cleanPath]?.hash;
       const buffer = Buffer.from(newText, 'utf8');
-      const result = storage.writeFile(id, notePath, buffer, { mtime: Date.now(), baseHash });
+      const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash });
 
-      fnsHub.broadcastFileChange(id, notePath, result, user.id);
-      return textResult(`Successfully prepended content to "${notePath}". Synced to all clients.`);
+      fnsHub.broadcastFileChange(id, cleanPath, result, user.id);
+      return textResult(`Successfully prepended content to "${cleanPath}". Synced to all clients.`);
     }
   );
 
@@ -595,12 +603,13 @@ function buildMcpServer(user, defaultVaultId) {
     },
     async ({ vaultId, path: notePath, search, replace, replaceAll = false }) => {
       const id = resolveWritableVaultId(vaultId);
-      const buf = storage.readFile(id, notePath);
-      if (buf === null) throw new Error(`Note "${notePath}" not found.`);
+      const cleanPath = normalizeVaultPath(notePath);
+      const buf = storage.readFile(id, cleanPath);
+      if (buf === null) throw new Error(`Note "${cleanPath}" not found.`);
 
       const text = buf.toString('utf8');
       if (!text.includes(search)) {
-        throw new Error(`Target search text was not found in "${notePath}".`);
+        throw new Error(`Target search text was not found in "${cleanPath}".`);
       }
 
       let newText = '';
@@ -611,12 +620,12 @@ function buildMcpServer(user, defaultVaultId) {
       }
 
       const manifest = storage.getManifest(id) || {};
-      const baseHash = manifest[notePath]?.hash;
+      const baseHash = manifest[cleanPath]?.hash;
       const buffer = Buffer.from(newText, 'utf8');
-      const result = storage.writeFile(id, notePath, buffer, { mtime: Date.now(), baseHash });
+      const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash });
 
-      fnsHub.broadcastFileChange(id, notePath, result, user.id);
-      return textResult(`Successfully patched "${notePath}". Replacement applied and synced.`);
+      fnsHub.broadcastFileChange(id, cleanPath, result, user.id);
+      return textResult(`Successfully patched "${cleanPath}". Replacement applied and synced.`);
     }
   );
 
@@ -632,10 +641,11 @@ function buildMcpServer(user, defaultVaultId) {
     },
     async ({ vaultId, path: filePath, contentBase64, sourceUrl, overwrite = true }) => {
       const id = resolveWritableVaultId(vaultId);
+      const cleanPath = normalizeVaultPath(filePath);
       const manifest = storage.getManifest(id) || {};
 
-      if (manifest[filePath] && !overwrite) {
-        throw new Error(`Attachment file "${filePath}" already exists in vault. Set overwrite: true to replace.`);
+      if (manifest[cleanPath] && !overwrite) {
+        throw new Error(`Attachment file "${cleanPath}" already exists in vault. Set overwrite: true to replace.`);
       }
 
       let buffer;
@@ -652,21 +662,21 @@ function buildMcpServer(user, defaultVaultId) {
         throw new Error('Either contentBase64 or sourceUrl must be provided to upload an attachment.');
       }
 
-      const result = storage.writeFile(id, filePath, buffer, { mtime: Date.now() });
-      fnsHub.broadcastFileChange(id, filePath, result, user.id);
+      const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now() });
+      fnsHub.broadcastFileChange(id, cleanPath, result, user.id);
 
-      const fileName = filePath.split('/').pop() || filePath;
+      const fileName = cleanPath.split('/').pop() || cleanPath;
       return jsonResult({
         success: true,
-        path: filePath,
+        path: cleanPath,
         fileName,
         sizeBytes: buffer.length,
         sizeFormatted: (buffer.length / 1024).toFixed(1) + ' KB',
         hash: result.currentHash,
         obsidianEmbedWikiLink: `![[${fileName}]]`,
-        obsidianFullWikiLink: `![[${filePath}]]`,
-        markdownEmbedLink: `![](${encodeURI(filePath)})`,
-        message: `Attachment "${filePath}" (${buffer.length} bytes) saved and synced to all clients.`,
+        obsidianFullWikiLink: `![[${cleanPath}]]`,
+        markdownEmbedLink: `![](${encodeURI(cleanPath)})`,
+        message: `Attachment "${cleanPath}" (${buffer.length} bytes) saved and synced to all clients.`,
       });
     }
   );
@@ -740,8 +750,9 @@ function buildMcpServer(user, defaultVaultId) {
         }
       }
 
-      const notePath = targetFolder ? `${targetFolder}/${targetDate}.md` : `${targetDate}.md`;
-      let buf = storage.readFile(id, notePath);
+      const rawNotePath = targetFolder ? `${targetFolder}/${targetDate}.md` : `${targetDate}.md`;
+      const cleanPath = normalizeVaultPath(rawNotePath);
+      let buf = storage.readFile(id, cleanPath);
 
       if (!buf && createIfMissing) {
         // 走到这一步才是真的要创建文件——这里才要求写权限，只读协作者查看一篇
@@ -749,11 +760,11 @@ function buildMcpServer(user, defaultVaultId) {
         resolveWritableVaultId(vaultId);
         const initialContent = `# ${targetDate}\n\n## 📝 记录\n\n`;
         const buffer = Buffer.from(initialContent, 'utf8');
-        const result = storage.writeFile(id, notePath, buffer, { mtime: Date.now() });
-        fnsHub.broadcastFileChange(id, notePath, result, user.id);
+        const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now() });
+        fnsHub.broadcastFileChange(id, cleanPath, result, user.id);
         return jsonResult({
           created: true,
-          path: notePath,
+          path: cleanPath,
           date: targetDate,
           content: initialContent,
         });
@@ -762,15 +773,15 @@ function buildMcpServer(user, defaultVaultId) {
       if (!buf) {
         return jsonResult({
           exists: false,
-          path: notePath,
+          path: cleanPath,
           date: targetDate,
-          message: `Daily note "${notePath}" does not exist yet.`,
+          message: `Daily note "${cleanPath}" does not exist yet.`,
         });
       }
 
       return jsonResult({
         exists: true,
-        path: notePath,
+        path: cleanPath,
         date: targetDate,
         content: buf.toString('utf8'),
       });
@@ -801,8 +812,9 @@ function buildMcpServer(user, defaultVaultId) {
         else if (allPaths.some((p) => p.startsWith('日记/'))) targetFolder = '日记';
       }
 
-      const notePath = targetFolder ? `${targetFolder}/${targetDate}.md` : `${targetDate}.md`;
-      const buf = storage.readFile(id, notePath);
+      const rawNotePath = targetFolder ? `${targetFolder}/${targetDate}.md` : `${targetDate}.md`;
+      const cleanPath = normalizeVaultPath(rawNotePath);
+      const buf = storage.readFile(id, cleanPath);
       let originalText = buf ? buf.toString('utf8') : `# ${targetDate}\n\n`;
 
       let entry = content;
@@ -825,12 +837,12 @@ function buildMcpServer(user, defaultVaultId) {
         newText = originalText.trimEnd() + `\n\n${entry}\n`;
       }
 
-      const baseHash = manifest[notePath]?.hash;
+      const baseHash = manifest[cleanPath]?.hash;
       const buffer = Buffer.from(newText, 'utf8');
-      const result = storage.writeFile(id, notePath, buffer, { mtime: Date.now(), baseHash });
+      const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash });
 
-      fnsHub.broadcastFileChange(id, notePath, result, user.id);
-      return textResult(`Appended to Daily Note "${notePath}". Synced to Obsidian.`);
+      fnsHub.broadcastFileChange(id, cleanPath, result, user.id);
+      return textResult(`Appended to Daily Note "${cleanPath}". Synced to Obsidian.`);
     }
   );
 
@@ -987,24 +999,26 @@ function buildMcpServer(user, defaultVaultId) {
     },
     async ({ vaultId, oldPath, newPath, overwrite = false }) => {
       const id = resolveWritableVaultId(vaultId);
-      const buf = storage.readFile(id, oldPath);
-      if (buf === null) throw new Error(`Source note "${oldPath}" does not exist.`);
+      const cleanOld = normalizeVaultPath(oldPath);
+      const cleanNew = normalizeVaultPath(newPath);
+      const buf = storage.readFile(id, cleanOld);
+      if (buf === null) throw new Error(`Source note "${cleanOld}" does not exist.`);
 
       const manifest = storage.getManifest(id) || {};
-      if (manifest[newPath] && !overwrite) {
-        throw new Error(`Destination "${newPath}" already exists. Set overwrite: true to replace.`);
+      if (manifest[cleanNew] && !overwrite) {
+        throw new Error(`Destination "${cleanNew}" already exists. Set overwrite: true to replace.`);
       }
 
       // Write to new path
-      const result = storage.writeFile(id, newPath, buf, { mtime: Date.now() });
+      const result = await storage.writeFileAsync(id, cleanNew, buf, { mtime: Date.now() });
       // Delete old path
-      storage.deleteFile(id, oldPath);
+      await storage.deleteFileAsync(id, cleanOld);
 
       // Broadcast both operations
-      fnsHub.broadcastFileDelete(id, oldPath, user.id);
-      fnsHub.broadcastFileChange(id, newPath, result, user.id);
+      fnsHub.broadcastFileDelete(id, cleanOld, user.id);
+      fnsHub.broadcastFileChange(id, cleanNew, result, user.id);
 
-      return textResult(`Successfully moved "${oldPath}" to "${newPath}". Synced to all clients.`);
+      return textResult(`Successfully moved "${cleanOld}" to "${cleanNew}". Synced to all clients.`);
     }
   );
 
@@ -1017,18 +1031,19 @@ function buildMcpServer(user, defaultVaultId) {
     },
     async ({ vaultId, path: notePath }) => {
       const id = resolveWritableVaultId(vaultId);
-      const ok = storage.deleteFile(id, notePath);
+      const cleanPath = normalizeVaultPath(notePath);
+      const ok = await storage.deleteFileAsync(id, cleanPath);
       if (ok) {
-        fnsHub.broadcastFileDelete(id, notePath, user.id);
+        fnsHub.broadcastFileDelete(id, cleanPath, user.id);
         webhooks.trigger('file.deleted', {
           vaultId: id,
-          path: notePath,
+          path: cleanPath,
           userId: user.id,
           username: user.username,
         }).catch(() => {});
-        return textResult(`Deleted "${notePath}" (moved to vault trash). Synced to all connected devices.`);
+        return textResult(`Deleted "${cleanPath}" (moved to vault trash). Synced to all connected devices.`);
       }
-      return textResult(`"${notePath}" did not exist in vault.`);
+      return textResult(`"${cleanPath}" did not exist in vault.`);
     }
   );
 

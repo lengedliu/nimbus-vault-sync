@@ -1,0 +1,14 @@
+{
+  "latestCursor": 1,
+  "changes": [
+    {
+      "cursor": 1,
+      "path": "mcp-note.md",
+      "action": "UPSERT",
+      "size": 14,
+      "mtime": 1791480604705,
+      "hash": "0add8a1489bf6b87f048e0e9892188ea1748606c67460efd00d8725f344e8643",
+      "createdAt": 1791480604705
+    }
+  ]
+}

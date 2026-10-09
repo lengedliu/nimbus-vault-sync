@@ -24,7 +24,7 @@ router.get('/:vaultId/files/*', (req, res) => {
   try {
     relPath = decodeURIComponent(relPath);
   } catch (e) {}
-  relPath = relPath.replace(/\\/g, '/');
+  relPath = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
 
   let fileInfo;
   try {
@@ -65,7 +65,7 @@ router.put('/:vaultId/files/*', (req, res) => {
   try {
     relPath = decodeURIComponent(relPath);
   } catch (e) {}
-  relPath = relPath.replace(/\\/g, '/');
+  relPath = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
 
   const vaultId = req.params.vaultId;
   const mtime = req.headers['x-mtime'] ? parseInt(req.headers['x-mtime'], 10) : undefined;
@@ -222,7 +222,7 @@ router.delete('/:vaultId/files/*', asyncHandler(async (req, res) => {
   try {
     relPath = decodeURIComponent(relPath);
   } catch (e) {}
-  relPath = relPath.replace(/\\/g, '/');
+  relPath = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
 
   const vaultId = req.params.vaultId;
   const deviceName = req.headers['x-device-name'] || 'REST / Web Client';

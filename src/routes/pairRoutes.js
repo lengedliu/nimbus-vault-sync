@@ -5,11 +5,12 @@ const QRCode = require('qrcode');
 const { requireAuth } = require('../auth');
 const pairing = require('../pairing');
 const vaultsStore = require('../vaults');
+const { asyncHandler } = require('../utils/asyncHandler');
 
 const router = express.Router();
 
 // GET /api/pair/qr - Public: Generate standard QR Code SVG from text query
-router.get('/qr', async (req, res) => {
+router.get('/qr', asyncHandler(async (req, res) => {
   try {
     const text = req.query.text;
     if (!text) return res.status(400).send('Missing text parameter');
@@ -29,10 +30,10 @@ router.get('/qr', async (req, res) => {
   } catch (err) {
     res.status(500).send(err.message);
   }
-});
+}));
 
 // POST /api/pair/create - Authenticated: generate short pair code and standard QR SVG
-router.post('/create', requireAuth, async (req, res) => {
+router.post('/create', requireAuth, asyncHandler(async (req, res) => {
   const { vaultId, token, deviceName, serverUrl } = req.body || {};
   const currentToken = token || req.headers.authorization?.replace(/^Bearer\s+/i, '');
 
@@ -79,7 +80,7 @@ router.post('/create', requireAuth, async (req, res) => {
     qrSvg,
     expiresAt,
   });
-});
+}));
 
 // GET /api/pair/:code - Public (used by mobile landing page)
 router.get('/:code', (req, res) => {

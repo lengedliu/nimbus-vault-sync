@@ -1,5 +1,5 @@
 {
-  "latestCursor": 5,
+  "latestCursor": 10,
   "changes": [
     {
       "cursor": 1,
@@ -45,6 +45,51 @@
       "mtime": 1791478202812,
       "hash": "16b6dc242bcf33c4bca501a515ae56c4748d6fc215971b13cd5283394f536d61",
       "createdAt": 1791478202815
+    },
+    {
+      "cursor": 6,
+      "path": "mcp_test_cursor.md",
+      "action": "UPSERT",
+      "size": 11,
+      "mtime": 1791479530192,
+      "hash": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+      "createdAt": 1791479530196
+    },
+    {
+      "cursor": 7,
+      "path": "McpTest/NewNote.md",
+      "action": "UPSERT",
+      "size": 32,
+      "mtime": 1791505700120,
+      "hash": "090af3826c3293f69067620bd2856aa40adba10bb54d8b2f4c9f284223eff01e",
+      "createdAt": 1791505700122
+    },
+    {
+      "cursor": 8,
+      "path": "McpTest/NewNote2.md",
+      "action": "UPSERT",
+      "size": 6,
+      "mtime": 1791505731226,
+      "hash": "ce1c37912a4bba626be985041780bd484e03bf0554921beee97d26ee30ae9e65",
+      "createdAt": 1791505731226
+    },
+    {
+      "cursor": 9,
+      "path": "McpTest/OfflineTest1.md",
+      "action": "UPSERT",
+      "size": 20,
+      "mtime": 1791505796724,
+      "hash": "98f7b3675ae616f71fba54cb520771adf59262b56eecc18b4de169d84c290715",
+      "createdAt": 1791505796724
+    },
+    {
+      "cursor": 10,
+      "path": "McpTest/OfflineTest2.md",
+      "action": "UPSERT",
+      "size": 20,
+      "mtime": 1791506049703,
+      "hash": "8a0df8a8af9d9c3d26c7189f7a5229954f91ec012d904999ccc220f05c3badf9",
+      "createdAt": 1791506049704
     }
   ]
 }

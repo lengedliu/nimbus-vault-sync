@@ -1,0 +1,23 @@
+{
+  "latestCursor": 2,
+  "changes": [
+    {
+      "cursor": 1,
+      "path": "init.md",
+      "action": "UPSERT",
+      "size": 4,
+      "mtime": 1791480624676,
+      "hash": "bb54068aea85faa7e487530083366be9962390af822e4c71ef1aca7033c83e66",
+      "createdAt": 1791480624676
+    },
+    {
+      "cursor": 2,
+      "path": "mcp-note.md",
+      "action": "UPSERT",
+      "size": 16,
+      "mtime": 1791480624679,
+      "hash": "2bbbb88e8aa08d2dac12ec4b59974ea3064369aaa7327034f05a0400c7a04d6d",
+      "createdAt": 1791480624679
+    }
+  ]
+}

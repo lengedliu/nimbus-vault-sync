@@ -1,0 +1,14 @@
+{
+  "latestCursor": 1,
+  "changes": [
+    {
+      "cursor": 1,
+      "path": "init.md",
+      "action": "UPSERT",
+      "size": 5,
+      "mtime": 1791504605061,
+      "hash": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+      "createdAt": 1791504605062
+    }
+  ]
+}

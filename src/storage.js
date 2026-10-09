@@ -196,13 +196,19 @@ function deleteVaultDirectory(vaultId) {
 }
 
 function updateManifestEntry(vaultId, relPath, meta) {
-  const cachedMem = inMemoryManifestCache.get(vaultId);
+  const normRel = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  let cachedMem = inMemoryManifestCache.get(vaultId);
+  if (!cachedMem) {
+    const manifest = getManifest(vaultId);
+    cachedMem = inMemoryManifestCache.get(vaultId);
+  }
   if (cachedMem && cachedMem.manifest) {
     if (meta === null) {
-      delete cachedMem.manifest[relPath];
+      delete cachedMem.manifest[normRel];
     } else {
-      cachedMem.manifest[relPath] = meta;
+      cachedMem.manifest[normRel] = meta;
     }
+    saveCacheAsync(vaultId, cachedMem.manifest).catch(() => {});
   }
 }
 
@@ -863,8 +869,9 @@ function readTrashVersion(vaultId, trashId) {
  *    content into history/ first, so it can be recovered later.
  */
 function writeFile(vaultId, relPath, buffer, { mtime, baseHash } = {}) {
+  const normRel = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
   const root = vaultFilesRoot(vaultId);
-  const full = safeJoin(root, relPath);
+  const full = safeJoin(root, normRel);
   fs.mkdirSync(path.dirname(full), { recursive: true });
 
   if (fs.existsSync(full)) {
@@ -881,8 +888,8 @@ function writeFile(vaultId, relPath, buffer, { mtime, baseHash } = {}) {
     if (baseHash && existingHash !== baseHash) {
       // Someone else changed the file since this client last synced it — real conflict.
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const ext = path.extname(relPath);
-      const base = relPath.slice(0, relPath.length - ext.length);
+      const ext = path.extname(normRel);
+      const base = normRel.slice(0, normRel.length - ext.length);
       const conflictRel = `${base}.conflict-${stamp}${ext}`;
       const conflictFull = safeJoin(root, conflictRel);
       fs.writeFileSync(conflictFull, buffer);
@@ -891,7 +898,7 @@ function writeFile(vaultId, relPath, buffer, { mtime, baseHash } = {}) {
       const mtimeVal = mtime || Date.now();
       updateManifestEntry(vaultId, conflictRel, { size: buffer.length, mtime: mtimeVal, ctime: mtimeVal, hash });
       invalidateContentCacheEntry(vaultId, conflictRel);
-      deltaSync.recordChange(vaultId, { path: conflictRel, action: 'UPSERT', size: buffer.length, mtime: mtimeVal, hash }).catch(() => {});
+      const changePromise = deltaSync.recordChange(vaultId, { path: conflictRel, action: 'UPSERT', size: buffer.length, mtime: mtimeVal, hash }).catch(() => {});
       try {
         ftsEngine.onFileWrite(vaultId, conflictRel, buffer.toString('utf8'), { size: buffer.length, mtime: mtimeVal, hash });
       } catch {}
@@ -900,26 +907,39 @@ function writeFile(vaultId, relPath, buffer, { mtime, baseHash } = {}) {
       } catch {}
 
       // Don't touch the existing (server) version in this case.
-      return { written: false, conflict: conflictRel, currentHash: existingHash, conflictHash: hash, conflictSize: buffer.length, conflictMtime: mtimeVal };
+      return { written: false, conflict: conflictRel, currentHash: existingHash, conflictHash: hash, conflictSize: buffer.length, conflictMtime: mtimeVal, changePromise };
     }
 
-    snapshotBeforeOverwrite(vaultId, relPath, existingBuf);
+    snapshotBeforeOverwrite(vaultId, normRel, existingBuf);
   }
 
   fs.writeFileSync(full, buffer);
   if (mtime) touchMtime(full, mtime);
   const hash = sha256(buffer);
   const mtimeVal = mtime || Date.now();
-  updateManifestEntry(vaultId, relPath, { size: buffer.length, mtime: mtimeVal, ctime: mtimeVal, hash });
-  invalidateContentCacheEntry(vaultId, relPath);
-  deltaSync.recordChange(vaultId, { path: relPath, action: 'UPSERT', size: buffer.length, mtime: mtimeVal, hash }).catch(() => {});
+  updateManifestEntry(vaultId, normRel, { size: buffer.length, mtime: mtimeVal, ctime: mtimeVal, hash });
+  invalidateContentCacheEntry(vaultId, normRel);
+  const changePromise = deltaSync.recordChange(vaultId, { path: normRel, action: 'UPSERT', size: buffer.length, mtime: mtimeVal, hash }).catch(() => {});
   try {
-    ftsEngine.onFileWrite(vaultId, relPath, buffer.toString('utf8'), { size: buffer.length, mtime: mtimeVal, hash });
+    ftsEngine.onFileWrite(vaultId, normRel, buffer.toString('utf8'), { size: buffer.length, mtime: mtimeVal, hash });
   } catch {}
   try {
     gitSync.notifyChange(vaultId);
   } catch {}
-  return { written: true, conflict: null, currentHash: hash };
+  return { written: true, conflict: null, currentHash: hash, changePromise };
+}
+
+/**
+ * 异步版本的 writeFile：在写盘与元数据更新完成后，确保 deltaSync 变更记录与游标持久化已完成。
+ */
+async function writeFileAsync(vaultId, relPath, buffer, options = {}) {
+  const result = writeFile(vaultId, relPath, buffer, options);
+  if (result && result.changePromise) {
+    try {
+      await result.changePromise;
+    } catch {}
+  }
+  return result;
 }
 
 /**
@@ -930,12 +950,13 @@ function writeFile(vaultId, relPath, buffer, { mtime, baseHash } = {}) {
  * 最终落盘用 rename（同分区下几乎零成本），而不是再写一次 Buffer。
  */
 function writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, { mtime, baseHash } = {}) {
+  const normRel = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
   const root = vaultFilesRoot(vaultId);
-  const full = safeJoin(root, relPath);
+  const full = safeJoin(root, normRel);
   fs.mkdirSync(path.dirname(full), { recursive: true });
 
   const manifest = getManifest(vaultId);
-  const existingMeta = manifest[relPath];
+  const existingMeta = manifest[normRel];
 
   if (fs.existsSync(full)) {
     const existingStat = fs.statSync(full);
@@ -962,8 +983,8 @@ function writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, { mtime
     if (baseHash && existingHash && existingHash !== baseHash) {
       // 服务器上的版本在这期间被别的设备改过——生成冲突副本，不动现有文件。
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const ext = path.extname(relPath);
-      const base = relPath.slice(0, relPath.length - ext.length);
+      const ext = path.extname(normRel);
+      const base = normRel.slice(0, normRel.length - ext.length);
       const conflictRel = `${base}.conflict-${stamp}${ext}`;
       const conflictFull = safeJoin(root, conflictRel);
       moveFile(tempFilePath, conflictFull);
@@ -972,7 +993,7 @@ function writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, { mtime
       const mtimeVal = mtime || Date.now();
       updateManifestEntry(vaultId, conflictRel, { size: stat.size, mtime: mtimeVal, ctime: mtimeVal, hash: incomingHash });
       invalidateContentCacheEntry(vaultId, conflictRel);
-      deltaSync.recordChange(vaultId, { path: conflictRel, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash: incomingHash }).catch(() => {});
+      const changePromise = deltaSync.recordChange(vaultId, { path: conflictRel, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash: incomingHash }).catch(() => {});
       try {
         if (stat.size <= 2 * 1024 * 1024) {
           const buf = fs.readFileSync(conflictFull);
@@ -983,35 +1004,47 @@ function writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, { mtime
         gitSync.notifyChange(vaultId);
       } catch {}
 
-      return { written: false, conflict: conflictRel, currentHash: existingHash, conflictHash: incomingHash, conflictSize: stat.size, conflictMtime: mtimeVal };
+      return { written: false, conflict: conflictRel, currentHash: existingHash, conflictHash: incomingHash, conflictSize: stat.size, conflictMtime: mtimeVal, changePromise };
     }
 
     // 真实覆盖：把旧文件直接拷贝进 history/（不读进内存），再用临时文件替换它。
-    snapshotBeforeOverwriteFromFile(vaultId, relPath, full, existingStat.size);
+    snapshotBeforeOverwriteFromFile(vaultId, normRel, full, existingStat.size);
   }
 
   moveFile(tempFilePath, full);
   if (mtime) touchMtime(full, mtime);
   const stat = fs.statSync(full);
   const mtimeVal = mtime || Date.now();
-  updateManifestEntry(vaultId, relPath, { size: stat.size, mtime: mtimeVal, ctime: mtimeVal, hash: incomingHash });
-  invalidateContentCacheEntry(vaultId, relPath);
-  deltaSync.recordChange(vaultId, { path: relPath, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash: incomingHash }).catch(() => {});
+  updateManifestEntry(vaultId, normRel, { size: stat.size, mtime: mtimeVal, ctime: mtimeVal, hash: incomingHash });
+  invalidateContentCacheEntry(vaultId, normRel);
+  const changePromise = deltaSync.recordChange(vaultId, { path: normRel, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash: incomingHash }).catch(() => {});
   try {
     if (stat.size <= 2 * 1024 * 1024) {
       const buf = fs.readFileSync(full);
-      ftsEngine.onFileWrite(vaultId, relPath, buf.toString('utf8'), { size: stat.size, mtime: mtimeVal, hash: incomingHash });
+      ftsEngine.onFileWrite(vaultId, normRel, buf.toString('utf8'), { size: stat.size, mtime: mtimeVal, hash: incomingHash });
     }
   } catch {}
   try {
     gitSync.notifyChange(vaultId);
   } catch {}
-  return { written: true, conflict: null, currentHash: incomingHash };
+  return { written: true, conflict: null, currentHash: incomingHash, changePromise };
+}
+
+/** 异步版本的 writeFileFromPath：确保 deltaSync 变更记录与游标持久化已完成 */
+async function writeFileFromPathAsync(vaultId, relPath, tempFilePath, incomingHash, options = {}) {
+  const result = writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, options);
+  if (result && result.changePromise) {
+    try {
+      await result.changePromise;
+    } catch {}
+  }
+  return result;
 }
 
 /** Soft-delete: move the file into trash/ instead of unlinking it outright. */
 function deleteFile(vaultId, relPath) {
-  const full = safeJoin(vaultFilesRoot(vaultId), relPath);
+  const normRel = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const full = safeJoin(vaultFilesRoot(vaultId), normRel);
   if (!fs.existsSync(full)) return false;
 
   fs.mkdirSync(trashDir(vaultId), { recursive: true });
@@ -1021,14 +1054,47 @@ function deleteFile(vaultId, relPath) {
   const idxPath = trashIndexPath(vaultId);
   const size = fs.statSync(path.join(trashDir(vaultId), id)).size;
   mutateIndex(idxPath, (entries) => {
-    entries.push({ id, path: relPath, size, deletedAt: Date.now() });
+    entries.push({ id, path: normRel, size, deletedAt: Date.now() });
     return entries;
   });
-  updateManifestEntry(vaultId, relPath, null);
-  invalidateContentCacheEntry(vaultId, relPath);
-  deltaSync.recordChange(vaultId, { path: relPath, action: 'DELETE', size: 0, mtime: Date.now() }).catch(() => {});
+  updateManifestEntry(vaultId, normRel, null);
+  invalidateContentCacheEntry(vaultId, normRel);
+  deltaSync.recordChange(vaultId, { path: normRel, action: 'DELETE', size: 0, mtime: Date.now() }).catch(() => {});
   try {
-    ftsEngine.onFileDelete(vaultId, relPath);
+    ftsEngine.onFileDelete(vaultId, normRel);
+  } catch {}
+  try {
+    gitSync.notifyChange(vaultId);
+  } catch {}
+
+  return true;
+}
+
+/** 异步版本的 deleteFile：确保 deltaSync 变更记录与游标持久化已完成 */
+async function deleteFileAsync(vaultId, relPath) {
+  const normRel = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const full = safeJoin(vaultFilesRoot(vaultId), normRel);
+  if (!fs.existsSync(full)) return false;
+
+  fs.mkdirSync(trashDir(vaultId), { recursive: true });
+  const id = randomId();
+  fs.renameSync(full, path.join(trashDir(vaultId), id));
+
+  const idxPath = trashIndexPath(vaultId);
+  const size = fs.statSync(path.join(trashDir(vaultId), id)).size;
+  mutateIndex(idxPath, (entries) => {
+    entries.push({ id, path: normRel, size, deletedAt: Date.now() });
+    return entries;
+  });
+  updateManifestEntry(vaultId, normRel, null);
+  invalidateContentCacheEntry(vaultId, normRel);
+  try {
+    await deltaSync.recordChange(vaultId, { path: normRel, action: 'DELETE', size: 0, mtime: Date.now() });
+  } catch (err) {
+    console.error('[Storage] deleteFileAsync recordChange error:', err.message);
+  }
+  try {
+    ftsEngine.onFileDelete(vaultId, normRel);
   } catch {}
   try {
     gitSync.notifyChange(vaultId);
@@ -1357,8 +1423,11 @@ module.exports = {
   readFileStream,
   createUploadTempPath,
   writeFile,
+  writeFileAsync,
   writeFileFromPath,
+  writeFileFromPathAsync,
   deleteFile,
+  deleteFileAsync,
   sha256,
   safeJoin,
   listHistory,

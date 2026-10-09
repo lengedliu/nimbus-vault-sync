@@ -367,6 +367,11 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     return (this.settings.serverUrl || '').trim().replace(/\/+$/, '');
   }
 
+  getCleanToken() {
+    const raw = (this.settings.token || this.settings.authToken || '').trim();
+    return raw.replace(/^Bearer\s+/i, '').trim();
+  }
+
   // --- API Authentication & Vaults ---
   async autoMatchOrCreateVault() {
     if (!this.settings.token) return null;
@@ -583,16 +588,13 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         const localCursor = this.getVaultCursor(vaultId);
 
         // 如果本地已存在有效游标且服务端游标大于本地游标，优先执行秒级增量追更 (Delta Sync)
-        if (localCursor > 0 && serverCursor > localCursor) {
+        if (localCursor >= 0 && serverCursor > localCursor) {
           const deltaOk = await this.syncDeltaChanges(localCursor);
           if (deltaOk) {
             await this.flushPendingLocalChangesAfterBarrier();
             break;
           }
-          // 🛡️ 增量追更若因网络波动或部分拉取未完成，保留游标断点续传，绝不冒然降级全量并推进游标导致漏拉
-          console.warn('[Nimbus] 增量追更有未完成项，保留当前游标等待下次重试');
-          this.syncBarrierActive = false;
-          break;
+          console.warn('[Nimbus] 增量追更未能完成全部项，自动降级为全量 3-Way 双向清单比对兜底');
         } else if (localCursor > 0 && serverCursor === localCursor) {
           // 游标完全吻合，秒级对齐完成
           await this.flushPendingLocalChangesAfterBarrier();
@@ -600,7 +602,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           break;
         }
 
-        // 首次同步或游标断层时，执行 3-Way 双向对比
+        // 首次同步、游标断层或增量未完全对齐时，执行 3-Way 双向对比兜底
         let manifest = msg.manifest;
         if (!manifest || Object.keys(manifest).length === 0) {
           manifest = await this.fetchManifestHttp(vaultId);
@@ -717,11 +719,12 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     try {
       const baseUrl = this.getCleanServerUrl();
       const vaultId = this.settings.vaultId;
-      if (!baseUrl || !vaultId || !this.settings.token) return false;
+      const cleanToken = this.getCleanToken();
+      if (!baseUrl || !vaultId || !cleanToken) return false;
 
       const url = `${baseUrl}/api/vaults/${encodeURIComponent(vaultId)}/changes?since=${sinceCursor}&limit=500&compact=true`;
       const res = await fetch(url, {
-        headers: { 'Authorization': `Bearer ${this.settings.token}` }
+        headers: { 'Authorization': `Bearer ${cleanToken}` }
       });
       if (!res.ok) return false;
       const data = await res.json();
@@ -750,11 +753,13 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           const batch = updates.slice(i, i + PULL_CONCURRENCY);
           const results = await Promise.all(batch.map(async (item) => {
             if (!item || !item.path) return true;
-            const localHash = this.fileHashes.get(item.path);
-            if (item.hash && localHash === item.hash) {
+            const cleanPath = String(item.path).replace(/\\/g, '/').replace(/^\/+/, '');
+            const localHash = this.fileHashes.get(cleanPath);
+            const localFile = this.app.vault.getAbstractFileByPath(cleanPath);
+            if (item.hash && localFile instanceof TFile && localHash === item.hash) {
               return true;
             }
-            const ok = await this.pullRemoteFileViaHttp(item.path, item.mtime, item.hash);
+            const ok = await this.pullRemoteFileViaHttp(cleanPath, item.mtime, item.hash);
             return ok !== false;
           }));
           if (results.some((r) => !r)) {
@@ -776,6 +781,8 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       const nextCursor = typeof data.cursor === 'number' ? data.cursor : (typeof data.latestCursor === 'number' ? data.latestCursor : sinceCursor);
       if (nextCursor) {
         this.setVaultCursor(vaultId, nextCursor);
+        await this.saveSettings();
+        await this.saveBaselineCache();
       }
 
       // 如果有分页数据且游标有向前推进，继续追更下一页
@@ -796,9 +803,10 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   async fetchManifestHttp(vaultId) {
     try {
       const baseUrl = this.getCleanServerUrl();
-      if (!baseUrl || !vaultId || !this.settings.token) return null;
+      const cleanToken = this.getCleanToken();
+      if (!baseUrl || !vaultId || !cleanToken) return null;
       const res = await fetch(`${baseUrl}/api/vaults/${encodeURIComponent(vaultId)}/manifest`, {
-        headers: { 'Authorization': `Bearer ${this.settings.token}` }
+        headers: { 'Authorization': `Bearer ${cleanToken}` }
       });
       if (!res.ok) return null;
       const data = await res.json();
@@ -850,7 +858,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         if (!this.baselinesCache) this.baselinesCache = {};
         this.baselinesCache[vaultId] = {};
         await this.saveBaselineCache();
-        if (remoteCursor) {
+        if (typeof remoteCursor === 'number' && remoteCursor >= 0) {
           this.setVaultCursor(vaultId, remoteCursor);
         }
 
@@ -858,17 +866,13 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         const PULL_CONCURRENCY = 6;
         for (let i = 0; i < toPull.length; i += PULL_CONCURRENCY) {
           const batch = toPull.slice(i, i + PULL_CONCURRENCY);
-          for (const item of batch) {
-            if (item.meta && item.meta.size && item.meta.size > 2 * 1024 * 1024) {
-              await this.pullRemoteFileViaHttp(item.path, item.meta.mtime, item.meta.hash);
-            } else {
-              this.sendWsMessage({ type: 'pull', path: item.path });
-            }
-          }
+          await Promise.all(batch.map((item) => this.pullRemoteFileViaHttp(item.path, item.meta?.mtime, item.meta?.hash)));
           if (i + PULL_CONCURRENCY < toPull.length) {
             await new Promise((r) => setTimeout(r, 40));
           }
         }
+        await this.saveBaselineCache();
+        await this.saveSettings();
         return;
       }
 
@@ -1012,7 +1016,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         if (!this.baselinesCache) this.baselinesCache = {};
         this.baselinesCache[vaultId] = baseline;
         await this.saveBaselineCache();
-        if (remoteCursor) {
+        if (typeof remoteCursor === 'number' && remoteCursor >= 0) {
           this.setVaultCursor(vaultId, remoteCursor);
         }
         new Notice('✅ 本地笔记与 Nimbus 云端已保持一致 (3-Way 基线校验完成)');
@@ -1069,12 +1073,22 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           sanitizedBaseline[p] = bInfo;
         }
       }
+      for (const item of toPull) {
+        if (item && item.path && currentLocalPaths.has(item.path) && item.meta) {
+          sanitizedBaseline[item.path] = {
+            hash: item.meta.hash,
+            mtime: item.meta.mtime || Date.now(),
+            size: item.meta.size || 0,
+          };
+        }
+      }
 
       if (!this.baselinesCache) this.baselinesCache = {};
       this.baselinesCache[vaultId] = sanitizedBaseline;
       await this.saveBaselineCache();
-      if (remoteCursor && !hasPullFailure) {
+      if (typeof remoteCursor === 'number' && remoteCursor >= 0 && !hasPullFailure) {
         this.setVaultCursor(vaultId, remoteCursor);
+        await this.saveSettings();
       } else if (hasPullFailure) {
         console.warn('[Nimbus] 3-Way 同步有部分文件未能成功拉取，暂不推进最新游标以备下次重试完整对齐');
         new Notice('⚠️ 部分文件拉取遇阻，未推进游标以防漏拉，将在网络稳定后自动重试');
@@ -1208,36 +1222,41 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   }
 
   async applyRemoteBinaryChange(filePath, buffer, mtime, hash) {
-    if (!filePath || !buffer) return false;
+    const cleanPath = String(filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!cleanPath || !buffer) return false;
     if (!this.applyingRemotePaths) this.applyingRemotePaths = new Set();
-    this.applyingRemotePaths.add(filePath);
+    this.applyingRemotePaths.add(cleanPath);
     this.remoteApplyingCount = (this.remoteApplyingCount || 0) + 1;
     this.isApplyingRemoteChange = true;
 
     try {
-      const existing = this.app.vault.getAbstractFileByPath(filePath);
+      const existing = this.app.vault.getAbstractFileByPath(cleanPath);
 
       if (existing instanceof TFile) {
         await this.app.vault.modifyBinary(existing, buffer);
       } else {
         // Ensure parent directories exist
-        const parts = filePath.split('/');
+        const parts = cleanPath.split('/');
         if (parts.length > 1) {
           let currentPath = '';
           for (let i = 0; i < parts.length - 1; i++) {
             currentPath += (currentPath ? '/' : '') + parts[i];
             if (!this.app.vault.getAbstractFileByPath(currentPath)) {
-              await this.app.vault.createFolder(currentPath);
+              try {
+                await this.app.vault.createFolder(currentPath);
+              } catch (folderErr) {
+                // Folder may already exist or created concurrently
+              }
             }
           }
         }
-        await this.app.vault.createBinary(filePath, buffer);
+        await this.app.vault.createBinary(cleanPath, buffer);
       }
 
       const calculatedHash = hash || (await computeSha256(buffer));
       if (calculatedHash) {
-        this.fileHashes.set(filePath, calculatedHash);
-        this.updateBaselineEntry(this.settings.vaultId, filePath, {
+        this.fileHashes.set(cleanPath, calculatedHash);
+        this.updateBaselineEntry(this.settings.vaultId, cleanPath, {
           hash: calculatedHash,
           mtime: mtime || Date.now(),
           size: buffer.byteLength
@@ -1245,63 +1264,66 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       }
       return true;
     } catch (err) {
-      console.error('[Nimbus] 写入远程文件失败:', filePath, err);
+      console.error('[Nimbus] 写入远程文件失败:', cleanPath, err);
       return false;
     } finally {
-      this.applyingRemotePaths.delete(filePath);
+      this.applyingRemotePaths.delete(cleanPath);
       this.remoteApplyingCount = Math.max(0, (this.remoteApplyingCount || 1) - 1);
       this.isApplyingRemoteChange = (this.remoteApplyingCount > 0);
     }
   }
 
   async pullRemoteFileViaHttp(filePath, mtime, expectedHash) {
-    if (!filePath || !this.settings.vaultId || !this.settings.token) return false;
-    if (expectedHash && this.fileHashes.get(filePath) === expectedHash) {
+    const cleanPath = String(filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const cleanToken = this.getCleanToken();
+    if (!cleanPath || !this.settings.vaultId || !cleanToken) return false;
+    if (expectedHash && this.fileHashes.get(cleanPath) === expectedHash) {
       return true;
     }
     try {
-      const serverUrl = this.settings.serverUrl.replace(/\/+$/, '');
-      const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+      const serverUrl = this.getCleanServerUrl();
+      const encodedPath = cleanPath.split('/').map(encodeURIComponent).join('/');
       const url = `${serverUrl}/api/vaults/${encodeURIComponent(this.settings.vaultId)}/files/${encodedPath}`;
       const headers = {
-        'Authorization': `Bearer ${this.settings.token}`,
+        'Authorization': `Bearer ${cleanToken}`,
       };
       if (this.settings.deviceId) {
         headers['x-device-id'] = this.settings.deviceId;
       }
       const res = await fetch(url, { headers });
       if (!res.ok) {
-        console.warn(`[Nimbus] HTTP 拉取文件失败 (${res.status}): ${filePath}`);
+        console.warn(`[Nimbus] HTTP 拉取文件失败 (${res.status}): ${cleanPath}`);
         return false;
       }
       const arrayBuffer = await res.arrayBuffer();
-      const written = await this.applyRemoteBinaryChange(filePath, arrayBuffer, mtime, expectedHash);
+      const written = await this.applyRemoteBinaryChange(cleanPath, arrayBuffer, mtime, expectedHash);
       return written !== false;
     } catch (err) {
-      console.error('[Nimbus] HTTP 流式拉取远程文件失败:', filePath, err);
+      console.error('[Nimbus] HTTP 流式拉取远程文件失败:', cleanPath, err);
       return false;
     }
   }
 
   async applyRemoteDelete(filePath) {
-    if (!filePath) return false;
+    const cleanPath = String(filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!cleanPath) return false;
     if (!this.applyingRemotePaths) this.applyingRemotePaths = new Set();
-    this.applyingRemotePaths.add(filePath);
+    this.applyingRemotePaths.add(cleanPath);
     this.remoteApplyingCount = (this.remoteApplyingCount || 0) + 1;
     this.isApplyingRemoteChange = true;
     try {
-      const existing = this.app.vault.getAbstractFileByPath(filePath);
+      const existing = this.app.vault.getAbstractFileByPath(cleanPath);
       if (existing instanceof TFile) {
         await this.app.vault.delete(existing);
       }
-      this.fileHashes.delete(filePath);
-      this.updateBaselineEntry(this.settings.vaultId, filePath, null);
+      this.fileHashes.delete(cleanPath);
+      this.updateBaselineEntry(this.settings.vaultId, cleanPath, null);
       return true;
     } catch (err) {
-      console.error('[Nimbus] 删除本地文件失败:', filePath, err);
+      console.error('[Nimbus] 删除本地文件失败:', cleanPath, err);
       return false;
     } finally {
-      this.applyingRemotePaths.delete(filePath);
+      this.applyingRemotePaths.delete(cleanPath);
       this.remoteApplyingCount = Math.max(0, (this.remoteApplyingCount || 1) - 1);
       this.isApplyingRemoteChange = (this.remoteApplyingCount > 0);
     }
