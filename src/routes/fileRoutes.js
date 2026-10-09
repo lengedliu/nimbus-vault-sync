@@ -388,7 +388,8 @@ router.get('/:vaultId/tags', (req, res) => {
   if (!requireReadAccess(req, res)) return;
   const { vaultId } = req.params;
   try {
-    const tags = storage.getVaultTags(vaultId);
+    const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
+    const tags = storage.getVaultTags(vaultId, { forceRefresh });
     res.json({ success: true, tags, count: tags.length });
   } catch (err) {
     res.status(500).json({ error: err.message });

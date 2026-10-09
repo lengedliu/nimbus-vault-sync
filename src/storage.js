@@ -182,11 +182,13 @@ const inMemoryManifestCache = new Map();
 function invalidateManifestCache(vaultId) {
   inMemoryManifestCache.delete(vaultId);
   contentCache.delete(vaultId);
+  clearVaultTagCache(vaultId);
 }
 
 function clearVaultCache(vaultId) {
   inMemoryManifestCache.delete(vaultId);
   contentCache.delete(vaultId);
+  clearVaultTagCache(vaultId);
   clearVaultLocks(vaultId);
 }
 
@@ -461,43 +463,151 @@ function createUploadTempPath(vaultId) {
   return path.join(dir, `upload-${Date.now()}-${randomId()}.part`);
 }
 
-function getVaultTags(vaultId) {
+// ----------------------------- tags index & cache -----------------------------
+
+// In-memory per-vault tag index: vaultId -> Map<relPath, { mtime, size, tags: Set<string> }>
+const vaultTagFileIndex = new Map();
+// Cached aggregated tags array: vaultId -> Array<{ tag, count, files }>
+const vaultAggregatedTagsCache = new Map();
+// Dirty flag set for vaults that need re-aggregation
+const vaultTagCacheDirty = new Set();
+
+function extractTagsFromContent(content) {
+  const tags = new Set();
+  if (!content || typeof content !== 'string') return tags;
+
+  // 1. Frontmatter tags (YAML block)
+  const frontmatterMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (frontmatterMatch) {
+    const fm = frontmatterMatch[1];
+    // Pattern A: tags: [a, b, c] or tag: [a, b, c]
+    const bracketMatch = fm.match(/(?:tags|tag):\s*\[(.*?)\]/i);
+    if (bracketMatch) {
+      const list = bracketMatch[1]
+        .split(',')
+        .map((s) => s.trim().replace(/^['"#]|['"]$/g, ''))
+        .filter(Boolean);
+      for (const t of list) {
+        const cleanT = t.toLowerCase();
+        if (cleanT.length > 0) tags.add(cleanT);
+      }
+    }
+
+    // Pattern B: multiline YAML list:
+    // tags:
+    //   - item1
+    //   - item2
+    const yamlListMatch = fm.match(/(?:tags|tag):\s*\r?\n((?:\s*-\s+[^\r\n]+\r?\n?)+)/i);
+    if (yamlListMatch) {
+      const lines = yamlListMatch[1].split(/\r?\n/);
+      for (const line of lines) {
+        const m = line.match(/^\s*-\s+['"#]?([^'"#\r\n]+?)['"]?\s*$/);
+        if (m && m[1]) {
+          const cleanT = m[1].trim().toLowerCase();
+          if (cleanT.length > 0) tags.add(cleanT);
+        }
+      }
+    }
+
+    // Pattern C: tags: single_tag
+    const singleMatch = fm.match(/(?:tags|tag):\s*([a-zA-Z0-9_\u4e00-\u9fa5\/-]+)\s*$/m);
+    if (singleMatch && !bracketMatch && !yamlListMatch) {
+      const cleanT = singleMatch[1].trim().toLowerCase();
+      if (cleanT.length > 0 && cleanT !== 'true' && cleanT !== 'false') tags.add(cleanT);
+    }
+  }
+
+  // 2. Strip code blocks and inline code to prevent false positives in markdown
+  let stripped = content
+    .replace(/^---[\s\S]*?---/g, '') // remove frontmatter
+    .replace(/```[\s\S]*?```/g, ' ') // remove code blocks
+    .replace(/~~~[\s\S]*?~~~/g, ' ') // remove tilde code blocks
+    .replace(/`[^`\n]*`/g, ' ') // remove inline code
+    .replace(/<!--[\s\S]*?-->/g, ' '); // remove html comments
+
+  // 3. Inline #tag and #nested/tag
+  const tagRegex = /(?:^|\s)#([a-zA-Z\u4e00-\u9fa5_][\w\u4e00-\u9fa5_\-/]*)/g;
+  let match;
+  while ((match = tagRegex.exec(stripped)) !== null) {
+    const tag = match[1].toLowerCase();
+    // Exclude markdown headings h1-h6 and pure hex colors (e.g. #fff, #1a2b3c) or numbers
+    if (tag.length > 0 && !/^h[1-6]$/.test(tag) && !/^[0-9a-fA-F]{3,8}$/.test(tag) && !/^\d+$/.test(tag)) {
+      tags.add(tag);
+    }
+  }
+
+  return tags;
+}
+
+function invalidateTagCacheEntry(vaultId, relPath) {
+  if (relPath && !relPath.toLowerCase().endsWith('.md')) return;
+  vaultTagCacheDirty.add(vaultId);
+  vaultAggregatedTagsCache.delete(vaultId);
+  const fileIndex = vaultTagFileIndex.get(vaultId);
+  if (fileIndex) {
+    fileIndex.delete(relPath);
+  }
+}
+
+function clearVaultTagCache(vaultId) {
+  vaultTagFileIndex.delete(vaultId);
+  vaultAggregatedTagsCache.delete(vaultId);
+  vaultTagCacheDirty.delete(vaultId);
+}
+
+function getVaultTags(vaultId, options = {}) {
+  const force = options && options.forceRefresh;
+  if (!force && !vaultTagCacheDirty.has(vaultId) && vaultAggregatedTagsCache.has(vaultId)) {
+    return vaultAggregatedTagsCache.get(vaultId);
+  }
+
   const root = vaultFilesRoot(vaultId);
   const manifest = getManifest(vaultId);
-  const tagMap = new Map();
 
-  for (const relPath of Object.keys(manifest)) {
+  let fileIndex = vaultTagFileIndex.get(vaultId);
+  if (!fileIndex) {
+    fileIndex = new Map();
+    vaultTagFileIndex.set(vaultId, fileIndex);
+  }
+
+  // Remove stale deleted files from index
+  for (const relPath of fileIndex.keys()) {
+    if (!manifest[relPath] || !relPath.toLowerCase().endsWith('.md')) {
+      fileIndex.delete(relPath);
+    }
+  }
+
+  // Incremental index: only read disk for changed / new files!
+  for (const [relPath, meta] of Object.entries(manifest)) {
     if (!relPath.toLowerCase().endsWith('.md')) continue;
+    const cached = fileIndex.get(relPath);
+    if (!force && cached && cached.mtime === meta.mtime && cached.size === meta.size) {
+      continue; // Cache hit! Zero disk read!
+    }
+
     const full = safeJoin(root, relPath);
     if (!fs.existsSync(full)) continue;
+
     try {
       const content = fs.readFileSync(full, 'utf8');
-      // Frontmatter tags
-      const frontmatterMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-      if (frontmatterMatch) {
-        const fm = frontmatterMatch[1];
-        const yamlTagsMatch = fm.match(/tags:\s*\[(.*?)\]/);
-        if (yamlTagsMatch) {
-          const list = yamlTagsMatch[1].split(',').map((s) => s.trim().replace(/^['"#]|['"]$/g, '')).filter(Boolean);
-          for (const t of list) {
-            const cleanT = t.toLowerCase();
-            if (!tagMap.has(cleanT)) tagMap.set(cleanT, new Set());
-            tagMap.get(cleanT).add(relPath);
-          }
-        }
-      }
+      const tags = extractTagsFromContent(content);
+      fileIndex.set(relPath, {
+        mtime: meta.mtime,
+        size: meta.size,
+        tags,
+      });
+    } catch {
+      // Ignore read errors
+    }
+  }
 
-      // Inline #tag and #nested/tag
-      const tagRegex = /(?:^|\s)#([a-zA-Z\u4e00-\u9fa5_][\w\u4e00-\u9fa5_\-/]*)/g;
-      let match;
-      while ((match = tagRegex.exec(content)) !== null) {
-        const tag = match[1].toLowerCase();
-        if (tag.length > 0 && !/^h[1-6]$/.test(tag) && !/^[0-9a-fA-F]{3,8}$/.test(tag)) {
-          if (!tagMap.has(tag)) tagMap.set(tag, new Set());
-          tagMap.get(tag).add(relPath);
-        }
-      }
-    } catch {}
+  // Aggregate results
+  const tagMap = new Map();
+  for (const [relPath, entry] of fileIndex.entries()) {
+    for (const tag of entry.tags) {
+      if (!tagMap.has(tag)) tagMap.set(tag, new Set());
+      tagMap.get(tag).add(relPath);
+    }
   }
 
   const result = [];
@@ -509,6 +619,9 @@ function getVaultTags(vaultId) {
     });
   }
   result.sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
+
+  vaultAggregatedTagsCache.set(vaultId, result);
+  vaultTagCacheDirty.delete(vaultId);
   return result;
 }
 
@@ -1147,10 +1260,11 @@ function setContentCache(vaultId, relPath, entry) {
   cache.set(relPath, entry);
 }
 
-/** 文件被写入/删除时，让内容缓存跟着失效——避免搜索命中过期内容。 */
+/** 文件被写入/删除时，让内容缓存与标签索引缓存跟着失效——避免命中过期内容。 */
 function invalidateContentCacheEntry(vaultId, relPath) {
   const cache = contentCache.get(vaultId);
   if (cache) cache.delete(relPath);
+  invalidateTagCacheEntry(vaultId, relPath);
 }
 
 const SEARCHABLE_EXT_RE = /\.(md|txt|json|js|ts|css|html|yaml|yml|csv|canvas)$/i;

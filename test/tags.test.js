@@ -20,10 +20,22 @@ Also another #work mention.
   const note2 = `# Note 2
 Simple note with #idea and #work.
 And some code #fff hex which should NOT be a tag.
+\`\`\`python
+# this_is_a_comment_not_a_tag
+\`\`\`
+`;
+
+  const note3 = `---
+tags:
+  - obsidian
+  - "life/journal"
+---
+# Note 3 with multiline YAML tags and #nested/child
 `;
 
   storage.writeFile(vaultId, 'folder/note1.md', Buffer.from(note1, 'utf8'));
   storage.writeFile(vaultId, 'note2.md', Buffer.from(note2, 'utf8'));
+  storage.writeFile(vaultId, 'note3.md', Buffer.from(note3, 'utf8'));
 
   const tags = storage.getVaultTags(vaultId);
   assert.ok(Array.isArray(tags));
@@ -36,6 +48,21 @@ And some code #fff hex which should NOT be a tag.
   assert.strictEqual(tagMap.get('backend')?.count, 1);
   assert.strictEqual(tagMap.get('project/2026')?.count, 1);
   assert.strictEqual(tagMap.get('idea')?.count, 1);
+  assert.strictEqual(tagMap.get('obsidian')?.count, 2); // note1 and note3
+  assert.strictEqual(tagMap.get('life/journal')?.count, 1);
+  assert.strictEqual(tagMap.get('nested/child')?.count, 1);
+  assert.strictEqual(tagMap.has('this_is_a_comment_not_a_tag'), false); // code block comment ignored
+
+  // Test caching: second call returns same reference / cached result
+  const tagsCached = storage.getVaultTags(vaultId);
+  assert.strictEqual(tagsCached, tags);
+
+  // Test incremental invalidation on update
+  storage.writeFile(vaultId, 'note2.md', Buffer.from('# Note 2\nUpdated with #newtag\n', 'utf8'));
+  const tagsUpdated = storage.getVaultTags(vaultId);
+  const updatedMap = new Map(tagsUpdated.map((t) => [t.tag, t]));
+  assert.strictEqual(updatedMap.get('newtag')?.count, 1);
+  assert.strictEqual(updatedMap.get('work')?.count, 1); // note2 removed #work, only note1 has it now
 
   // Clean up
   storage.deleteVaultDirectory(vaultId);

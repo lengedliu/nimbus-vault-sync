@@ -7,70 +7,10 @@
       "createdAt": "2026-08-30T14:26:35.170Z"
     },
     {
-      "id": "e27212f1-0616-4f80-8952-96723f9fb9f2",
-      "ownerId": "test-user-mcp-1791539945951",
-      "name": "MCP Test Vault mcp-1791539945951",
-      "createdAt": "2026-10-09T09:59:05.952Z"
-    },
-    {
-      "id": "5aa6a32c-91ce-43c2-af34-15e921bf6b1a",
-      "ownerId": "test-user-mcp-1791542607619",
-      "name": "MCP Test Vault mcp-1791542607619",
-      "createdAt": "2026-10-09T10:43:27.620Z"
-    },
-    {
-      "id": "fbc32663-8cc7-40ef-895c-5d37057fb832",
-      "ownerId": "u_sec_owner",
-      "name": "Test/../../Evil..Vault:Name",
-      "createdAt": "2026-10-09T10:43:33.446Z"
-    },
-    {
-      "id": "7c88d300-8ecf-438f-99a2-6e2779ee90f3",
-      "ownerId": "test-user-mcp-1791542667547",
-      "name": "MCP Test Vault mcp-1791542667547",
-      "createdAt": "2026-10-09T10:44:27.547Z"
-    },
-    {
-      "id": "328f08b9-dc53-4783-948c-e10f57906eb2",
-      "ownerId": "test-user-mcp-1791544713978",
-      "name": "MCP Test Vault mcp-1791544713978",
-      "createdAt": "2026-10-09T11:18:33.979Z"
-    },
-    {
-      "id": "7293474e-d5d8-49af-9e31-e163307ed45e",
-      "ownerId": "u_sec_owner",
-      "name": "Test/../../Evil..Vault:Name",
-      "createdAt": "2026-10-09T11:18:39.743Z"
-    },
-    {
-      "id": "a9c478f7-7d64-47d8-a761-8de48832d85a",
-      "ownerId": "u_perm_owner",
-      "name": "PermTestVault",
-      "createdAt": "2026-10-09T11:18:39.760Z"
-    },
-    {
       "id": "81278d76-b5e8-4723-8924-8bbd2cafafb9",
       "ownerId": "ad67451c-0840-4c34-a746-4b83c58e826a",
       "name": "Tag Test Vault",
       "createdAt": "2026-10-09T11:18:50.767Z"
-    },
-    {
-      "id": "f05931ab-79ce-44fa-b4c4-dc08a8f6f851",
-      "ownerId": "test-user-mcp-1791545087799",
-      "name": "MCP Test Vault mcp-1791545087799",
-      "createdAt": "2026-10-09T11:24:47.800Z"
-    },
-    {
-      "id": "f99b8fbf-8b84-4ec7-b78a-7eed337a5fc4",
-      "ownerId": "u_sec_owner",
-      "name": "Test/../../Evil..Vault:Name",
-      "createdAt": "2026-10-09T11:24:53.620Z"
-    },
-    {
-      "id": "507a6be7-2184-45ea-ae6a-0a9b086bdc81",
-      "ownerId": "u_perm_owner",
-      "name": "PermTestVault",
-      "createdAt": "2026-10-09T11:24:53.637Z"
     },
     {
       "id": "7fd9655e-aa7d-4171-aefa-b33d016023a4",
@@ -79,10 +19,46 @@
       "createdAt": "2026-10-09T11:25:04.944Z"
     },
     {
-      "id": "e5ac8171-180a-4442-882d-6afff6809c9e",
-      "ownerId": "d243a2ef-af07-40cb-83f9-473cc2ab953c",
-      "name": "WS_Test_Vault_1791545110459",
-      "createdAt": "2026-10-09T11:25:10.459Z"
+      "id": "3433356b-2de8-4066-8671-a252b3d80f53",
+      "ownerId": "test-user-mcp-1791551256401",
+      "name": "MCP Test Vault mcp-1791551256401",
+      "createdAt": "2026-10-09T13:07:36.401Z"
+    },
+    {
+      "id": "2d0621c9-5ad9-4e11-bf80-627d4c0ab9a6",
+      "ownerId": "u_sec_owner",
+      "name": "Test/../../Evil..Vault:Name",
+      "createdAt": "2026-10-09T13:07:42.203Z"
+    },
+    {
+      "id": "91df012b-5855-43f4-b748-0a8be99eba79",
+      "ownerId": "u_perm_owner",
+      "name": "PermTestVault",
+      "createdAt": "2026-10-09T13:07:42.220Z"
+    },
+    {
+      "id": "eeadf1da-9ddc-4ba7-b8ff-148130cc093a",
+      "ownerId": "c93ea238-1d76-4c3c-a26c-030db7b1b8f4",
+      "name": "Tag Test Vault",
+      "createdAt": "2026-10-09T13:07:45.180Z"
+    },
+    {
+      "id": "881eeda7-e8b1-48b9-a90c-daf6e1dd807e",
+      "ownerId": "df8048aa-8eb5-42a2-8fdf-236ebec67ae2",
+      "name": "Tag Test Vault",
+      "createdAt": "2026-10-09T13:07:53.242Z"
+    },
+    {
+      "id": "c2f47543-da15-4ec0-a31e-817859535f1f",
+      "ownerId": "40e3c293-b03d-45fa-affb-147b1bc4dea3",
+      "name": "Tag Test Vault",
+      "createdAt": "2026-10-09T13:09:12.351Z"
+    },
+    {
+      "id": "d34f1001-09b9-406c-b6ea-b39054901b89",
+      "ownerId": "6d737ceb-f946-4ad2-a0fd-488d417a87e5",
+      "name": "Tag Test Vault",
+      "createdAt": "2026-10-09T13:09:32.986Z"
     }
   ]
 }

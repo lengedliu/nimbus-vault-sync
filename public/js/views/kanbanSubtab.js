@@ -1389,10 +1389,12 @@ function bindNoteOpenButtons(container, vaultId, openVault) {
       if (p) {
         openFile(vaultId, p, {
           onBack: () => {
-            if (window.Nimbus?.showTab) {
-              window.Nimbus.showTab('dashboard');
+            if (state.currentTab === 'vault' && window.Nimbus?.openVault) {
+              window.Nimbus.openVault(vaultId, 'kanban');
             } else if (openVault) {
-              openVault(vaultId, 'files');
+              openVault(vaultId, 'kanban');
+            } else if (window.Nimbus?.showTab) {
+              window.Nimbus.showTab('dashboard');
             }
           },
         });

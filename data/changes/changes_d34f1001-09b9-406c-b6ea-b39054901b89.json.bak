@@ -1,0 +1,32 @@
+{
+  "latestCursor": 3,
+  "changes": [
+    {
+      "cursor": 1,
+      "path": "note2.md",
+      "action": "UPSERT",
+      "size": 137,
+      "mtime": 1791551372993,
+      "hash": "c3538d31a97ec26ca488706329b1e7dcbb5cf827dfd4e2ac2a50743ef4866752",
+      "createdAt": 1791551372993
+    },
+    {
+      "cursor": 2,
+      "path": "note3.md",
+      "action": "UPSERT",
+      "size": 98,
+      "mtime": 1791551372994,
+      "hash": "aee6f9ab581d839e36419cba926793c0381b094d4f33996b5a17b87fc1bc4acf",
+      "createdAt": 1791551372994
+    },
+    {
+      "cursor": 3,
+      "path": "note2.md",
+      "action": "UPSERT",
+      "size": 30,
+      "mtime": 1791551373009,
+      "hash": "6692f4371e241e0cafc8bf04c1b49383e05377bcbcd82f080965259ac63d77d5",
+      "createdAt": 1791551373009
+    }
+  ]
+}
