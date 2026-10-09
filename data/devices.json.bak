@@ -1,5 +1,101 @@
 [
   {
+    "id": "ef6cd8ca85c3d8c8",
+    "userId": "9d9234ca-b2fd-4b0c-b3de-2d9f2f3bb812",
+    "deviceName": "Test Online Device",
+    "platform": "desktop",
+    "clientIp": "",
+    "userAgent": "",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI5ZDkyMzRjYS1iMmZkLTRiMGMtYjNkZS0yZDlmMmYzYmI4MTIiLCJ1c2VybmFtZSI6IndzdGVzdF8xNzkxNTQyNjI5ODU5IiwiZGV2aWNlSWQiOiJlZjZjZDhjYTg1YzNkOGM4IiwiZGV2aWNlTmFtZSI6IlRlc3QgT25saW5lIERldmljZSIsInR5cGUiOiJkZXZpY2UiLCJqdGkiOiIwZDA5ZjVkZTQxZDRiOTY0IiwiaWF0IjoxNzkxNTQyNjMwLCJleHAiOjE3OTE2MjkwMzB9.qvSulBWkHp7Dx-8pRdg7lbjyGIYeTjbaYbr04MI9olQ",
+    "createdAt": 1791542630042,
+    "lastActiveAt": 1791542630042,
+    "status": "active"
+  },
+  {
+    "id": "9fea487ae65915ca",
+    "userId": "9d9234ca-b2fd-4b0c-b3de-2d9f2f3bb812",
+    "deviceName": "Test Device For Revoke",
+    "platform": "desktop",
+    "clientIp": "",
+    "userAgent": "",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI5ZDkyMzRjYS1iMmZkLTRiMGMtYjNkZS0yZDlmMmYzYmI4MTIiLCJ1c2VybmFtZSI6IndzdGVzdF8xNzkxNTQyNjI5ODU5IiwiZGV2aWNlSWQiOiI5ZmVhNDg3YWU2NTkxNWNhIiwiZGV2aWNlTmFtZSI6IlRlc3QgRGV2aWNlIEZvciBSZXZva2UiLCJ0eXBlIjoiZGV2aWNlIiwianRpIjoiZGQzNzcwMzJjZTVkODRlNiIsImlhdCI6MTc5MTU0MjYzMCwiZXhwIjoxNzkxNjI5MDMwfQ.h_H70x0SMnbAP1qg7AKuRsmll54Il6LFgO-qrR3x-FY",
+    "createdAt": 1791542630027,
+    "lastActiveAt": 1791542630027,
+    "status": "revoked"
+  },
+  {
+    "id": "91e148331c893c52",
+    "userId": "u_cascade_test",
+    "deviceName": "Cascade Phone",
+    "platform": "ios",
+    "clientIp": "",
+    "userAgent": "",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1X2Nhc2NhZGVfdGVzdCIsInVzZXJuYW1lIjoiY2FzY2FkZV91c2VyIiwiZGV2aWNlSWQiOiI5MWUxNDgzMzFjODkzYzUyIiwiZGV2aWNlTmFtZSI6IkNhc2NhZGUgUGhvbmUiLCJ0eXBlIjoiZGV2aWNlIiwianRpIjoiYTA0OGIzNmVmNDk4YTU2ZSIsImlhdCI6MTc5MTU0MjYxMywiZXhwIjoxODIzMDc4NjEzfQ.1_b89wrGRd9jA4lYI9bAoAJK6OHAkAMzVUSYpMp8U4I",
+    "createdAt": 1791542613493,
+    "lastActiveAt": 1791542613493,
+    "status": "revoked"
+  },
+  {
+    "id": "c85f6da635070d1d",
+    "userId": "u_test_sec_1",
+    "deviceName": "Test-MacBook",
+    "platform": "desktop",
+    "clientIp": "",
+    "userAgent": "",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1X3Rlc3Rfc2VjXzEiLCJ1c2VybmFtZSI6InRlc3Rfc2VjX3VzZXIiLCJkZXZpY2VJZCI6ImM4NWY2ZGE2MzUwNzBkMWQiLCJkZXZpY2VOYW1lIjoiVGVzdC1NYWNCb29rIiwidHlwZSI6ImRldmljZSIsImp0aSI6Ijc1NDc4NmI2MTFhNjMzYTIiLCJpYXQiOjE3OTE1NDI2MTMsImV4cCI6MTc5NDEzNDYxM30.XjKYqsIXx3veAiVYdtR6x0uzEvU0u_niLxeUWU6-p9k",
+    "createdAt": 1791542613425,
+    "lastActiveAt": 1791542613418,
+    "status": "revoked"
+  },
+  {
+    "id": "adab8fb34765e955",
+    "userId": "d84e1db4-9f39-42cf-aca0-1afca1ffb49b",
+    "deviceName": "Test Online Device",
+    "platform": "desktop",
+    "clientIp": "",
+    "userAgent": "",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkODRlMWRiNC05ZjM5LTQyY2YtYWNhMC0xYWZjYTFmZmI0OWIiLCJ1c2VybmFtZSI6IndzdGVzdF8xNzkxNTM5OTY4MDkxIiwiZGV2aWNlSWQiOiJhZGFiOGZiMzQ3NjVlOTU1IiwiZGV2aWNlTmFtZSI6IlRlc3QgT25saW5lIERldmljZSIsInR5cGUiOiJkZXZpY2UiLCJqdGkiOiJlNDE4OTE4MTc3MDAyMjUzIiwiaWF0IjoxNzkxNTM5OTY4LCJleHAiOjE3OTE2MjYzNjh9.JH5S3AdCwWyj4vMX6gxKJagDSlIBSS_GhKLoUFl-CaE",
+    "createdAt": 1791539968255,
+    "lastActiveAt": 1791539968264,
+    "status": "active"
+  },
+  {
+    "id": "12c411ea8c3ad57f",
+    "userId": "d84e1db4-9f39-42cf-aca0-1afca1ffb49b",
+    "deviceName": "Test Device For Revoke",
+    "platform": "desktop",
+    "clientIp": "",
+    "userAgent": "",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkODRlMWRiNC05ZjM5LTQyY2YtYWNhMC0xYWZjYTFmZmI0OWIiLCJ1c2VybmFtZSI6IndzdGVzdF8xNzkxNTM5OTY4MDkxIiwiZGV2aWNlSWQiOiIxMmM0MTFlYThjM2FkNTdmIiwiZGV2aWNlTmFtZSI6IlRlc3QgRGV2aWNlIEZvciBSZXZva2UiLCJ0eXBlIjoiZGV2aWNlIiwianRpIjoiM2ZiNTQ5Yjc4Yjk5YTYwMiIsImlhdCI6MTc5MTUzOTk2OCwiZXhwIjoxNzkxNjI2MzY4fQ.HoJst9JyvyPmZ7hYL4MrFpVPSs63lJ71hEWk6bzuvoE",
+    "createdAt": 1791539968241,
+    "lastActiveAt": 1791539968241,
+    "status": "revoked"
+  },
+  {
+    "id": "76222ac60db10a4f",
+    "userId": "u_cascade_test",
+    "deviceName": "Cascade Phone",
+    "platform": "ios",
+    "clientIp": "",
+    "userAgent": "",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1X2Nhc2NhZGVfdGVzdCIsInVzZXJuYW1lIjoiY2FzY2FkZV91c2VyIiwiZGV2aWNlSWQiOiI3NjIyMmFjNjBkYjEwYTRmIiwiZGV2aWNlTmFtZSI6IkNhc2NhZGUgUGhvbmUiLCJ0eXBlIjoiZGV2aWNlIiwianRpIjoiYTc3ZDM4ZGMzOWZjNWRlNSIsImlhdCI6MTc5MTUzOTk1MSwiZXhwIjoxODIzMDc1OTUxfQ.nTwIcrpaey2Y47e_83p7X5l3hMfyeB1j7Xm_cJhIHXA",
+    "createdAt": 1791539951778,
+    "lastActiveAt": 1791539951778,
+    "status": "revoked"
+  },
+  {
+    "id": "e5250557e19ed042",
+    "userId": "u_test_sec_1",
+    "deviceName": "Test-MacBook",
+    "platform": "desktop",
+    "clientIp": "",
+    "userAgent": "",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1X3Rlc3Rfc2VjXzEiLCJ1c2VybmFtZSI6InRlc3Rfc2VjX3VzZXIiLCJkZXZpY2VJZCI6ImU1MjUwNTU3ZTE5ZWQwNDIiLCJkZXZpY2VOYW1lIjoiVGVzdC1NYWNCb29rIiwidHlwZSI6ImRldmljZSIsImp0aSI6IjBhZTgwMzg2MDVhNTEwNjgiLCJpYXQiOjE3OTE1Mzk5NTEsImV4cCI6MTc5NDEzMTk1MX0.KOFP7iH_MWXysXOvOqq9fVQmUlkf54YtgEUx_FkXxY8",
+    "createdAt": 1791539951644,
+    "lastActiveAt": 1791539951640,
+    "status": "revoked"
+  },
+  {
     "id": "c75bea0cd3794122",
     "userId": "db08ce6b-d955-43e7-b20f-f770706f672d",
     "deviceName": "Test Online Device",
@@ -8,7 +104,7 @@
     "userAgent": "",
     "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkYjA4Y2U2Yi1kOTU1LTQzZTctYjIwZi1mNzcwNzA2ZjY3MmQiLCJ1c2VybmFtZSI6IndzdGVzdF8xNzkxNTA1NDAwMzU5IiwiZGV2aWNlSWQiOiJjNzViZWEwY2QzNzk0MTIyIiwiZGV2aWNlTmFtZSI6IlRlc3QgT25saW5lIERldmljZSIsInR5cGUiOiJkZXZpY2UiLCJqdGkiOiJmZjY0ODI0MzA1OTZlZDg0IiwiaWF0IjoxNzkxNTA1NDAwLCJleHAiOjE3OTE1OTE4MDB9.ktaZZBbDtDFwqmaE5OH2tNXzGbfHv0q6ueRVBsaQjPc",
     "createdAt": 1791505400570,
-    "lastActiveAt": 1791505400570,
+    "lastActiveAt": 1791505400581,
     "status": "active"
   },
   {

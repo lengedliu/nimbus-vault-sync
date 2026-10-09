@@ -1,5 +1,5 @@
 {
-  "latestCursor": 9,
+  "latestCursor": 12,
   "changes": [
     {
       "cursor": 1,
@@ -81,6 +81,33 @@
       "mtime": 1791505796724,
       "hash": "98f7b3675ae616f71fba54cb520771adf59262b56eecc18b4de169d84c290715",
       "createdAt": 1791505796724
+    },
+    {
+      "cursor": 10,
+      "path": "McpTest/OfflineTest2.md",
+      "action": "UPSERT",
+      "size": 20,
+      "mtime": 1791506049703,
+      "hash": "8a0df8a8af9d9c3d26c7189f7a5229954f91ec012d904999ccc220f05c3badf9",
+      "createdAt": 1791506049704
+    },
+    {
+      "cursor": 11,
+      "path": "Test-MCP-Sync-1791542026972.md",
+      "action": "UPSERT",
+      "size": 25,
+      "mtime": 1791542026972,
+      "hash": "92a4d08cf7ee548453a2a90ab10102fcb156e2b7c65fcc3a58623807e8d1be2f",
+      "createdAt": 1791542026976
+    },
+    {
+      "cursor": 12,
+      "path": "Test1.md",
+      "action": "UPSERT",
+      "size": 7,
+      "mtime": 1791542044678,
+      "hash": "724c531a3bc130eb46fbc4600064779552682ef4f351976fe75d876d94e8088c",
+      "createdAt": 1791542044683
     }
   ]
 }

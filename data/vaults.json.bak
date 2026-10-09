@@ -11,6 +11,42 @@
       "ownerId": "u_perm_owner",
       "name": "PermTestVault",
       "createdAt": "2026-09-21T00:00:14.950Z"
+    },
+    {
+      "id": "e27212f1-0616-4f80-8952-96723f9fb9f2",
+      "ownerId": "test-user-mcp-1791539945951",
+      "name": "MCP Test Vault mcp-1791539945951",
+      "createdAt": "2026-10-09T09:59:05.952Z"
+    },
+    {
+      "id": "150f8bed-bd11-48e2-9e89-9064804e9017",
+      "ownerId": "6f1fd602-8a67-43b7-9909-b694604ffcbd",
+      "name": "Tag Test Vault",
+      "createdAt": "2026-10-09T09:59:22.788Z"
+    },
+    {
+      "id": "5aa6a32c-91ce-43c2-af34-15e921bf6b1a",
+      "ownerId": "test-user-mcp-1791542607619",
+      "name": "MCP Test Vault mcp-1791542607619",
+      "createdAt": "2026-10-09T10:43:27.620Z"
+    },
+    {
+      "id": "fbc32663-8cc7-40ef-895c-5d37057fb832",
+      "ownerId": "u_sec_owner",
+      "name": "Test/../../Evil..Vault:Name",
+      "createdAt": "2026-10-09T10:43:33.446Z"
+    },
+    {
+      "id": "74ee710c-fe28-4324-8c6f-0c5e1bd2e79c",
+      "ownerId": "u_perm_owner",
+      "name": "PermTestVault",
+      "createdAt": "2026-10-09T10:43:33.466Z"
+    },
+    {
+      "id": "4380c4f6-fa7f-4ef8-bbf1-a93387805ea2",
+      "ownerId": "45f098af-690c-4509-85f0-78adc152c73f",
+      "name": "Tag Test Vault",
+      "createdAt": "2026-10-09T10:43:44.569Z"
     }
   ]
 }

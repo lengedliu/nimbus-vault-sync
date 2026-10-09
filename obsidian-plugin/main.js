@@ -1288,7 +1288,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         'Authorization': `Bearer ${cleanToken}`,
       };
       if (this.settings.deviceId) {
-        headers['x-device-id'] = this.settings.deviceId;
+        headers['x-device-id'] = encodeURIComponent(this.settings.deviceId);
       }
       const res = await fetch(url, { headers });
       if (!res.ok) {
@@ -1475,7 +1475,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         };
         if (baseHash) headers['x-base-hash'] = baseHash;
         if (file.stat && file.stat.mtime) headers['x-mtime'] = String(file.stat.mtime);
-        if (this.settings.deviceId) headers['x-device-id'] = this.settings.deviceId;
+        if (this.settings.deviceId) headers['x-device-id'] = encodeURIComponent(this.settings.deviceId);
 
         const res = await fetch(url, {
           method: 'PUT',

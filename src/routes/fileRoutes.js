@@ -13,6 +13,15 @@ const { asyncHandler } = require('../utils/asyncHandler');
 const router = express.Router();
 router.use(requireAuth);
 
+function safeDecodeHeader(val, fallback = '') {
+  if (!val) return fallback;
+  try {
+    return decodeURIComponent(val);
+  } catch {
+    return val;
+  }
+}
+
 // 单次上传大小上限（字节），可用 MAX_UPLOAD_MB 环境变量覆盖。
 // 流式写入之后，这个上限只是"防止无限占用磁盘"的安全阀，不再等价于"这么大都要先进内存"。
 const MAX_UPLOAD_BYTES = parseInt(process.env.MAX_UPLOAD_MB || '500', 10) * 1024 * 1024;
@@ -38,7 +47,7 @@ router.get('/:vaultId/files/*', (req, res) => {
     vaultId: req.params.vaultId,
     userId: req.user.id,
     username: req.user.username,
-    deviceName: req.headers['x-device-name'] || 'REST / Web',
+    deviceName: safeDecodeHeader(req.headers['x-device-name'], 'REST / Web'),
     clientIp: req.ip || req.connection.remoteAddress,
     action: 'pull',
     path: relPath,
@@ -70,7 +79,7 @@ router.put('/:vaultId/files/*', (req, res) => {
   const vaultId = req.params.vaultId;
   const mtime = req.headers['x-mtime'] ? parseInt(req.headers['x-mtime'], 10) : undefined;
   const baseHash = req.headers['x-base-hash'] || undefined;
-  const deviceName = req.headers['x-device-name'] || 'REST / Web Client';
+  const deviceName = safeDecodeHeader(req.headers['x-device-name'], 'REST / Web Client');
   const declaredLength = req.headers['content-length'] ? parseInt(req.headers['content-length'], 10) : null;
 
   // 校验同步黑名单/忽略规则：防止黑名单规则被 REST 上传接口绕过
@@ -155,7 +164,8 @@ router.put('/:vaultId/files/*', (req, res) => {
       const result = await storage.withFileLock(vaultId, relPath, async () => {
         return storage.writeFileFromPath(vaultId, relPath, tempPath, incomingHash, { mtime, baseHash });
       });
-      const clientDeviceId = req.headers['x-device-id'] || req.headers['x-client-id'] || null;
+      const rawDeviceId = req.headers['x-device-id'] || req.headers['x-client-id'] || null;
+      const clientDeviceId = rawDeviceId ? safeDecodeHeader(rawDeviceId) : null;
       
       if (!result.written && result.conflict) {
         // Broadcast the newly created conflict file to all connected clients
@@ -225,8 +235,9 @@ router.delete('/:vaultId/files/*', asyncHandler(async (req, res) => {
   relPath = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
 
   const vaultId = req.params.vaultId;
-  const deviceName = req.headers['x-device-name'] || 'REST / Web Client';
-  const clientDeviceId = req.headers['x-device-id'] || req.headers['x-client-id'] || null;
+  const deviceName = safeDecodeHeader(req.headers['x-device-name'], 'REST / Web Client');
+  const rawDeviceId = req.headers['x-device-id'] || req.headers['x-client-id'] || null;
+  const clientDeviceId = rawDeviceId ? safeDecodeHeader(rawDeviceId) : null;
   const ok = await storage.withFileLock(vaultId, relPath, async () => {
     return storage.deleteFile(vaultId, relPath);
   });

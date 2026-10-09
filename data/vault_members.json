@@ -40,6 +40,13 @@
       "userId": "u_perm_member",
       "permission": "read-write",
       "createdAt": 1791504658638
+    },
+    {
+      "id": "9e4860f1-f808-4fe4-9bd8-f0888aae4876",
+      "vaultId": "74ee710c-fe28-4324-8c6f-0c5e1bd2e79c",
+      "userId": "u_perm_member",
+      "permission": "read-write",
+      "createdAt": 1791542613467
     }
   ]
 }
