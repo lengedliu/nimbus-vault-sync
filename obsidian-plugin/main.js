@@ -31,6 +31,7 @@ const DEFAULT_SETTINGS = {
   vaultName: '',
   deviceId: 'Obsidian Device',
   autoSync: true,
+  syncConfigFolder: false,
   syncIntervalSeconds: 30,
   syncBaselines: {},
   syncCursors: {}
@@ -331,9 +332,17 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
   isIgnoredLocalPath(filePath) {
     if (!filePath) return true;
-    const ignoredPatterns = [
+    const clean = String(filePath).replace(/\\/g, '/').replace(/^\/+/, '');
+
+    // 无论是否开启配置目录同步，机台强绑定的本地 UI / 工作区状态 / 本插件运行态永远绝对忽略
+    const alwaysIgnoredPatterns = [
       /^\.git(\/|$)/,
       /^\.obsidian\/workspace.*\.json$/,
+      /^\.obsidian\/app\.json$/,
+      /^\.obsidian\/appearance\.json$/,
+      /^\.obsidian\/cache(\/|$)/,
+      /^\.obsidian\/icons(\/|$)/,
+      /^\.obsidian\/plugins\/nimbus-sync(\/|$)/,
       /^\.trash(\/|$)/,
       /\.DS_Store$/,
       /Thumbs\.db$/,
@@ -341,7 +350,24 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       /\.tmp$/,
       /\.swp$/
     ];
-    return ignoredPatterns.some((rx) => rx.test(filePath));
+    if (alwaysIgnoredPatterns.some((rx) => rx.test(clean))) {
+      return true;
+    }
+
+    // 如果未开启配置目录同步，忽略所有其余 .obsidian/ 下的文件
+    if (!this.settings.syncConfigFolder && (clean.startsWith('.obsidian/') || clean === '.obsidian')) {
+      return true;
+    }
+
+    return false;
+  }
+
+  isCriticalSyncFile(filePath) {
+    if (!filePath) return false;
+    const clean = String(filePath).replace(/\\/g, '/').replace(/^\/+/, '');
+    // 隐藏目录（如 .obsidian/）或隐藏文件视为辅助系统配置，非核心笔记资产
+    if (clean.startsWith('.') || clean.includes('/.')) return false;
+    return true;
   }
 
   updateStatusBar(status, customText) {
@@ -369,7 +395,26 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
   getCleanToken() {
     const raw = (this.settings.token || this.settings.authToken || '').trim();
-    return raw.replace(/^Bearer\s+/i, '').trim();
+    // 过滤掉 Bearer 前缀并彻底清理非可打印 ASCII 字符，杜绝 fetch Headers 报 non ISO-8859-1 code point 致命异常
+    return raw.replace(/^Bearer\s+/i, '').replace(/[^\x20-\x7E]/g, '').trim();
+  }
+
+  buildAuthHeaders(extra = {}) {
+    const cleanToken = this.getCleanToken();
+    const headers = {
+      'Authorization': `Bearer ${cleanToken}`,
+    };
+    if (this.settings.deviceId) {
+      // 对设备名进行 URI 编码，彻底防御 Windows PC (默认设备) 等中文设备名称击穿 fetch 请求头校验
+      headers['x-device-id'] = encodeURIComponent(String(this.settings.deviceId));
+    }
+    for (const [k, v] of Object.entries(extra)) {
+      if (v !== undefined && v !== null) {
+        const str = String(v);
+        headers[k] = /[\u0080-\uffff]/.test(str) ? encodeURIComponent(str) : str;
+      }
+    }
+    return headers;
   }
 
   // --- API Authentication & Vaults ---
@@ -452,11 +497,12 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
   async fetchVaults() {
     const baseUrl = this.getCleanServerUrl();
-    if (!this.settings.token) return [];
+    const token = this.getCleanToken();
+    if (!token) return [];
 
     try {
       const resp = await fetch(`${baseUrl}/api/vaults`, {
-        headers: { 'Authorization': `Bearer ${this.settings.token}` }
+        headers: this.buildAuthHeaders()
       });
       if (!resp.ok) return [];
       const data = await resp.json();
@@ -477,15 +523,15 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
   async createVault(name) {
     const baseUrl = this.getCleanServerUrl();
-    if (!this.settings.token) return null;
+    const token = this.getCleanToken();
+    if (!token) return null;
 
     try {
       const resp = await fetch(`${baseUrl}/api/vaults`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.settings.token}`
-        },
+        headers: this.buildAuthHeaders({
+          'Content-Type': 'application/json'
+        }),
         body: JSON.stringify({ name })
       });
       if (!resp.ok) throw new Error('创建失败');
@@ -505,19 +551,17 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     // 🛡️ 启动连接时激活下行优先屏障，直到服务端握手与初次对齐完成
     this.syncBarrierActive = true;
 
-    const rawToken = (this.settings.token || this.settings.authToken || '').trim();
-    if (!rawToken || !this.settings.vaultId) {
+    const cleanToken = this.getCleanToken();
+    if (!cleanToken || !this.settings.vaultId) {
       this.updateStatusBar('idle', '☁️ Nimbus: 未配置');
       return;
     }
-
-    const cleanToken = rawToken.replace(/^Bearer\s+/i, '').trim();
 
     const baseUrl = this.getCleanServerUrl();
     const wsProto = baseUrl.startsWith('https:') ? 'wss:' : 'ws:';
     const host = baseUrl.replace(/^https?:\/\//i, '');
     const localCursor = this.getVaultCursor(this.settings.vaultId || 'default');
-    const wsUrl = `${wsProto}//${host}/ws?token=${encodeURIComponent(cleanToken)}&vaultId=${encodeURIComponent(this.settings.vaultId)}&deviceId=${encodeURIComponent(this.settings.deviceId)}&cursor=${encodeURIComponent(localCursor)}`;
+    const wsUrl = `${wsProto}//${host}/ws?token=${encodeURIComponent(cleanToken)}&vaultId=${encodeURIComponent(this.settings.vaultId)}&deviceId=${encodeURIComponent(this.settings.deviceId || 'Obsidian Device')}&cursor=${encodeURIComponent(localCursor)}`;
 
     try {
       this.ws = new WebSocket(wsUrl);
@@ -616,6 +660,9 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         // A file was created/updated remotely
         if (typeof msg.cursor === 'number') {
           this.setVaultCursor(this.settings.vaultId, msg.cursor);
+        }
+        if (msg.path && this.isIgnoredLocalPath(msg.path)) {
+          return;
         }
         if (msg.path && msg.hash && this.fileHashes.get(msg.path) === msg.hash) {
           // 本地已是目标相同哈希版本（如本设备自产生上传或已同步），无需重复拉取，拦截自反回声
@@ -724,7 +771,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
       const url = `${baseUrl}/api/vaults/${encodeURIComponent(vaultId)}/changes?since=${sinceCursor}&limit=500&compact=true`;
       const res = await fetch(url, {
-        headers: { 'Authorization': `Bearer ${cleanToken}` }
+        headers: this.buildAuthHeaders()
       });
       if (!res.ok) return false;
       const data = await res.json();
@@ -748,18 +795,28 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         }
         // 2. 更新远程改动文件：严格使用 HTTP 并发流式拉取并等待落盘屏障 (Promise Barrier)
         let hasPullFailure = false;
+        let hasCriticalFailure = false;
         const PULL_CONCURRENCY = 4;
         for (let i = 0; i < updates.length; i += PULL_CONCURRENCY) {
           const batch = updates.slice(i, i + PULL_CONCURRENCY);
           const results = await Promise.all(batch.map(async (item) => {
             if (!item || !item.path) return true;
             const cleanPath = String(item.path).replace(/\\/g, '/').replace(/^\/+/, '');
+            if (this.isIgnoredLocalPath(cleanPath)) return true;
             const localHash = this.fileHashes.get(cleanPath);
             const localFile = this.app.vault.getAbstractFileByPath(cleanPath);
-            if (item.hash && localFile instanceof TFile && localHash === item.hash) {
+            const fileExists = (localFile instanceof TFile) || (this.app.vault.adapter && await this.app.vault.adapter.exists(cleanPath));
+            if (item.hash && fileExists && localHash === item.hash) {
               return true;
             }
             const ok = await this.pullRemoteFileViaHttp(cleanPath, item.mtime, item.hash);
+            if (ok === false) {
+              if (this.isCriticalSyncFile(cleanPath)) {
+                hasCriticalFailure = true;
+              } else {
+                console.warn('[Nimbus] 辅助/配置文件拉取受阻，已安全忽略以保证核心笔记游标推进:', cleanPath);
+              }
+            }
             return ok !== false;
           }));
           if (results.some((r) => !r)) {
@@ -770,10 +827,10 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           }
         }
 
-        // 🛡️ 增量一致性防线：若有文件拉取或写入失败，绝不冒然推进游标，保留现场以备下次重试完整补齐
-        if (hasPullFailure) {
-          console.warn('[Nimbus] 增量追更有部分文件未能成功落地，已中止推进游标以防永久漏拉');
-          new Notice('⚠️ 部分增量文件拉取受阻，已暂停游标推进以防漏拉，将在网络恢复后自动重试');
+        // 🛡️ 增量一致性防线：仅当核心内容（Markdown / 附件）拉取失败时阻止推进游标；辅助配置失败则宽容放行并记录警告
+        if (hasCriticalFailure) {
+          console.warn('[Nimbus] 增量追更有核心笔记未能成功落地，已中止推进游标以防永久漏拉');
+          new Notice('⚠️ 部分核心笔记拉取受阻，已暂停游标推进以防漏拉，将在网络恢复后自动重试');
           return false;
         }
       }
@@ -806,7 +863,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       const cleanToken = this.getCleanToken();
       if (!baseUrl || !vaultId || !cleanToken) return null;
       const res = await fetch(`${baseUrl}/api/vaults/${encodeURIComponent(vaultId)}/manifest`, {
-        headers: { 'Authorization': `Bearer ${cleanToken}` }
+        headers: this.buildAuthHeaders()
       });
       if (!res.ok) return null;
       const data = await res.json();
@@ -1042,10 +1099,22 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
       // 3. 并发节流执行拉取 (PULL)，等待所有文件确认落地落盘
       let hasPullFailure = false;
+      let hasCriticalFailure = false;
       const PULL_CONCURRENCY = 4;
       for (let i = 0; i < toPull.length; i += PULL_CONCURRENCY) {
         const batch = toPull.slice(i, i + PULL_CONCURRENCY);
-        const results = await Promise.all(batch.map((item) => this.pullRemoteFileViaHttp(item.path, item.meta?.mtime, item.meta?.hash)));
+        const results = await Promise.all(batch.map(async (item) => {
+          if (this.isIgnoredLocalPath(item.path)) return true;
+          const ok = await this.pullRemoteFileViaHttp(item.path, item.meta?.mtime, item.meta?.hash);
+          if (ok === false) {
+            if (this.isCriticalSyncFile(item.path)) {
+              hasCriticalFailure = true;
+            } else {
+              console.warn('[Nimbus] 辅助/配置文件拉取受阻，已安全忽略:', item.path);
+            }
+          }
+          return ok !== false;
+        }));
         if (results.some((r) => r === false)) {
           hasPullFailure = true;
         }
@@ -1086,12 +1155,12 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       if (!this.baselinesCache) this.baselinesCache = {};
       this.baselinesCache[vaultId] = sanitizedBaseline;
       await this.saveBaselineCache();
-      if (typeof remoteCursor === 'number' && remoteCursor >= 0 && !hasPullFailure) {
+      if (typeof remoteCursor === 'number' && remoteCursor >= 0 && !hasCriticalFailure) {
         this.setVaultCursor(vaultId, remoteCursor);
         await this.saveSettings();
-      } else if (hasPullFailure) {
-        console.warn('[Nimbus] 3-Way 同步有部分文件未能成功拉取，暂不推进最新游标以备下次重试完整对齐');
-        new Notice('⚠️ 部分文件拉取遇阻，未推进游标以防漏拉，将在网络稳定后自动重试');
+      } else if (hasCriticalFailure) {
+        console.warn('[Nimbus] 3-Way 同步有核心笔记未能成功拉取，暂不推进最新游标以备下次重试完整对齐');
+        new Notice('⚠️ 部分核心笔记拉取遇阻，未推进游标以防漏拉，将在网络稳定后自动重试');
       }
 
       new Notice(`✅ 3-Way 自动同步完成: 成功处理 ${pushCount + pullCount + localDelCount + remoteDelCount} 个变更任务`);
@@ -1167,10 +1236,10 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
     try {
       const baseUrl = this.getCleanServerUrl();
+      const cleanToken = this.getCleanToken();
+      if (!baseUrl || !cleanToken || !this.settings.vaultId) return;
       const res = await fetch(`${baseUrl}/api/vaults/${encodeURIComponent(this.settings.vaultId)}/manifest`, {
-        headers: {
-          'Authorization': `Bearer ${this.settings.token}`,
-        },
+        headers: this.buildAuthHeaders()
       });
 
       if (!res.ok) {
@@ -1231,9 +1300,16 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
     try {
       const existing = this.app.vault.getAbstractFileByPath(cleanPath);
+      const isHidden = cleanPath.startsWith('.') || cleanPath.includes('/.');
+      const adapterExists = this.app.vault.adapter ? await this.app.vault.adapter.exists(cleanPath) : false;
 
       if (existing instanceof TFile) {
         await this.app.vault.modifyBinary(existing, buffer);
+      } else if (adapterExists) {
+        // 文件已在磁盘上存在（例如 .obsidian/ 隐藏配置或未被抽象索引的文件）
+        if (this.app.vault.adapter) {
+          await this.app.vault.adapter.writeBinary(cleanPath, buffer);
+        }
       } else {
         // Ensure parent directories exist
         const parts = cleanPath.split('/');
@@ -1241,16 +1317,39 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           let currentPath = '';
           for (let i = 0; i < parts.length - 1; i++) {
             currentPath += (currentPath ? '/' : '') + parts[i];
-            if (!this.app.vault.getAbstractFileByPath(currentPath)) {
+            const folderExists = this.app.vault.getAbstractFileByPath(currentPath) ||
+              (this.app.vault.adapter && await this.app.vault.adapter.exists(currentPath));
+            if (!folderExists) {
               try {
-                await this.app.vault.createFolder(currentPath);
+                if (currentPath.startsWith('.')) {
+                  if (this.app.vault.adapter) await this.app.vault.adapter.mkdir(currentPath);
+                } else {
+                  await this.app.vault.createFolder(currentPath);
+                }
               } catch (folderErr) {
                 // Folder may already exist or created concurrently
               }
             }
           }
         }
-        await this.app.vault.createBinary(cleanPath, buffer);
+        try {
+          if (isHidden) {
+            // 隐藏目录/配置：直接使用底层 adapter 写入，杜绝 app.vault.createBinary 拒绝或 File already exists 异常
+            if (this.app.vault.adapter) {
+              await this.app.vault.adapter.writeBinary(cleanPath, buffer);
+            } else {
+              await this.app.vault.createBinary(cleanPath, buffer);
+            }
+          } else {
+            await this.app.vault.createBinary(cleanPath, buffer);
+          }
+        } catch (createErr) {
+          if (this.app.vault.adapter) {
+            await this.app.vault.adapter.writeBinary(cleanPath, buffer);
+          } else {
+            throw createErr;
+          }
+        }
       }
 
       const calculatedHash = hash || (await computeSha256(buffer));
@@ -1284,12 +1383,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       const serverUrl = this.getCleanServerUrl();
       const encodedPath = cleanPath.split('/').map(encodeURIComponent).join('/');
       const url = `${serverUrl}/api/vaults/${encodeURIComponent(this.settings.vaultId)}/files/${encodedPath}`;
-      const headers = {
-        'Authorization': `Bearer ${cleanToken}`,
-      };
-      if (this.settings.deviceId) {
-        headers['x-device-id'] = encodeURIComponent(this.settings.deviceId);
-      }
+      const headers = this.buildAuthHeaders();
       const res = await fetch(url, { headers });
       if (!res.ok) {
         console.warn(`[Nimbus] HTTP 拉取文件失败 (${res.status}): ${cleanPath}`);
@@ -1315,6 +1409,8 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       const existing = this.app.vault.getAbstractFileByPath(cleanPath);
       if (existing instanceof TFile) {
         await this.app.vault.delete(existing);
+      } else if (this.app.vault.adapter && await this.app.vault.adapter.exists(cleanPath)) {
+        await this.app.vault.adapter.remove(cleanPath);
       }
       this.fileHashes.delete(cleanPath);
       this.updateBaselineEntry(this.settings.vaultId, cleanPath, null);
@@ -1466,16 +1562,14 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
       // If file exceeds 2MB, stream via HTTP PUT to avoid WebSocket buffer memory pressure
       if (buffer.byteLength > MAX_WS_INLINE && this.settings.serverUrl && this.settings.vaultId && this.settings.token) {
-        const serverUrl = this.settings.serverUrl.replace(/\/+$/, '');
+        const serverUrl = this.getCleanServerUrl();
         const encodedPath = file.path.split('/').map(encodeURIComponent).join('/');
         const url = `${serverUrl}/api/vaults/${encodeURIComponent(this.settings.vaultId)}/files/${encodedPath}`;
-        const headers = {
-          'Authorization': `Bearer ${this.settings.token}`,
+        const headers = this.buildAuthHeaders({
           'Content-Type': 'application/octet-stream',
-        };
-        if (baseHash) headers['x-base-hash'] = baseHash;
-        if (file.stat && file.stat.mtime) headers['x-mtime'] = String(file.stat.mtime);
-        if (this.settings.deviceId) headers['x-device-id'] = encodeURIComponent(this.settings.deviceId);
+          ...(baseHash ? { 'x-base-hash': String(baseHash) } : {}),
+          ...((file.stat && file.stat.mtime) ? { 'x-mtime': String(file.stat.mtime) } : {})
+        });
 
         const res = await fetch(url, {
           method: 'PUT',
@@ -1860,6 +1954,17 @@ class NimbusSettingTab extends PluginSettingTab {
           } else {
             this.plugin.disconnectWebSocket();
           }
+        }));
+
+    // 8. Sync Config Folder toggle
+    new Setting(containerEl)
+      .setName('同步 Obsidian 核心配置 (.obsidian 目录)')
+      .setDesc('开启后同步主题与插件设置等配置。关闭时只专注同步笔记内容与多媒体附件，避免跨设备窗口与环境冲突（默认关闭推荐）')
+      .addToggle(toggle => toggle
+        .setValue(Boolean(this.plugin.settings.syncConfigFolder))
+        .onChange(async (val) => {
+          this.plugin.settings.syncConfigFolder = val;
+          await this.plugin.saveSettings();
         }));
   }
 }

@@ -85,6 +85,26 @@ function isNoiseFile(name) {
   return NOISE_FILE_REGEXES.some((re) => re.test(name));
 }
 
+const NOISE_PATH_REGEXES = [
+  /^\.git(\/|$)/i,
+  /^\.obsidian\/workspace.*\.json$/i,
+  /^\.obsidian\/app\.json$/i,
+  /^\.obsidian\/appearance\.json$/i,
+  /^\.obsidian\/cache(\/|$)/i,
+  /^\.obsidian\/icons(\/|$)/i,
+  /^\.obsidian\/plugins\/nimbus-sync(\/|$)/i,
+];
+
+function isNoisePath(relPath) {
+  if (!relPath) return true;
+  const norm = String(relPath).replace(/\\/g, '/').replace(/^\/+/, '');
+  const segments = norm.split('/');
+  for (const seg of segments) {
+    if (isNoiseFile(seg)) return true;
+  }
+  return NOISE_PATH_REGEXES.some((rx) => rx.test(norm));
+}
+
 /** Prevent path traversal: resolve relPath against root and ensure it stays inside root. */
 function safeJoin(root, relPath) {
   const normalized = path.normalize(relPath).replace(/^(\.\.[/\\])+/, '');
@@ -254,6 +274,7 @@ async function walkAsync(dir, base, out = []) {
       if (entry.isFile() && isNoiseFile(entry.name)) continue;
       const full = path.join(dir, entry.name);
       const rel = path.relative(base, full).split(path.sep).join('/');
+      if (isNoisePath(rel)) continue;
       if (entry.isDirectory()) {
         await walkAsync(full, base, out);
       } else if (entry.isFile()) {
@@ -276,6 +297,7 @@ function walk(dir, base, out = []) {
     if (entry.isFile() && isNoiseFile(entry.name)) continue;
     const full = path.join(dir, entry.name);
     const rel = path.relative(base, full).split(path.sep).join('/');
+    if (isNoisePath(rel)) continue;
     if (entry.isDirectory()) {
       walk(full, base, out);
     } else if (entry.isFile()) {

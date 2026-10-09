@@ -1,5 +1,5 @@
 {
-  "latestCursor": 12,
+  "latestCursor": 13,
   "changes": [
     {
       "cursor": 1,
@@ -108,6 +108,15 @@
       "mtime": 1791542044678,
       "hash": "724c531a3bc130eb46fbc4600064779552682ef4f351976fe75d876d94e8088c",
       "createdAt": 1791542044683
+    },
+    {
+      "cursor": 13,
+      "path": "日记/2026-10-09 测试.md",
+      "action": "UPSERT",
+      "size": 7,
+      "mtime": 1791542044684,
+      "hash": "e31ee1d0324634d01318e9631c4e7691f5e6f3df483b4a2c15c610f8055ff13e",
+      "createdAt": 1791542044684
     }
   ]
 }

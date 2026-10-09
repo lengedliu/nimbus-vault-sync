@@ -229,24 +229,44 @@ export function renderVaultContainer(vaultId) {
   `;
   mainPanel.appendChild(header);
 
-  // Subtabs bar
-  const subtabsBar = document.createElement('div');
-  subtabsBar.className = 'subtabs-bar';
-  subtabsBar.innerHTML = `
-    <button class="subtab-btn ${state.activeSubtab === 'files' ? 'active' : ''}" data-sub="files">📄 笔记与文件</button>
-    <button class="subtab-btn ${state.activeSubtab === 'tags' ? 'active' : ''}" data-sub="tags">🏷️ 标签聚合</button>
-    <button class="subtab-btn ${state.activeSubtab === 'conflicts' ? 'active' : ''}" data-sub="conflicts" id="subtab-conflicts-btn">⚔️ 冲突解决中心</button>
-    <button class="subtab-btn ${state.activeSubtab === 'backups' ? 'active' : ''}" data-sub="backups">💾 快照与备份</button>
-    <button class="subtab-btn ${state.activeSubtab === 'git' ? 'active' : ''}" data-sub="git">🚀 Git 自动备份</button>
-    <button class="subtab-btn ${state.activeSubtab === 'cloudbackup' ? 'active' : ''}" data-sub="cloudbackup">☁️ 多云异地容灾</button>
-    <button class="subtab-btn ${state.activeSubtab === 'permissions' ? 'active' : ''}" data-sub="permissions">👥 成员与权限</button>
-    <button class="subtab-btn ${state.activeSubtab === 'stats' ? 'active' : ''}" data-sub="stats">📊 统计与监控</button>
-    <button class="subtab-btn ${state.activeSubtab === 'synclogs' ? 'active' : ''}" data-sub="synclogs">📋 同步日志</button>
-    <button class="subtab-btn ${state.activeSubtab === 'shares' ? 'active' : ''}" data-sub="shares">🔗 公开分享</button>
-    <button class="subtab-btn ${state.activeSubtab === 'rules' ? 'active' : ''}" data-sub="rules">⚙️ 同步规则</button>
-    <button class="subtab-btn ${state.activeSubtab === 'trash' ? 'active' : ''}" data-sub="trash">🗑️ 回收站</button>
+  // Subtabs navigation bar with horizontal scroll & left/right arrows
+  const navWrapper = document.createElement('div');
+  navWrapper.className = 'subtabs-nav-wrapper';
+  navWrapper.innerHTML = `
+    <div class="subtabs-scroll-container" id="vault-subtabs-scroll">
+      <div class="subtabs-bar">
+        <button class="subtab-btn ${state.activeSubtab === 'files' ? 'active' : ''}" data-sub="files">📄 笔记与文件</button>
+        <button class="subtab-btn ${state.activeSubtab === 'tags' ? 'active' : ''}" data-sub="tags">🏷️ 标签聚合</button>
+        <button class="subtab-btn ${state.activeSubtab === 'conflicts' ? 'active' : ''}" data-sub="conflicts" id="subtab-conflicts-btn">⚔️ 冲突解决中心</button>
+        <button class="subtab-btn ${state.activeSubtab === 'backups' ? 'active' : ''}" data-sub="backups">💾 快照与备份</button>
+        <button class="subtab-btn ${state.activeSubtab === 'git' ? 'active' : ''}" data-sub="git">🚀 Git 自动备份</button>
+        <button class="subtab-btn ${state.activeSubtab === 'cloudbackup' ? 'active' : ''}" data-sub="cloudbackup">☁️ 多云异地容灾</button>
+        <button class="subtab-btn ${state.activeSubtab === 'permissions' ? 'active' : ''}" data-sub="permissions">👥 成员与权限</button>
+        <button class="subtab-btn ${state.activeSubtab === 'stats' ? 'active' : ''}" data-sub="stats">📊 统计与监控</button>
+        <button class="subtab-btn ${state.activeSubtab === 'synclogs' ? 'active' : ''}" data-sub="synclogs">📋 同步日志</button>
+        <button class="subtab-btn ${state.activeSubtab === 'shares' ? 'active' : ''}" data-sub="shares">🔗 公开分享</button>
+        <button class="subtab-btn ${state.activeSubtab === 'rules' ? 'active' : ''}" data-sub="rules">⚙️ 同步规则</button>
+        <button class="subtab-btn ${state.activeSubtab === 'trash' ? 'active' : ''}" data-sub="trash">🗑️ 回收站</button>
+      </div>
+    </div>
+    <div class="subtabs-nav-actions">
+      <div class="subtabs-nav-divider"></div>
+      <button type="button" class="subtabs-arrow-btn" id="vault-subtabs-prev" title="向左滚动" aria-label="向左滚动">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="15 18 9 12 15 6"></polyline>
+        </svg>
+      </button>
+      <button type="button" class="subtabs-arrow-btn" id="vault-subtabs-next" title="向右滚动" aria-label="向右滚动">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="9 18 15 12 9 6"></polyline>
+        </svg>
+      </button>
+    </div>
   `;
-  mainPanel.appendChild(subtabsBar);
+  mainPanel.appendChild(navWrapper);
+
+  const subtabsBar = navWrapper.querySelector('.subtabs-bar');
+  setupSubtabsDraggableScroll(navWrapper);
 
   api(`/api/vaults/${vaultId}/conflicts`).then((res) => res.json()).then((data) => {
     const count = (data.conflicts || []).length;
@@ -257,7 +277,13 @@ export function renderVaultContainer(vaultId) {
   }).catch(() => {});
 
   subtabsBar.querySelectorAll('.subtab-btn').forEach((btn) => {
-    btn.onclick = () => {
+    btn.onclick = (e) => {
+      const scrollEl = navWrapper.querySelector('.subtabs-scroll-container');
+      if (scrollEl && scrollEl._suppressClickUntil && Date.now() < scrollEl._suppressClickUntil) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       state.activeSubtab = btn.dataset.sub;
       renderVaultContainer(vaultId);
     };
@@ -298,4 +324,113 @@ export function renderVaultContainer(vaultId) {
   else if (state.activeSubtab === 'trash') renderTrashSubtab(vaultId, contentBox, { showFilePreviewModal, openVault });
 
   translate(mainPanel);
+}
+
+function setupSubtabsDraggableScroll(navWrapper) {
+  const scrollContainer = navWrapper.querySelector('.subtabs-scroll-container');
+  const prevBtn = navWrapper.querySelector('#vault-subtabs-prev');
+  const nextBtn = navWrapper.querySelector('#vault-subtabs-next');
+  if (!scrollContainer) return;
+
+  const updateArrows = () => {
+    if (!scrollContainer.isConnected) return;
+    const maxScroll = Math.max(0, scrollContainer.scrollWidth - scrollContainer.clientWidth);
+    const sl = scrollContainer.scrollLeft;
+    if (prevBtn) {
+      const atStart = sl <= 2;
+      prevBtn.disabled = atStart;
+      prevBtn.classList.toggle('disabled', atStart);
+    }
+    if (nextBtn) {
+      const atEnd = sl >= maxScroll - 2;
+      nextBtn.disabled = atEnd;
+      nextBtn.classList.toggle('disabled', atEnd);
+    }
+  };
+
+  if (prevBtn) {
+    prevBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      scrollContainer.scrollBy({ left: -260, behavior: 'smooth' });
+    });
+  }
+
+  if (nextBtn) {
+    nextBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      scrollContainer.scrollBy({ left: 260, behavior: 'smooth' });
+    });
+  }
+
+  // 鼠标滚轮横向滚动支持 (Mouse wheel horizontal scroll)
+  scrollContainer.addEventListener('wheel', (e) => {
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && scrollContainer.scrollWidth > scrollContainer.clientWidth) {
+      scrollContainer.scrollLeft += e.deltaY;
+      e.preventDefault();
+      updateArrows();
+    }
+  }, { passive: false });
+
+  // 鼠标按住拖动 (Mouse drag to scroll)
+  let isDown = false;
+  let startX = 0;
+  let startScrollLeft = 0;
+  let hasMoved = false;
+
+  scrollContainer.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return; // 仅限鼠标主键
+    isDown = true;
+    hasMoved = false;
+    startX = e.pageX;
+    startScrollLeft = scrollContainer.scrollLeft;
+  });
+
+  const onMouseMove = (e) => {
+    if (!scrollContainer.isConnected) {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      return;
+    }
+    if (!isDown) return;
+    const dx = e.pageX - startX;
+    if (Math.abs(dx) > 4) {
+      hasMoved = true;
+      scrollContainer.classList.add('is-dragging');
+      scrollContainer.scrollLeft = startScrollLeft - dx;
+      updateArrows();
+    }
+  };
+
+  const onMouseUp = () => {
+    if (!scrollContainer.isConnected) {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      return;
+    }
+    if (!isDown) return;
+    isDown = false;
+    scrollContainer.classList.remove('is-dragging');
+    if (hasMoved) {
+      scrollContainer._suppressClickUntil = Date.now() + 180;
+    }
+  };
+
+  window.addEventListener('mousemove', onMouseMove);
+  window.addEventListener('mouseup', onMouseUp);
+
+  scrollContainer.addEventListener('scroll', updateArrows, { passive: true });
+  window.addEventListener('resize', updateArrows, { passive: true });
+
+  // 初始加载或切换时，自动将激活的标签平滑对齐至可见视野
+  requestAnimationFrame(() => {
+    const activeBtn = scrollContainer.querySelector('.subtab-btn.active');
+    if (activeBtn) {
+      const cRect = scrollContainer.getBoundingClientRect();
+      const bRect = activeBtn.getBoundingClientRect();
+      if (bRect.left < cRect.left || bRect.right > cRect.right) {
+        activeBtn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      }
+    }
+    updateArrows();
+  });
 }

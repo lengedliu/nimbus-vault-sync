@@ -105,6 +105,20 @@ class DeltaSyncService {
   }
 
   async recordChange(vaultId, { path: relPath, action, size = 0, mtime = Date.now(), hash = '' }) {
+    if (!relPath) return 0;
+    const norm = String(relPath).replace(/\\/g, '/').replace(/^\/+/, '');
+    if (/^\.git(\/|$)/i.test(norm) ||
+        /^\.obsidian\/workspace.*\.json$/i.test(norm) ||
+        /^\.obsidian\/app\.json$/i.test(norm) ||
+        /^\.obsidian\/appearance\.json$/i.test(norm) ||
+        /^\.obsidian\/cache(\/|$)/i.test(norm) ||
+        /^\.obsidian\/icons(\/|$)/i.test(norm) ||
+        /^\.obsidian\/plugins\/nimbus-sync(\/|$)/i.test(norm) ||
+        /\.DS_Store$/i.test(norm) ||
+        /Thumbs\.db$/i.test(norm)) {
+      return this.getLatestCursor(vaultId);
+    }
+
     if (!this.vaultState.has(vaultId)) {
       await this.initVault(vaultId);
     }

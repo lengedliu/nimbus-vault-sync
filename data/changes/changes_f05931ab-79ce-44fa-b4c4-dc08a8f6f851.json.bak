@@ -1,0 +1,14 @@
+{
+  "latestCursor": 1,
+  "changes": [
+    {
+      "cursor": 1,
+      "path": "README.md",
+      "action": "UPSERT",
+      "size": 22,
+      "mtime": 1791545087804,
+      "hash": "7de72f3724e6272b605695a3e25dcc7c590d578c9e80132ef3838d16fc950303",
+      "createdAt": 1791545087807
+    }
+  ]
+}

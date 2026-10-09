@@ -78,11 +78,25 @@
       "createdAt": "2026-10-09T10:43:44.567Z"
     },
     {
-      "id": "9d9234ca-b2fd-4b0c-b3de-2d9f2f3bb812",
-      "username": "wstest_1791542629859",
-      "passwordHash": "$2a$10$OqRVHdVdbJFgz.3Gy82RF.0vgzq/BmMURgwwLJ8inEUv3eCZ0M66a",
+      "id": "ad67451c-0840-4c34-a746-4b83c58e826a",
+      "username": "tag_tester_1791544730659",
+      "passwordHash": "$2a$10$YWWmlY3bilx.JklwX0hq7.8gMP4zEUwQzmIyeCNiXRyXoD2oK0txW",
       "role": "user",
-      "createdAt": "2026-10-09T10:43:49.971Z"
+      "createdAt": "2026-10-09T11:18:50.765Z"
+    },
+    {
+      "id": "400bd28c-04e0-4741-89c8-cfb1351290a3",
+      "username": "tag_tester_1791545104820",
+      "passwordHash": "$2a$10$WWmv0Zmns8TDgDgNuG3oAOX0NUBA7Bgl.9qhiPiRkfAlWp7GzLNc2",
+      "role": "user",
+      "createdAt": "2026-10-09T11:25:04.942Z"
+    },
+    {
+      "id": "d243a2ef-af07-40cb-83f9-473cc2ab953c",
+      "username": "wstest_1791545110326",
+      "passwordHash": "$2a$10$8fNX5xl6PGtjFT9cBUxUtO52fOpl2UzxYSWkLrLUahuCySukCmLzu",
+      "role": "user",
+      "createdAt": "2026-10-09T11:25:10.458Z"
     }
   ]
 }

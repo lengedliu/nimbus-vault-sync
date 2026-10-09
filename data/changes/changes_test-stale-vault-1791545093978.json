@@ -1,0 +1,77 @@
+{
+  "latestCursor": 8,
+  "changes": [
+    {
+      "cursor": 1,
+      "path": "my-important-notes.md",
+      "action": "UPSERT",
+      "size": 52,
+      "mtime": 1791545093985,
+      "hash": "db2f443a3ce78e612c13fcc408f4940b486ba462f246b491a36244f2c05d1033",
+      "createdAt": 1791545093986
+    },
+    {
+      "cursor": 2,
+      "path": "my-important-notes.conflict-2026-10-09T11-24-53-987Z.md",
+      "action": "UPSERT",
+      "size": 49,
+      "mtime": 1791545093988,
+      "hash": "a05bcd1927e60dc38c7a1e8aa59d657a79489eddde47f41eb03489a731a9b4cf",
+      "createdAt": 1791545093988
+    },
+    {
+      "cursor": 3,
+      "path": "my-important-notes.md",
+      "action": "UPSERT",
+      "size": 26,
+      "mtime": 1791545093979,
+      "hash": "b835a35c43722f082db595e50b9f7f9ff110530c1731813d1511edc30f0dcb7f",
+      "createdAt": 1791545093989
+    },
+    {
+      "cursor": 4,
+      "path": "note-0.md",
+      "action": "UPSERT",
+      "size": 100,
+      "mtime": 1791545093991,
+      "hash": "hash-0",
+      "createdAt": 1791545093991
+    },
+    {
+      "cursor": 5,
+      "path": "note-1.md",
+      "action": "UPSERT",
+      "size": 100,
+      "mtime": 1791545093991,
+      "hash": "hash-1",
+      "createdAt": 1791545093991
+    },
+    {
+      "cursor": 6,
+      "path": "note-2.md",
+      "action": "UPSERT",
+      "size": 100,
+      "mtime": 1791545093992,
+      "hash": "hash-2",
+      "createdAt": 1791545093992
+    },
+    {
+      "cursor": 7,
+      "path": "note-3.md",
+      "action": "UPSERT",
+      "size": 100,
+      "mtime": 1791545093992,
+      "hash": "hash-3",
+      "createdAt": 1791545093992
+    },
+    {
+      "cursor": 8,
+      "path": "note-4.md",
+      "action": "UPSERT",
+      "size": 100,
+      "mtime": 1791545093993,
+      "hash": "hash-4",
+      "createdAt": 1791545093993
+    }
+  ]
+}

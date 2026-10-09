@@ -7,6 +7,11 @@ const DEFAULT_RULES = {
   ignorePatterns: [
     '.obsidian/workspace.json',
     '.obsidian/workspace-mobile.json',
+    '.obsidian/workspace*.json',
+    '.obsidian/app.json',
+    '.obsidian/cache/**',
+    '.obsidian/icons/**',
+    '.obsidian/plugins/nimbus-sync/**',
     '**/*.tmp',
     '**/*.swp',
     '**/.DS_Store',
