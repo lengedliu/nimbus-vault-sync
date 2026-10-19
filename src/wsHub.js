@@ -162,7 +162,11 @@ class FnsHub {
       const clientCursor = typeof rawCursor !== 'undefined' ? parseInt(rawCursor, 10) : null;
 
       this.wss.handleUpgrade(req, socket, head, (ws) => {
-        this._onConnection(ws, user, vaultId, { deviceId, deviceName, token, tokenPayload: payload, clientCursor }, permission);
+        this._onConnection(ws, user, vaultId, { deviceId, deviceName, token, tokenPayload: payload, clientCursor }, permission)
+          .catch((err) => {
+            console.error('[WS] Failed to initialize client connection:', err);
+            ws.close(1011, 'connection initialization failed');
+          });
       });
     });
   }
@@ -394,16 +398,17 @@ class FnsHub {
       }
 
       if (msg.type === 'get_manifest') {
+        const manifest = await storage.getManifestAsync(vaultId);
         return this._send(client.ws, {
           type: 'manifest',
-          manifest: storage.getManifest(vaultId),
+          manifest,
           cursor: deltaSync.getLatestCursor(vaultId),
         });
       }
 
       if (msg.type === 'pull') {
         // ⚡ 性能优化：直接使用 O(1) 单文件元数据读取，避免全库 manifest 对象的无谓复制与 GC 停顿
-        const meta = storage.getManifestEntry(vaultId, msg.path);
+        const meta = await storage.getManifestEntryAsync(vaultId, msg.path);
         if (meta && meta.size > MAX_WS_INLINE_BYTES) {
           syncLogger.recordLog({
             vaultId,
@@ -575,6 +580,7 @@ class FnsHub {
         const ok = await storage.withFileLock(vaultId, msg.path, async () => {
           return storage.deleteFile(vaultId, msg.path);
         });
+        const completed = ok || !await storage.getManifestEntryAsync(vaultId, msg.path);
         this._logActivity(vaultId, { type: 'delete', path: msg.path, userId: client.userId });
         syncLogger.recordLog({
           vaultId,
@@ -588,7 +594,7 @@ class FnsHub {
         });
 
         this.broadcastFileDelete(vaultId, msg.path, client.userId, client.ws);
-        return;
+        return this._send(client.ws, { type: 'ack', action: 'delete', path: msg.path, deleted: completed });
       }
 
       this._send(client.ws, { type: 'error', message: `unknown message type: ${msg.type}` });
@@ -700,10 +706,10 @@ class FnsHub {
     const room = this.rooms.get(vaultId);
     if (!room || room.size === 0) return;
 
-    // Check size from manifest first to avoid loading huge buffer into memory
-    const manifest = storage.getManifest(vaultId);
-    const meta = manifest[relPath];
-    const fileSize = meta?.size;
+    // Use metadata supplied by the write path. Falling back to a synchronous
+    // manifest scan here can block the event loop when the cache is cold.
+    const meta = { size: result?.size, mtime: result?.mtime, hash: result?.currentHash };
+    const fileSize = meta.size;
 
     if (fileSize !== undefined && fileSize > MAX_WS_INLINE_BYTES) {
       // Large file: broadcast metadata notification so clients stream via HTTP
@@ -713,7 +719,7 @@ class FnsHub {
         cursor: deltaSync.getLatestCursor(vaultId),
         size: fileSize,
         mtime: meta?.mtime,
-        hash: result?.currentHash || meta?.hash,
+        hash: result?.currentHash || meta.hash,
         pullRequired: true,
       };
       const json = JSON.stringify(payload);
@@ -775,10 +781,8 @@ class FnsHub {
     if (!room || room.size === 0) return;
 
     if (relPaths.length <= 10) {
-      const manifest = storage.getManifest(vaultId);
       for (const p of relPaths) {
-        const meta = manifest ? manifest[p] : null;
-        this.broadcastFileChange(vaultId, p, { currentHash: meta?.hash }, fromUserId, excludeWs);
+        this.broadcastFileChange(vaultId, p, {}, fromUserId, excludeWs);
       }
       return;
     }

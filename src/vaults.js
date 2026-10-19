@@ -220,6 +220,7 @@ async function remove(vaultId) {
   // 7. 彻底清理 Vault 磁盘目录（含 files/, history/, trash/）及独立 data/trash/:vaultId
   try {
     const storage = require('./storage');
+    await storage.waitForVaultLocks(vaultId);
     storage.deleteVaultDirectory(vaultId);
   } catch (e) {
     console.error(`[Vaults] Error removing storage directory for vault ${vaultId}:`, e.message);

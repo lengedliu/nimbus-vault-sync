@@ -13,9 +13,8 @@ function checkVaultWrite(req, res, vaultId) {
     res.status(404).json({ error: 'Vault 不存在' });
     return false;
   }
-  const hasAccess = vaultsStore.hasWriteAccess(req.user.id, vaultId, req.user.role === 'admin');
-  if (!hasAccess) {
-    res.status(403).json({ error: '您没有该 Vault 的管理权限' });
+  if (vault.ownerId !== req.user.id && req.user.role !== 'admin') {
+    res.status(403).json({ error: '只有 Vault 所有者或系统管理员可以管理云备份' });
     return false;
   }
   return true;

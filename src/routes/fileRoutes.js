@@ -325,7 +325,7 @@ router.post('/:vaultId/batch/delete', express.json(), asyncHandler(async (req, r
 }));
 
 // POST batch move files to target folder
-router.post('/:vaultId/batch/move', express.json(), (req, res) => {
+router.post('/:vaultId/batch/move', express.json(), asyncHandler(async (req, res) => {
   if (!requireWriteAccess(req, res)) return;
   const { paths, targetFolder } = req.body;
   if (!Array.isArray(paths) || paths.length === 0) {
@@ -358,7 +358,7 @@ router.post('/:vaultId/batch/move', express.json(), (req, res) => {
     if (moveRes.ok) {
       successCount++;
       batchChanges.push({ action: 'delete', path: relPath });
-      const newMeta = storage.getManifestEntry(vaultId, newRelPath);
+      const newMeta = await storage.getManifestEntryAsync(vaultId, newRelPath);
       batchChanges.push({ action: 'update', path: newRelPath, ...newMeta });
     }
     results.push({ path: relPath, newPath: newRelPath, success: moveRes.ok, error: moveRes.error });
@@ -381,10 +381,10 @@ router.post('/:vaultId/batch/move', express.json(), (req, res) => {
   });
 
   res.json({ success: true, count: successCount, results });
-});
+}));
 
 // GET tags overview for vault
-router.get('/:vaultId/tags', (req, res) => {
+router.get('/:vaultId/tags', asyncHandler(async (req, res) => {
   if (!requireReadAccess(req, res)) return;
   const { vaultId } = req.params;
   try {
@@ -394,7 +394,7 @@ router.get('/:vaultId/tags', (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // GET / POST batch download selected files as ZIP
 router.get('/:vaultId/batch/download', (req, res) => {

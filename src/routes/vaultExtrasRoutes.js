@@ -145,11 +145,11 @@ router.post(
 
 // ---------------------------------- stats & activity -----------------------------
 
-router.get('/:vaultId/stats', (req, res) => {
+router.get('/:vaultId/stats', asyncHandler(async (req, res) => {
   if (!requireReadAccess(req, res)) return;
   const { vaultId } = req.params;
   const hub = req.app.get('fnsHub');
-  const stats = storage.getVaultStats(vaultId);
+  const stats = await storage.getVaultStats(vaultId);
   const activeClients = hub ? hub.getClientCount(vaultId) : 0;
   const connectedDevices = hub ? hub.getClients(vaultId) : [];
   const recentActivity = hub ? hub.getActivityLogs(vaultId) : [];
@@ -162,7 +162,7 @@ router.get('/:vaultId/stats', (req, res) => {
     connectedDevices,
     activity: recentActivity,
   });
-});
+}));
 
 // ---------------------------------- search ---------------------------------------
 

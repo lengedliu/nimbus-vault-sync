@@ -102,7 +102,7 @@ async function createBackup(vaultId, label = '手动快照') {
   const filename = `${safeName}-snapshot-${stamp}-${id}.zip`;
   const fullPath = assertSafeBackupFilename(dir, filename);
 
-  const stats = storage.getVaultStats(vaultId);
+  const stats = await storage.getVaultStats(vaultId);
   const output = fs.createWriteStream(fullPath);
   const archive = createArchiver('zip', { zlib: { level: 6 } });
 

@@ -2,9 +2,8 @@ const https = require('https');
 const http = require('http');
 const url = require('url');
 const crypto = require('crypto');
-const dns = require('node:dns/promises');
 const settings = require('./settings');
-const { isPrivateOrReservedIp } = require('./utils/ssrfGuard');
+const { resolvePublicAddresses, createPinnedLookup } = require('./utils/ssrfGuard');
 const { encryptField, decryptField } = require('./utils/crypto');
 
 /**
@@ -163,22 +162,15 @@ async function sendHttpRequest(targetUrl, payload) {
 
   let addresses;
   try {
-    addresses = await dns.lookup(parsed.hostname, { all: true });
-  } catch (e) {
-    throw new Error(`无法解析 Webhook 主机 "${parsed.hostname}": ${e.message}`);
-  }
-  for (const { address } of addresses) {
-    if (isPrivateOrReservedIp(address)) {
-      throw new Error(
-        `拒绝发送 Webhook 到目标 "${targetUrl}": 域名解析到了私有/保留地址 (${address})。禁止向内网发送 Webhook 请求。`
-      );
-    }
+    addresses = await resolvePublicAddresses(parsed.hostname);
+  } catch (err) {
+    throw new Error(`拒绝发送 Webhook 到目标 "${targetUrl}": ${err.message}`);
   }
 
   return new Promise((resolve, reject) => {
     const postData = JSON.stringify(payload);
     const options = {
-      hostname: parsed.hostname,
+      hostname: parsed.hostname.replace(/^\[|\]$/g, ''),
       port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
       path: parsed.pathname + (parsed.search || ''),
       method: 'POST',
@@ -188,6 +180,7 @@ async function sendHttpRequest(targetUrl, payload) {
         'User-Agent': 'Nimbus-Sync-Server/1.1',
       },
       timeout: 6000,
+      lookup: createPinnedLookup(addresses),
     };
 
     const client = parsed.protocol === 'https:' ? https : http;

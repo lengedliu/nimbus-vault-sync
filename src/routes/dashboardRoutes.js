@@ -46,7 +46,7 @@ router.get('/overview', asyncHandler(async (req, res) => {
     };
 
     try {
-      stats = storage.getVaultStats(v.id);
+      stats = await storage.getVaultStats(v.id);
     } catch {
       // safe fallback if storage read encounters issue
     }
@@ -211,7 +211,7 @@ router.get('/kanban/:vaultId/scan-tasks', asyncHandler(async (req, res) => {
   const { vaultId } = req.params;
   if (!requireReadAccess(req, res)) return;
 
-  const manifest = storage.getManifest(vaultId);
+  const manifest = await storage.getManifestAsync(vaultId);
   const mdPaths = Object.keys(manifest).filter((p) => p.toLowerCase().endsWith('.md'));
 
   const tasks = [];
@@ -268,7 +268,7 @@ router.get('/review/:vaultId', asyncHandler(async (req, res) => {
   const { vaultId } = req.params;
   if (!requireReadAccess(req, res)) return;
 
-  const manifest = storage.getManifest(vaultId);
+  const manifest = await storage.getManifestAsync(vaultId);
   const mdPaths = Object.keys(manifest).filter((p) => p.toLowerCase().endsWith('.md'));
 
   // 1. Calculate 365 days Heatmap
@@ -364,7 +364,7 @@ router.get('/review/:vaultId/random', asyncHandler(async (req, res) => {
   const { vaultId } = req.params;
   if (!requireReadAccess(req, res)) return;
 
-  const manifest = storage.getManifest(vaultId);
+  const manifest = await storage.getManifestAsync(vaultId);
   const mdPaths = Object.keys(manifest).filter((p) => p.toLowerCase().endsWith('.md'));
 
   if (mdPaths.length === 0) {

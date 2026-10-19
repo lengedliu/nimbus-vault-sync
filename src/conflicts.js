@@ -3,6 +3,7 @@ const path = require('path');
 const storage = require('./storage');
 const vaults = require('./vaults');
 const webhooks = require('./webhooks');
+const deltaSync = require('./deltaSync');
 
 /**
  * Identify all conflict files in a vault.
@@ -39,8 +40,6 @@ function getBasePathFromConflict(conflictRelPath) {
 function listConflicts(vaultId) {
   const root = vaults.vaultFilesRoot(vaultId);
   const conflictPaths = findConflictsInDir(root, root);
-  const manifest = storage.getManifest(vaultId);
-
   return conflictPaths.map((conflictPath) => {
     const fullConflict = storage.safeJoin(root, conflictPath);
     const conflictStat = fs.existsSync(fullConflict) ? fs.statSync(fullConflict) : null;
@@ -71,20 +70,24 @@ function getConflictDiff(vaultId, conflictPath) {
 
   if (!fs.existsSync(fullConflict)) throw new Error('冲突文件不存在');
 
-  const conflictBuf = fs.readFileSync(fullConflict);
-  const baseBuf = fs.existsSync(fullBase) ? fs.readFileSync(fullBase) : Buffer.from('');
-
   const isText = /\.(md|txt|json|js|ts|css|html|yaml|yml|csv|canvas)$/i.test(conflictPath);
+  const conflictStat = fs.statSync(fullConflict);
+  const baseStat = fs.existsSync(fullBase) ? fs.statSync(fullBase) : null;
+  const maxDiffBytes = 2 * 1024 * 1024;
 
-  if (!isText) {
+  if (!isText || conflictStat.size > maxDiffBytes || (baseStat && baseStat.size > maxDiffBytes)) {
     return {
       isText: false,
       conflictPath,
       basePath,
-      conflictSize: conflictBuf.length,
-      baseSize: baseBuf.length,
+      conflictSize: conflictStat.size,
+      baseSize: baseStat?.size || 0,
+      reason: isText ? '文件过大，暂不生成文本差异预览' : undefined,
     };
   }
+
+  const conflictBuf = fs.readFileSync(fullConflict);
+  const baseBuf = baseStat ? fs.readFileSync(fullBase) : Buffer.from('');
 
   const baseText = baseBuf.toString('utf8');
   const conflictText = conflictBuf.toString('utf8');
@@ -157,12 +160,13 @@ async function resolveConflict(vaultId, { conflictPath, resolution, customConten
   }
 
   // Invalidate in-memory manifest cache after conflict cleanup
+  await deltaSync.waitForPendingWrites(vaultId);
   storage.invalidateManifestCache(vaultId);
 
   // Broadcast resolved changes to all connected clients
   if (fnsHub) {
     if (resolution !== 'keep-current') {
-      const manifest = storage.getManifest(vaultId);
+      const manifest = await storage.getManifestAsync(vaultId);
       const meta = manifest ? manifest[basePath] : null;
       if (meta) {
         fnsHub.broadcastFileChange(vaultId, basePath, { currentHash: meta.hash }, userId);

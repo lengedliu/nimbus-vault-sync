@@ -1,5 +1,6 @@
 const { z } = require('zod');
-const dns = require('node:dns').promises;
+const http = require('node:http');
+const https = require('node:https');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const storage = require('./storage');
 const ftsEngine = require('./ftsEngine');
@@ -9,7 +10,7 @@ const sharesStore = require('./shares');
 const fnsHub = require('./wsHub');
 const gitSync = require('./gitSync');
 const webhooks = require('./webhooks');
-const { isPrivateOrReservedIp } = require('./utils/ssrfGuard');
+const { resolvePublicAddresses, createPinnedLookup } = require('./utils/ssrfGuard');
 const { VERSION } = require('./config');
 
 // upload_attachment 的 sourceUrl 允许下载的最大字节数，防止一个巨大的远程文件把内存吃爆。
@@ -18,74 +19,92 @@ const MAX_ATTACHMENT_BYTES = parseInt(process.env.ATTACHMENT_MAX_MB || '200', 10
 /**
  * 安全地下载一个远程附件：只允许 http/https，解析出真实 IP 后拒绝内网/本机地址
  * （防止把 Nimbus 服务器当跳板去探测内网或云主机元数据接口），并限制下载大小上限。
- * 用解析后的 IP 而不是原始 hostname 做判断，避免 DNS rebinding 绕过检查。
+ * 校验后固定到已解析 IP，并拒绝重定向，避免 DNS rebinding 或跳转绕过校验。
  */
 async function fetchAttachmentUrlSafely(sourceUrl) {
-  let parsed;
-  try {
-    parsed = new URL(sourceUrl);
-  } catch {
-    throw new Error(`Invalid sourceUrl: "${sourceUrl}"`);
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error('sourceUrl must be an http:// or https:// URL.');
-  }
-
-  let addresses;
-  try {
-    addresses = await dns.lookup(parsed.hostname, { all: true });
-  } catch (e) {
-    throw new Error(`Could not resolve host "${parsed.hostname}": ${e.message}`);
-  }
-  for (const { address } of addresses) {
-    if (isPrivateOrReservedIp(address)) {
-      throw new Error(
-        `Refusing to fetch "${sourceUrl}": resolves to a private/internal address (${address}). ` +
-        'Downloading attachments from internal network addresses is not allowed.'
-      );
+  let currentUrl = sourceUrl;
+  const deadline = Date.now() + 30_000;
+  const maxSizeMessage = `Remote file is too large (> ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB).`;
+  for (let redirects = 0; redirects <= 5; redirects++) {
+    let parsed;
+    try {
+      parsed = new URL(currentUrl);
+    } catch {
+      throw new Error(`Invalid sourceUrl: "${currentUrl}"`);
     }
-  }
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 30_000);
-  let resp;
-  try {
-    resp = await fetch(sourceUrl, { signal: controller.signal, redirect: 'follow' });
-  } finally {
-    clearTimeout(timeoutId);
-  }
-  if (!resp.ok) {
-    throw new Error(`Failed to download attachment from URL: HTTP ${resp.status} ${resp.statusText}`);
-  }
-
-  const declaredLength = resp.headers.get('content-length');
-  if (declaredLength && parseInt(declaredLength, 10) > MAX_ATTACHMENT_BYTES) {
-    throw new Error(`Remote file is too large (> ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB).`);
-  }
-
-  // 就算没有 Content-Length（或撒谎），也要在实际读取时兜底限制大小。
-  if (!resp.body) {
-    const arrayBuf = await resp.arrayBuffer();
-    if (arrayBuf.byteLength > MAX_ATTACHMENT_BYTES) {
-      throw new Error(`Remote file is too large (> ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB).`);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('sourceUrl must be an http:// or https:// URL.');
     }
-    return Buffer.from(arrayBuf);
-  }
 
-  const reader = resp.body.getReader();
-  const chunks = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > MAX_ATTACHMENT_BYTES) {
-      reader.cancel().catch(() => {});
-      throw new Error(`Remote file is too large (> ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB).`);
+    const addresses = await resolvePublicAddresses(parsed.hostname);
+    const client = parsed.protocol === 'https:' ? https : http;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) throw new Error('Remote attachment download timed out.');
+    const result = await new Promise((resolve, reject) => {
+      let settled = false;
+      let timeoutId;
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        reject(err);
+      };
+      const succeed = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        resolve(value);
+      };
+      let request;
+      timeoutId = setTimeout(() => request?.destroy(new Error('Remote attachment download timed out.')), remainingMs);
+      request = client.get({
+        hostname: parsed.hostname.replace(/^\[|\]$/g, ''),
+        port: parsed.port || undefined,
+        path: `${parsed.pathname}${parsed.search}`,
+        agent: false,
+        lookup: createPinnedLookup(addresses),
+      }, (response) => {
+        response.on('error', fail);
+        if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+          response.resume();
+          succeed({ redirect: response.headers.location });
+          return;
+        }
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          response.resume();
+          fail(new Error(`Failed to download attachment from URL: HTTP ${response.statusCode} ${response.statusMessage || ''}`));
+          return;
+        }
+
+        const declaredLength = response.headers['content-length'];
+        if (declaredLength && parseInt(declaredLength, 10) > MAX_ATTACHMENT_BYTES) {
+          response.destroy(new Error(maxSizeMessage));
+          return;
+        }
+
+        const chunks = [];
+        let total = 0;
+        response.on('data', (chunk) => {
+          total += chunk.length;
+          if (total > MAX_ATTACHMENT_BYTES) {
+            response.destroy(new Error(maxSizeMessage));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        response.on('end', () => succeed({ buffer: Buffer.concat(chunks, total) }));
+      });
+      request.on('error', fail);
+    });
+
+    if (result.redirect) {
+      if (redirects === 5) throw new Error('Too many redirects while downloading remote attachment.');
+      currentUrl = new URL(result.redirect, parsed).toString();
+      continue;
     }
-    chunks.push(value);
+    return result.buffer;
   }
-  return Buffer.concat(chunks.map((c) => Buffer.from(c)));
+  throw new Error('Too many redirects while downloading remote attachment.');
 }
 
 /*
@@ -236,8 +255,8 @@ function buildMcpServer(user, defaultVaultId) {
     'List all Obsidian vaults available to this user account with ID, name, file count, and permissions.',
     {},
     async () => {
-      const vaults = vaultsStore.listForUser(user.id).map((v) => {
-        const manifest = storage.getManifest(v.id) || {};
+      const vaults = await Promise.all(vaultsStore.listForUser(user.id).map(async (v) => {
+        const manifest = await storage.getManifestAsync(v.id) || {};
         const paths = Object.keys(manifest);
         return {
           id: v.id,
@@ -248,7 +267,7 @@ function buildMcpServer(user, defaultVaultId) {
           totalSizeBytes: paths.reduce((acc, p) => acc + (manifest[p]?.size || 0), 0),
           isDefault: v.id === defaultVaultId,
         };
-      });
+      }));
       return jsonResult(vaults);
     }
   );
@@ -262,7 +281,7 @@ function buildMcpServer(user, defaultVaultId) {
     async ({ vaultId }) => {
       const id = resolveVaultId(vaultId);
       const vault = vaultsStore.listForUser(user.id).find((v) => v.id === id);
-      const manifest = storage.getManifest(id) || {};
+      const manifest = await storage.getManifestAsync(id) || {};
       const paths = Object.keys(manifest);
 
       let mdCount = 0;
@@ -355,7 +374,7 @@ function buildMcpServer(user, defaultVaultId) {
     },
     async ({ vaultId, folder, extension = 'all', sortBy = 'ctime', sortOrder = 'desc', limit = 100, includeMetadata = false }) => {
       const id = resolveVaultId(vaultId);
-      const manifest = storage.getManifest(id) || {};
+      const manifest = await storage.getManifestAsync(id) || {};
       let paths = Object.keys(manifest);
 
       if (folder) {
@@ -423,7 +442,7 @@ function buildMcpServer(user, defaultVaultId) {
     },
     async ({ vaultId, path: notePath }) => {
       const id = resolveVaultId(vaultId);
-      const manifest = storage.getManifest(id) || {};
+      const manifest = await storage.getManifestAsync(id) || {};
       const meta = manifest[notePath];
       const buf = storage.readFile(id, notePath);
 
@@ -735,7 +754,7 @@ function buildMcpServer(user, defaultVaultId) {
     async ({ vaultId, date, folder, createIfMissing = true }) => {
       const id = resolveVaultId(vaultId);
       const targetDate = date || getTodayString();
-      const manifest = storage.getManifest(id) || {};
+      const manifest = await storage.getManifestAsync(id) || {};
       const allPaths = Object.keys(manifest);
 
       // Detect folder: if specified use it; else check if a "Daily/" folder exists in vault
@@ -802,7 +821,7 @@ function buildMcpServer(user, defaultVaultId) {
     async ({ vaultId, content, date, folder, heading, withTimestamp = true }) => {
       const id = resolveWritableVaultId(vaultId);
       const targetDate = date || getTodayString();
-      const manifest = storage.getManifest(id) || {};
+      const manifest = await storage.getManifestAsync(id) || {};
       const allPaths = Object.keys(manifest);
 
       let targetFolder = folder || '';
@@ -861,7 +880,7 @@ function buildMcpServer(user, defaultVaultId) {
     },
     async ({ vaultId, query, folder, limit = 20, useRegex = false, caseSensitive = false }) => {
       const id = resolveVaultId(vaultId);
-      const manifest = storage.getManifest(id) || {};
+      const manifest = await storage.getManifestAsync(id) || {};
 
       if (!useRegex && !caseSensitive) {
         const cleanFolder = folder ? folder.replace(/^\/+|\/+$/g, '') + '/' : null;
@@ -943,7 +962,7 @@ function buildMcpServer(user, defaultVaultId) {
     },
     async ({ vaultId, folder }) => {
       const id = resolveVaultId(vaultId);
-      const manifest = storage.getManifest(id) || {};
+      const manifest = await storage.getManifestAsync(id) || {};
       let notePaths = Object.keys(manifest).filter((p) => p.toLowerCase().endsWith('.md'));
 
       if (folder) {
@@ -1099,7 +1118,7 @@ function buildMcpServer(user, defaultVaultId) {
       // 建分享链接要求"库主本人"，比其他写类工具的"有写权限即可"更严格——
       // 和 REST 接口 POST /vaults/:vaultId/shares 保持一致，写权限协作者也不能替别人发布公开链接。
       const id = resolveOwnedVaultId(vaultId);
-      const manifest = storage.getManifest(id) || {};
+      const manifest = await storage.getManifestAsync(id) || {};
       if (!manifest[notePath]) {
         throw new Error(`Note "${notePath}" not found in vault.`);
       }

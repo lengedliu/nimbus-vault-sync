@@ -58,15 +58,28 @@ async function withFileLock(vaultId, relPath, fn) {
   const current = fileLocks.get(key) || Promise.resolve();
   let release;
   const next = new Promise((resolve) => { release = resolve; });
-  fileLocks.set(key, current.then(() => next, () => next));
+  const tail = current.then(() => next, () => next);
+  fileLocks.set(key, tail);
 
   try {
     await current;
     return await fn();
   } finally {
     release();
-    if (fileLocks.get(key) === next) {
+    if (fileLocks.get(key) === tail) {
       fileLocks.delete(key);
+    }
+  }
+}
+
+async function waitForVaultLocks(vaultId) {
+  const prefix = `${vaultId}:`;
+  while (true) {
+    const pending = Array.from(fileLocks.entries()).filter(([key]) => key.startsWith(prefix));
+    if (pending.length === 0) return;
+    await Promise.allSettled(pending.map(([, tail]) => tail));
+    for (const [key, tail] of pending) {
+      if (fileLocks.get(key) === tail) fileLocks.delete(key);
     }
   }
 }
@@ -241,6 +254,11 @@ function getManifestEntry(vaultId, relPath) {
     return cachedMem.manifest[relPath] || null;
   }
   const manifest = getManifest(vaultId);
+  return manifest ? (manifest[relPath] || null) : null;
+}
+
+async function getManifestEntryAsync(vaultId, relPath) {
+  const manifest = await getManifestAsync(vaultId);
   return manifest ? (manifest[relPath] || null) : null;
 }
 
@@ -859,7 +877,7 @@ async function restoreBatchTrash(vaultId, trashIds) {
   for (let i = 0; i < targetEntries.length; i += CHUNK_SIZE) {
     const chunk = targetEntries.slice(i, i + CHUNK_SIZE);
     await Promise.all(
-      chunk.map(async (entry) => {
+      chunk.map(async (entry) => withFileLock(vaultId, entry.path, async () => {
         const trashFull = path.join(vTrashDir, entry.id);
         if (!fs.existsSync(trashFull)) return;
         try {
@@ -905,7 +923,7 @@ async function restoreBatchTrash(vaultId, trashIds) {
         } catch (err) {
           console.error(`[Trash] Failed to restore "${entry.path}":`, err);
         }
-      })
+      }))
     );
 
     if (i + CHUNK_SIZE < targetEntries.length) {
@@ -1017,7 +1035,7 @@ function writeFile(vaultId, relPath, buffer, { mtime, baseHash } = {}) {
     if (existingHash === incomingHash) {
       // No real change — just acknowledge, no history entry needed.
       if (mtime) touchMtime(full, mtime);
-      return { written: true, conflict: null, currentHash: incomingHash };
+      return { written: true, conflict: null, currentHash: incomingHash, size: buffer.length, mtime: mtime || fs.statSync(full).mtimeMs };
     }
 
     if (baseHash && existingHash !== baseHash) {
@@ -1186,6 +1204,18 @@ function deleteFile(vaultId, relPath) {
   const id = randomId();
   fs.renameSync(full, path.join(trashDir(vaultId), id));
 
+  // 同步清单只记录文件；删除最后一个文件后清理空父目录，避免服务端遗留旧目录树。
+  const filesRoot = path.resolve(vaultFilesRoot(vaultId));
+  let parentDir = path.dirname(full);
+  while (parentDir !== filesRoot && parentDir.startsWith(filesRoot + path.sep)) {
+    try {
+      fs.rmdirSync(parentDir);
+      parentDir = path.dirname(parentDir);
+    } catch {
+      break; // 目录仍有文件、子目录或当前进程无权删除时保留
+    }
+  }
+
   const idxPath = trashIndexPath(vaultId);
   const size = fs.statSync(path.join(trashDir(vaultId), id)).size;
   mutateIndex(idxPath, (entries) => {
@@ -1301,7 +1331,7 @@ async function searchVault(vaultId, query, limit = 50) {
   const q = query.trim();
 
   // 1. Trigger background index warm-up if not already loaded/indexed
-  const manifest = getManifest(vaultId);
+  const manifest = await getManifestAsync(vaultId);
   const idx = ftsEngine.getIndex(vaultId);
   if (!idx.isLoaded || idx.docCount === 0) {
     // Warm up index asynchronously
@@ -1378,8 +1408,8 @@ async function searchVault(vaultId, query, limit = 50) {
 }
 
 /** Vault statistics summary. */
-function getVaultStats(vaultId) {
-  const manifest = getManifest(vaultId);
+async function getVaultStats(vaultId) {
+  const manifest = await getManifestAsync(vaultId);
   const paths = Object.keys(manifest);
   let totalBytes = 0;
   let notesCount = 0;
@@ -1553,6 +1583,7 @@ module.exports = {
   getManifest,
   getManifestAsync,
   getManifestEntry,
+  getManifestEntryAsync,
   walkAsync,
   invalidateManifestCache,
   readFile,
@@ -1591,6 +1622,7 @@ module.exports = {
   isNoiseFile,
   pruneVaultHistory,
   withFileLock,
+  waitForVaultLocks,
   clearVaultCache,
   deleteVaultDirectory,
 };

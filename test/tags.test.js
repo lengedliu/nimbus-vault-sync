@@ -37,7 +37,7 @@ tags:
   storage.writeFile(vaultId, 'note2.md', Buffer.from(note2, 'utf8'));
   storage.writeFile(vaultId, 'note3.md', Buffer.from(note3, 'utf8'));
 
-  const tags = storage.getVaultTags(vaultId);
+  const tags = await storage.getVaultTags(vaultId);
   assert.ok(Array.isArray(tags));
 
   const tagMap = new Map(tags.map((t) => [t.tag, t]));

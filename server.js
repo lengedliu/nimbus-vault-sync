@@ -51,27 +51,23 @@ if (JWT_SECRET_SOURCE === 'env') {
   console.log('[AUTH] JWT_SECRET 运行于内存临时高熵密钥模式。');
 }
 
-// Initialize database
-(async () => {
-  try {
-    await dbManager.init();
-    await users.loadFromDb();
-    await vaultsStore.loadFromDb();
-    await vaultMembers.loadFromDb();
-    await sharesStore.loadFromDb();
-    await syncRulesStore.loadFromDb();
-    await settingsManager.loadFromDb();
-    await syncLogger.loadFromDb();
-    await devicesStore.loadFromDb();
+// 初始化必须完成后才能接受同步请求，避免客户端过早拿到空 Vault 清单。
+const startupPromise = (async () => {
+  await dbManager.init();
+  await users.loadFromDb();
+  await vaultsStore.loadFromDb();
+  await vaultMembers.loadFromDb();
+  await sharesStore.loadFromDb();
+  await syncRulesStore.loadFromDb();
+  await settingsManager.loadFromDb();
+  await syncLogger.loadFromDb();
+  await devicesStore.loadFromDb();
 
-    // 自动为系统初始化默认测试笔记库（当当前库数量为0时）
-    const allUsers = users.listAll();
-    const adminUser = allUsers.find((u) => u.role === 'admin') || allUsers[0];
-    if (adminUser) {
-      await vaultsStore.ensureDefaultVaults(adminUser.id);
-    }
-  } catch (err) {
-    console.error('[DB] Initial startup load error:', err);
+  // 自动为系统初始化默认测试笔记库（当当前库数量为0时）
+  const allUsers = users.listAll();
+  const adminUser = allUsers.find((u) => u.role === 'admin') || allUsers[0];
+  if (adminUser) {
+    await vaultsStore.ensureDefaultVaults(adminUser.id);
   }
 })();
 
@@ -244,18 +240,22 @@ if (TLS_CERT_PATH && TLS_KEY_PATH) {
 } else {
   server = http.createServer(app);
 }
-fnsHub.init(server);
-
 const scheme = usingTls ? 'https' : 'http';
 const wsScheme = usingTls ? 'wss' : 'ws';
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Nimbus server listening on ${scheme}://0.0.0.0:${PORT}`);
-  console.log(`Management dashboard: ${scheme}://0.0.0.0:${PORT}/admin`);
-  console.log(`WebSocket sync endpoint: ${wsScheme}://0.0.0.0:${PORT}/ws`);
-  console.log(`Data dir: ${DATA_DIR}`);
-  if (!usingTls) {
-    console.log('TLS not configured (TLS_CERT_PATH/TLS_KEY_PATH) — serving plain HTTP/WS.');
-  }
+startupPromise.then(() => {
+  fnsHub.init(server);
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Nimbus server listening on ${scheme}://0.0.0.0:${PORT}`);
+    console.log(`Management dashboard: ${scheme}://0.0.0.0:${PORT}/admin`);
+    console.log(`WebSocket sync endpoint: ${wsScheme}://0.0.0.0:${PORT}/ws`);
+    console.log(`Data dir: ${DATA_DIR}`);
+    if (!usingTls) {
+      console.log('TLS not configured (TLS_CERT_PATH/TLS_KEY_PATH) — serving plain HTTP/WS.');
+    }
+  });
+}).catch((err) => {
+  console.error('[DB] Initial startup load failed; server will not accept requests:', err);
+  process.exitCode = 1;
 });
 
 // 优雅关闭：容器/进程被停止时，先停止接受新连接、给在飞请求（比如正在流式

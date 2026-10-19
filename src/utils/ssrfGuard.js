@@ -1,4 +1,35 @@
 const net = require('node:net');
+const dns = require('node:dns').promises;
+
+async function resolvePublicAddresses(hostname) {
+  const normalizedHost = String(hostname || '').replace(/^\[|\]$/g, '');
+  let addresses;
+  try {
+    addresses = await dns.lookup(normalizedHost, { all: true });
+  } catch (err) {
+    throw new Error(`Could not resolve host "${normalizedHost}": ${err.message}`);
+  }
+  if (!addresses.length || addresses.some(({ address }) => isPrivateOrReservedIp(address))) {
+    const blocked = addresses.find(({ address }) => isPrivateOrReservedIp(address));
+    throw new Error(blocked
+      ? `Host "${normalizedHost}" resolves to a private/internal address (${blocked.address}), 私有/保留地址。`
+      : `Host "${normalizedHost}" did not resolve to a usable address.`);
+  }
+  return addresses;
+}
+
+function createPinnedLookup(addresses) {
+  if (!Array.isArray(addresses) || addresses.length === 0) {
+    throw new Error('At least one validated DNS address is required.');
+  }
+  return (_hostname, options, callback) => {
+    if (options && options.all) {
+      callback(null, addresses);
+    } else {
+      callback(null, addresses[0].address, addresses[0].family);
+    }
+  };
+}
 
 /**
  * 判断一个 IPv4/IPv6 地址是否落在内网/本机/链路本地/云主机元数据等
@@ -36,4 +67,4 @@ function isPrivateOrReservedIp(ip) {
   return true; // couldn't parse — fail closed
 }
 
-module.exports = { isPrivateOrReservedIp };
+module.exports = { isPrivateOrReservedIp, resolvePublicAddresses, createPinnedLookup };

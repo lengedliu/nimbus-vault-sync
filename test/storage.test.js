@@ -50,7 +50,7 @@ test('writeFile: baseHash 落后于服务器实际内容时应生成冲突副本
   assert.equal(stillB.toString('utf8'), 'version B');
 });
 
-test('writeFileFromPath: 流式写入路径下的行为应该和 writeFile 一致（含冲突检测）', () => {
+test('writeFileFromPath: 流式写入路径下的行为应该和 writeFile 一致（含冲突检测）', async () => {
   storage.writeFile(VAULT_ID, 'stream.md', Buffer.from('stream version A'));
 
   const tempPath = storage.createUploadTempPath(VAULT_ID);
@@ -58,7 +58,7 @@ test('writeFileFromPath: 流式写入路径下的行为应该和 writeFile 一�
   fs.writeFileSync(tempPath, newContent);
   const hash = crypto.createHash('sha256').update(newContent).digest('hex');
 
-  const result = storage.writeFileFromPath(VAULT_ID, 'stream.md', tempPath, hash, {});
+  const result = await storage.writeFileFromPath(VAULT_ID, 'stream.md', tempPath, hash, {});
   assert.equal(result.written, true);
 
   const readBack = storage.readFile(VAULT_ID, 'stream.md');
@@ -72,7 +72,7 @@ test('writeFileFromPath: 流式写入路径下的行为应该和 writeFile 一�
   assert.ok(history.length >= 1, '覆盖写入应该留下至少一条历史记录');
 });
 
-test('writeFileFromPath: 检测到冲突时临时文件应该被移动为 .conflict 副本，而不是丢弃或覆盖', () => {
+test('writeFileFromPath: 检测到冲突时临时文件应该被移动为 .conflict 副本，而不是丢弃或覆盖', async () => {
   const base = storage.writeFile(VAULT_ID, 'stream-conflict.md', Buffer.from('A'));
   storage.writeFile(VAULT_ID, 'stream-conflict.md', Buffer.from('B')); // 服务器上已经变成 B
 
@@ -81,7 +81,7 @@ test('writeFileFromPath: 检测到冲突时临时文件应该被移动为 .confl
   fs.writeFileSync(tempPath, staleWrite);
   const hash = crypto.createHash('sha256').update(staleWrite).digest('hex');
 
-  const result = storage.writeFileFromPath(VAULT_ID, 'stream-conflict.md', tempPath, hash, {
+  const result = await storage.writeFileFromPath(VAULT_ID, 'stream-conflict.md', tempPath, hash, {
     baseHash: base.currentHash, // 落后的 baseHash，触发冲突
   });
 

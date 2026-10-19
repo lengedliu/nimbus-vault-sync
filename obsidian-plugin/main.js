@@ -666,40 +666,38 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         }
         if (msg.path && msg.hash && this.fileHashes.get(msg.path) === msg.hash) {
           // 本地已是目标相同哈希版本（如本设备自产生上传或已同步），无需重复拉取，拦截自反回声
+          if (typeof msg.cursor === 'number') this.setVaultCursor(this.settings.vaultId, msg.cursor);
           return;
         }
+        let changeApplied = false;
         if (msg.pullRequired || !msg.content) {
-          await this.pullRemoteFileViaHttp(msg.path, msg.mtime, msg.hash);
+          changeApplied = await this.pullRemoteFileViaHttp(msg.path, msg.mtime, msg.hash);
         } else {
-          await this.applyRemoteChange(msg.path, msg.content, msg.mtime, msg.hash);
+          changeApplied = await this.applyRemoteChange(msg.path, msg.content, msg.mtime, msg.hash);
         }
+        if (changeApplied && typeof msg.cursor === 'number') this.setVaultCursor(this.settings.vaultId, msg.cursor);
         break;
 
       case 'batch_file_change':
       case 'batch_change':
-        if (typeof msg.cursor === 'number') {
-          this.setVaultCursor(this.settings.vaultId, msg.cursor);
-        }
         // Handle coalesced or server batch change notifications
         if (msg.pullRequired) {
           await this.fullSyncAllFiles();
         } else if (Array.isArray(msg.changes)) {
+          let allApplied = true;
           for (const item of msg.changes) {
             if (!item || !item.path) continue;
             if (item.action === 'delete') {
-              await this.applyRemoteDelete(item.path);
+              allApplied = (await this.applyRemoteDelete(item.path)) && allApplied;
             } else {
               const localHash = this.fileHashes.get(item.path);
               if (item.hash && localHash === item.hash) {
                 continue;
               }
-              if (item.size && item.size > 2 * 1024 * 1024) {
-                await this.pullRemoteFileViaHttp(item.path, item.mtime, item.hash);
-              } else {
-                this.sendWsMessage({ type: 'pull', path: item.path });
-              }
+              allApplied = (await this.pullRemoteFileViaHttp(item.path, item.mtime, item.hash)) && allApplied;
             }
           }
+          if (allApplied && typeof msg.cursor === 'number') this.setVaultCursor(this.settings.vaultId, msg.cursor);
         }
         break;
 
@@ -710,10 +708,9 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
       case 'deleted':
         // A file was deleted remotely
-        if (typeof msg.cursor === 'number') {
+        if (await this.applyRemoteDelete(msg.path) && typeof msg.cursor === 'number') {
           this.setVaultCursor(this.settings.vaultId, msg.cursor);
         }
-        await this.applyRemoteDelete(msg.path);
         break;
 
       case 'conflict':
@@ -738,6 +735,12 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         break;
 
       case 'ack':
+        if (msg.path && this.pendingSyncAcks) {
+          const ok = msg.action === 'delete'
+            ? msg.deleted !== false
+            : (!msg.ignored && !!msg.hash);
+          this.pendingSyncAcks.get(`${msg.action || 'push'}:${msg.path}`)?.resolve(ok, msg);
+        }
         if (msg.hash) {
           this.fileHashes.set(msg.path, msg.hash);
           this.updateBaselineEntry(this.settings.vaultId, msg.path, {
@@ -757,6 +760,10 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         break;
 
       case 'error':
+        if (msg.path && this.pendingSyncAcks) {
+          this.pendingSyncAcks.get(`push:${msg.path}`)?.resolve(false);
+          this.pendingSyncAcks.get(`delete:${msg.path}`)?.resolve(false);
+        }
         console.warn('[Nimbus] 服务器返回错误:', msg.message);
         break;
     }
@@ -790,7 +797,11 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         // 1. 删除远程已删文件
         for (const del of deletes) {
           if (del && del.path) {
-            await this.applyRemoteDelete(del.path);
+            const deleted = await this.applyRemoteDelete(del.path);
+            if (deleted === false) {
+              console.warn('[Nimbus] 增量删除未能落地，保留游标等待重试:', del.path);
+              return false;
+            }
           }
         }
         // 2. 更新远程改动文件：严格使用 HTTP 并发流式拉取并等待落盘屏障 (Promise Barrier)
@@ -939,11 +950,32 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         ...Object.keys(baseline)
       ]);
 
+      // 只为需要三方判断的路径计算哈希，并限制并发读取，避免逐文件串行扫描拖慢大型 Vault。
+      const hashTargets = [];
+      for (const path of allPaths) {
+        const localFile = localFileMap.get(path);
+        if (!localFile) continue;
+        const remoteMeta = remoteManifest[path];
+        const baseMeta = baseline[path];
+        if ((remoteMeta && baseMeta) || (!remoteMeta && baseMeta) || (remoteMeta && !baseMeta)) {
+          hashTargets.push([path, localFile]);
+        }
+      }
+      const localHashes = new Map();
+      const HASH_CONCURRENCY = 4;
+      for (let i = 0; i < hashTargets.length; i += HASH_CONCURRENCY) {
+        const batch = hashTargets.slice(i, i + HASH_CONCURRENCY);
+        const hashes = await Promise.all(batch.map(([, file]) => this.computeFileHash(file)));
+        for (let j = 0; j < batch.length; j++) localHashes.set(batch[j][0], hashes[j]);
+      }
+
       const toPull = [];
       const toPush = [];
       const toLocalDelete = [];
       const toRemoteDelete = [];
       const toLocalConflictBackup = [];
+      let hasDeferredRemoteDeletes = false;
+      let hasDeferredLocalDeletes = false;
 
       // 3-Way 对比分析：Local (本地当前) vs Remote (云端当前) vs Base (上次同步基线)
       for (const path of allPaths) {
@@ -955,7 +987,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
         if (localFile && remoteMeta && baseMeta) {
           // 场景 1: 三方均存在
-          const localHash = await this.computeFileHash(localFile);
+          const localHash = localHashes.get(path);
           if (localHash === remoteMeta.hash) {
             // 内容一致，更新内存与基线
             this.fileHashes.set(path, remoteMeta.hash);
@@ -980,16 +1012,14 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           }
         } else if (localFile && !remoteMeta && baseMeta) {
           // 场景 2: 本地存在，基线存在，但云端已不存在 (例如 PC 端删除了云端文件)
-          const localHash = await this.computeFileHash(localFile);
+          const localHash = localHashes.get(path);
           const localChanged = (localHash !== baseMeta.hash);
           if (!localChanged) {
             // 本地未修改过 -> 遵从云端删除指令，删除本地文件，避免复活云端！
             toLocalDelete.push(path);
-            delete baseline[path];
             this.fileHashes.delete(path);
           } else {
             // 本地离线有新编辑 -> 保留本地修改，作为新文件重新推送
-            this.fileHashes.set(path, localHash);
             toPush.push(localFile);
           }
         } else if (!localFile && remoteMeta && baseMeta) {
@@ -998,7 +1028,6 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           if (!remoteChanged) {
             // 云端未被其他设备修改 -> 遵从本地删除，向云端发送删除指令
             toRemoteDelete.push(path);
-            delete baseline[path];
             this.fileHashes.delete(path);
           } else {
             // 云端被其他设备更新了 -> 保留云端新内容，拉取到本地
@@ -1006,17 +1035,13 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           }
         } else if (localFile && !remoteMeta && !baseMeta) {
           // 场景 4: 本地纯新增文件 (无基线，云端无) -> 推送
-          const localHash = await this.computeFileHash(localFile);
-          if (localHash) {
-            this.fileHashes.set(path, localHash);
-          }
           toPush.push(localFile);
         } else if (!localFile && remoteMeta && !baseMeta) {
           // 场景 5: 云端纯新增文件 (无基线，本地无) -> 拉取
           toPull.push({ path, meta: remoteMeta });
         } else if (localFile && remoteMeta && !baseMeta) {
           // 场景 6: 两端均存在但无历史基线 (首次绑定/基线重置/长期离线基线断层)
-          const localHash = await this.computeFileHash(localFile);
+          const localHash = localHashes.get(path);
           if (localHash && remoteMeta.hash && localHash === remoteMeta.hash) {
             this.fileHashes.set(path, remoteMeta.hash);
             baseline[path] = { hash: remoteMeta.hash, mtime: remoteMeta.mtime, size: remoteMeta.size };
@@ -1041,13 +1066,15 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       if (toRemoteDelete.length > remoteDelThreshold) {
         console.error(`[Nimbus 安全熔断] 拦截异常大批量云端删除！尝试删除: ${toRemoteDelete.length} 篇，云端总数: ${remoteCount}`);
         new Notice(`⚠️ [Nimbus 安全熔断] 拦截到单次尝试删除 ${toRemoteDelete.length} 篇云端笔记！\n已自动暂停云端删除以防意外清空。若确需批量删除，请在控制台操作。`, 10000);
-        toRemoteDelete.length = 0; // 清空删除任务
+        hasDeferredRemoteDeletes = true;
+        toRemoteDelete.length = 0; // 保留旧基线，等待用户确认后重新评估
       }
 
       const localDelThreshold = Math.max(5, Math.floor(localCount * 0.35));
       if (toLocalDelete.length > localDelThreshold) {
         console.error(`[Nimbus 安全熔断] 拦截异常大批量本地删除！尝试删除: ${toLocalDelete.length} 篇，本地总数: ${localCount}`);
         new Notice(`⚠️ [Nimbus 安全熔断] 拦截到单次尝试删除本地 ${toLocalDelete.length} 篇笔记！\n已自动暂停本地删除以防数据丢失。`, 10000);
+        hasDeferredLocalDeletes = true;
         toLocalDelete.length = 0; // 清空本地删除任务
       }
 
@@ -1069,7 +1096,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       const remoteDelCount = toRemoteDelete.length;
       const conflictBackupCount = toLocalConflictBackup.length;
 
-      if (pullCount === 0 && pushCount === 0 && localDelCount === 0 && remoteDelCount === 0 && conflictBackupCount === 0) {
+      if (pullCount === 0 && pushCount === 0 && localDelCount === 0 && remoteDelCount === 0 && conflictBackupCount === 0 && !hasDeferredRemoteDeletes && !hasDeferredLocalDeletes) {
         if (!this.baselinesCache) this.baselinesCache = {};
         this.baselinesCache[vaultId] = baseline;
         await this.saveBaselineCache();
@@ -1082,6 +1109,9 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
       new Notice(`⚡ 3-Way 同步开始: 上传 ${pushCount}，下载 ${pullCount}，本地删除 ${localDelCount}，云端删除 ${remoteDelCount}${conflictBackupCount > 0 ? `，冲突备份 ${conflictBackupCount}` : ''}`);
 
+      let hasPullFailure = false;
+      let hasCriticalFailure = false;
+
       // 0. 为离线并发冲突生成本地版本备份
       for (const item of toLocalConflictBackup) {
         await this.backupLocalConflictFile(item.file, item.path);
@@ -1089,17 +1119,17 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
       // 1. 执行本地删除 (云端已删)
       for (const delPath of toLocalDelete) {
-        await this.applyRemoteDelete(delPath);
+        if (!(await this.applyRemoteDelete(delPath))) hasPullFailure = true;
       }
 
       // 2. 执行云端删除 (本地已删)
       for (const delPath of toRemoteDelete) {
-        this.sendWsMessage({ type: 'delete', path: delPath });
+        const deleted = await this.sendWsMessageAndWait({ type: 'delete', path: delPath });
+        if (deleted) delete baseline[delPath];
+        else hasPullFailure = true;
       }
 
       // 3. 并发节流执行拉取 (PULL)，等待所有文件确认落地落盘
-      let hasPullFailure = false;
-      let hasCriticalFailure = false;
       const PULL_CONCURRENCY = 4;
       for (let i = 0; i < toPull.length; i += PULL_CONCURRENCY) {
         const batch = toPull.slice(i, i + PULL_CONCURRENCY);
@@ -1127,7 +1157,8 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       const PUSH_CONCURRENCY = 4;
       for (let i = 0; i < toPush.length; i += PUSH_CONCURRENCY) {
         const batch = toPush.slice(i, i + PUSH_CONCURRENCY);
-        await Promise.all(batch.map((f) => this.pushLocalFile(f)));
+        const results = await Promise.all(batch.map((f) => this.pushLocalFile(f)));
+        if (results.some((ok) => !ok)) hasPullFailure = true;
         if (i + PUSH_CONCURRENCY < toPush.length) {
           await new Promise((r) => setTimeout(r, 30));
         }
@@ -1138,7 +1169,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       const currentLocalPaths = new Set(currentVaultFiles.map((f) => f.path));
       const sanitizedBaseline = {};
       for (const [p, bInfo] of Object.entries(baseline)) {
-        if (currentLocalPaths.has(p)) {
+        if (currentLocalPaths.has(p) || (remoteManifest[p] && (toRemoteDelete.includes(p) || hasDeferredRemoteDeletes))) {
           sanitizedBaseline[p] = bInfo;
         }
       }
@@ -1155,12 +1186,12 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       if (!this.baselinesCache) this.baselinesCache = {};
       this.baselinesCache[vaultId] = sanitizedBaseline;
       await this.saveBaselineCache();
-      if (typeof remoteCursor === 'number' && remoteCursor >= 0 && !hasCriticalFailure) {
+      if (typeof remoteCursor === 'number' && remoteCursor >= 0 && !hasCriticalFailure && !hasPullFailure && !hasDeferredRemoteDeletes && !hasDeferredLocalDeletes) {
         this.setVaultCursor(vaultId, remoteCursor);
         await this.saveSettings();
-      } else if (hasCriticalFailure) {
-        console.warn('[Nimbus] 3-Way 同步有核心笔记未能成功拉取，暂不推进最新游标以备下次重试完整对齐');
-        new Notice('⚠️ 部分核心笔记拉取遇阻，未推进游标以防漏拉，将在网络稳定后自动重试');
+      } else if (hasCriticalFailure || hasPullFailure || hasDeferredRemoteDeletes || hasDeferredLocalDeletes) {
+        console.warn('[Nimbus] 3-Way 同步存在未完成操作或拉取失败，暂不推进最新游标以备下次重试完整对齐');
+        new Notice('⚠️ 部分同步操作未完成，暂不推进游标以防漏拉，将在网络稳定后自动重试');
       }
 
       new Notice(`✅ 3-Way 自动同步完成: 成功处理 ${pushCount + pullCount + localDelCount + remoteDelCount} 个变更任务`);
@@ -1285,9 +1316,9 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   }
 
   async applyRemoteChange(filePath, base64Content, mtime, hash) {
-    if (!filePath || !base64Content) return;
+    if (!filePath || !base64Content) return false;
     const buffer = base64ToArrayBuffer(base64Content);
-    await this.applyRemoteBinaryChange(filePath, buffer, mtime, hash);
+    return this.applyRemoteBinaryChange(filePath, buffer, mtime, hash);
   }
 
   async applyRemoteBinaryChange(filePath, buffer, mtime, hash) {
@@ -1411,6 +1442,16 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         await this.app.vault.delete(existing);
       } else if (this.app.vault.adapter && await this.app.vault.adapter.exists(cleanPath)) {
         await this.app.vault.adapter.remove(cleanPath);
+      }
+      // 清理因删除文件而变空的父文件夹
+      const parts = cleanPath.split('/');
+      parts.pop();
+      while (parts.length > 0) {
+        const folderPath = parts.join('/');
+        const folder = this.app.vault.getAbstractFileByPath(folderPath);
+        if (!(folder instanceof TFolder) || folder.children.length > 0) break;
+        await this.app.vault.delete(folder);
+        parts.pop();
       }
       this.fileHashes.delete(cleanPath);
       this.updateBaselineEntry(this.settings.vaultId, cleanPath, null);
@@ -1546,8 +1587,8 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   }
 
   async pushLocalFile(file) {
-    if (this.isIgnoredLocalPath(file.path)) return;
-    if (this.applyingRemotePaths && this.applyingRemotePaths.has(file.path)) return;
+    if (this.isIgnoredLocalPath(file.path)) return true;
+    if (this.applyingRemotePaths && this.applyingRemotePaths.has(file.path)) return true;
     try {
       const buffer = await this.app.vault.readBinary(file);
       const baseMeta = this.getBaselineEntry(this.settings.vaultId, file.path);
@@ -1556,7 +1597,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
       // 🛡️ 内容无变化前置拦截：若内容与缓存哈希完全一致，跳过冗余的网络序列化与上传
       if (currentHash && this.fileHashes.get(file.path) === currentHash) {
-        return;
+        return true;
       }
       const MAX_WS_INLINE = 2 * 1024 * 1024; // 2MB
 
@@ -1591,23 +1632,15 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           if (body && body.conflict) {
             new Notice(`⚠️ 检测到并发冲突！已自动创建冲突副本: ${body.conflict}`);
           }
+          return true;
         } else {
           console.warn(`[Nimbus] 大文件 HTTP PUT 推送失败 (${res.status}):`, file.path);
+          return false;
         }
-        return;
-      }
-
-      if (currentHash) {
-        this.fileHashes.set(file.path, currentHash);
-        this.updateBaselineEntry(this.settings.vaultId, file.path, {
-          hash: currentHash,
-          mtime: file.stat ? file.stat.mtime : Date.now(),
-          size: buffer.byteLength
-        });
       }
 
       const base64 = arrayBufferToBase64(buffer);
-      this.sendWsMessage({
+      return await this.sendWsMessageAndWait({
         type: 'push',
         path: file.path,
         content: base64,
@@ -1616,7 +1649,34 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       });
     } catch (err) {
       console.error('[Nimbus] 读取本地文件准备上传失败:', file.path, err);
+      return false;
     }
+  }
+
+  async sendWsMessageAndWait(payload, timeoutMs = 15000) {
+    if (!payload || !payload.path || !this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    if (!this.pendingSyncAcks) this.pendingSyncAcks = new Map();
+    const key = `${payload.type}:${payload.path}`;
+    const previous = this.pendingSyncAcks.get(key);
+    if (previous) previous.resolve(false);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingSyncAcks.delete(key);
+        resolve(false);
+      }, timeoutMs);
+      this.pendingSyncAcks.set(key, {
+        resolve: (ok, msg) => {
+          clearTimeout(timer);
+          this.pendingSyncAcks.delete(key);
+          resolve(ok ? msg : false);
+        }
+      });
+      try {
+        this.ws.send(JSON.stringify(payload));
+      } catch (err) {
+        this.pendingSyncAcks.get(key)?.resolve(false);
+      }
+    });
   }
 
   sendWsMessage(payload) {
