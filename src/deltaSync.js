@@ -591,11 +591,18 @@ class DeltaSyncService {
 
   /**
    * 重置 DeltaSync 内存缓存状态（常用于热切换数据库引擎或重载元数据）
+   * 🛡️ 旧实现不同步等待在途写队列，也不清 writeQueues：
+   * 切换瞬间队列里的闭包读到 undefined 状态直接 reject，且队列引用悬挂。
    */
-  clearCache() {
+  async clearCache() {
+    // 先等所有在途写队列排空（单条失败已被 await 消费，避免 unhandledRejection）
+    for (const promise of Array.from(this.writeQueues.values())) {
+      await promise.catch(() => {});
+    }
     this.vaultState.clear();
     this.jsonStores.clear();
     this.initPromises.clear();
+    this.writeQueues.clear();
   }
 
   /**

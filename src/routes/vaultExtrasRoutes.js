@@ -37,10 +37,12 @@ router.post('/:vaultId/history/:versionId/restore', asyncHandler(async (req, res
   const result = storage.readHistoryVersion(vaultId, versionId);
   if (!result) return res.status(404).json({ error: 'Version not found' });
 
-  // 🛡️ async 版本：历史恢复同样要等 deltaSync 变更记录持久化完成后再广播/回包
+  // 🛡️ async 版本 + 文件锁：历史恢复同样要等 deltaSync 变更记录持久化完成后再广播/回包
   let writeResult;
   try {
-    writeResult = await storage.writeFileAsync(vaultId, result.entry.path, result.buffer, { mtime: Date.now() });
+    writeResult = await storage.withFileLock(vaultId, result.entry.path, async () => {
+      return storage.writeFileAsync(vaultId, result.entry.path, result.buffer, { mtime: Date.now() });
+    });
   } catch (err) {
     console.error('[HistoryRestore] deltaSync 持久化失败:', (err && err.message) || err);
     return res.status(500).json({ error: '变更记录持久化失败，请重试' });

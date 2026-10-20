@@ -300,7 +300,8 @@ router.post('/database/switch', asyncHandler(async (req, res) => {
     await settingsManager.loadFromDb();
     await syncLogger.loadFromDb();
     if (deltaSync.clearCache) {
-      deltaSync.clearCache();
+      // 🛡️ clearCache 现为 async：等待在途写队列排空后再切换内存状态
+      await deltaSync.clearCache();
     }
 
     res.json({

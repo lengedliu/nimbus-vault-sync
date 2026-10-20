@@ -463,7 +463,8 @@ class FnsHub {
             type: 'pull_stream',
             path: msg.path,
             size: buf.length,
-            mtime: msg.mtime,
+            // 🛡️ mtime 用服务端清单权威值；客户端自报的 msg.mtime 不可信，仅作元数据缺失时的兜底
+            mtime: (meta && meta.mtime) || msg.mtime || Date.now(),
             hash: storage.sha256(buf),
           });
         }
@@ -484,7 +485,8 @@ class FnsHub {
           type: 'file',
           path: msg.path,
           content: buf.toString('base64'),
-          mtime: msg.mtime,
+          // 🛡️ 同上：服务端清单权威 mtime 优先
+          mtime: (meta && meta.mtime) || msg.mtime || Date.now(),
           hash: storage.sha256(buf),
         });
       }
@@ -586,6 +588,22 @@ class FnsHub {
       if (msg.type === 'delete') {
         if (client.permission === 'read-only') {
           return this._send(client.ws, { type: 'error', message: '只读权限，禁止删除文件', path: msg.path });
+        }
+
+        // 🛡️ 与 push 同一黑名单语义：同步域之外的路径不产生删除变更记录、不广播。
+        // 客户端会收到 ignored 终态确认并照常清理本地基线（该路径本就不在同步域内）。
+        if (syncRules.isPathIgnored(vaultId, msg.path)) {
+          syncLogger.recordLog({
+            vaultId,
+            userId: client.userId,
+            username: client.username,
+            deviceName: client.deviceName,
+            action: 'ignore',
+            path: msg.path,
+            status: 'ignored',
+            detail: '命中同步黑名单/忽略规则 (delete)',
+          });
+          return this._send(client.ws, { type: 'ack', action: 'delete', path: msg.path, deleted: true, ignored: true });
         }
 
         const ok = await storage.withFileLock(vaultId, msg.path, async () => {

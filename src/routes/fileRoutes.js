@@ -367,7 +367,10 @@ router.post('/:vaultId/batch/move', express.json(), asyncHandler(async (req, res
       continue;
     }
 
-    const moveRes = await storage.moveVaultFileAsync(vaultId, relPath, newRelPath);
+    const moveRes = await storage.withFileLock(vaultId, relPath, async () => {
+      // 🛡️ 批量移动也纳入文件锁：与并发 PUT/DELETE 对同一文件的写路径互斥
+      return storage.moveVaultFileAsync(vaultId, relPath, newRelPath);
+    });
     if (moveRes.ok) {
       successCount++;
       batchChanges.push({ action: 'delete', path: relPath });

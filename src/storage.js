@@ -227,7 +227,19 @@ function yieldToEventLoop() {
 // In-memory manifest cache: vaultId -> { manifest, lastScanned }
 const inMemoryManifestCache = new Map();
 
+// 🛡️ 写入代数计数：updateManifestEntry 每次（单条写/删）自增。
+// getManifestAsync 的异步重建用它检测"扫盘窗口期间发生过写入"，据此立刻重扫，
+// 避免旧快照整体覆盖内存清单、新文件永久缺失（见 getManifestAsync 内注释）。
+const manifestGeneration = new Map();
+function bumpManifestGeneration(vaultId) {
+  manifestGeneration.set(vaultId, (manifestGeneration.get(vaultId) || 0) + 1);
+}
+function getManifestGeneration(vaultId) {
+  return manifestGeneration.get(vaultId) || 0;
+}
+
 function invalidateManifestCache(vaultId) {
+  bumpManifestGeneration(vaultId);
   inMemoryManifestCache.delete(vaultId);
   contentCache.delete(vaultId);
   clearVaultTagCache(vaultId);
@@ -267,6 +279,7 @@ function deleteVaultDirectory(vaultId) {
 
 function updateManifestEntry(vaultId, relPath, meta) {
   const normRel = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  bumpManifestGeneration(vaultId); // 🛡️ 通知在途的 getManifestAsync 重建：期间有写入，快照已过期
   let cachedMem = inMemoryManifestCache.get(vaultId);
   if (!cachedMem) {
     const manifest = getManifest(vaultId);
@@ -391,55 +404,71 @@ async function getManifestAsync(vaultId, forceRefresh = false) {
   }
 
   const root = vaultFilesRoot(vaultId);
-  let cache = {};
-  const cacheP = manifestCachePath(vaultId);
-  if (fs.existsSync(cacheP)) {
-    try {
-      const data = await fs.promises.readFile(cacheP, 'utf8');
-      cache = JSON.parse(data);
-    } catch {
-      cache = {};
+
+  // 🛡️ 修复重建竞态：本轮 walk 到写完内存缓存之间有多个 await 让出点，
+  // 期间任何一次 updateManifestEntry（即任何普通写文件）都可能发生。
+  // 若快照收尾时发现代数计数变了，说明这份 walk 的文件快照已过时——
+  // 直接落库的话，新写入文件的条目会被旧快照整体覆盖、manifest “持久”缺文件。
+  // 因此立刻重扫，直到两轮之间没有新写入（上限 3 轮，防写入风暴）。
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const genBefore = getManifestGeneration(vaultId);
+
+    let cache = {};
+    const cacheP = manifestCachePath(vaultId);
+    if (fs.existsSync(cacheP)) {
+      try {
+        const data = await fs.promises.readFile(cacheP, 'utf8');
+        cache = JSON.parse(data);
+      } catch {
+        cache = {};
+      }
     }
-  }
 
-  const relPaths = await walkAsync(root, root);
-  const nextCache = {};
-  const manifest = {};
-  const BATCH_SIZE = 32;
+    const relPaths = await walkAsync(root, root);
+    const nextCache = {};
+    const manifest = {};
+    const BATCH_SIZE = 32;
 
-  for (let i = 0; i < relPaths.length; i += BATCH_SIZE) {
-    const chunk = relPaths.slice(i, i + BATCH_SIZE);
-    await Promise.all(
-      chunk.map(async (rel) => {
-        const full = path.join(root, rel);
-        try {
-          const stat = await fs.promises.stat(full);
-          const cached = cache[rel];
-          let hash;
-          if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs && cached.hash) {
-            hash = cached.hash;
-          } else if (stat.size > 512 * 1024) {
-            hash = await sha256FileAsync(full);
-          } else {
-            const buf = await fs.promises.readFile(full);
-            hash = sha256(buf);
+    for (let i = 0; i < relPaths.length; i += BATCH_SIZE) {
+      const chunk = relPaths.slice(i, i + BATCH_SIZE);
+      await Promise.all(
+        chunk.map(async (rel) => {
+          const full = path.join(root, rel);
+          try {
+            const stat = await fs.promises.stat(full);
+            const cached = cache[rel];
+            let hash;
+            if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs && cached.hash) {
+              hash = cached.hash;
+            } else if (stat.size > 512 * 1024) {
+              hash = await sha256FileAsync(full);
+            } else {
+              const buf = await fs.promises.readFile(full);
+              hash = sha256(buf);
+            }
+            const ctime = (stat.birthtimeMs && stat.birthtimeMs > 0) ? stat.birthtimeMs : (stat.ctimeMs || stat.mtimeMs);
+            nextCache[rel] = { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: ctime, hash };
+            manifest[rel] = { size: stat.size, mtime: stat.mtimeMs, ctime, hash };
+          } catch {
+            // File could be deleted or locked concurrently
           }
-          const ctime = (stat.birthtimeMs && stat.birthtimeMs > 0) ? stat.birthtimeMs : (stat.ctimeMs || stat.mtimeMs);
-          nextCache[rel] = { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: ctime, hash };
-          manifest[rel] = { size: stat.size, mtime: stat.mtimeMs, ctime, hash };
-        } catch {
-          // File could be deleted or locked concurrently
-        }
-      })
-    );
+        })
+      );
 
-    // Yield control back to the event loop so incoming HTTP/WebSocket connections are not blocked
-    await yieldToEventLoop();
+      // Yield control back to the event loop so incoming HTTP/WebSocket connections are not blocked
+      await yieldToEventLoop();
+    }
+
+    if (getManifestGeneration(vaultId) !== genBefore && attempt < 2) {
+      continue; // 期间有写入，这轮快照不完整，立刻重扫
+    }
+
+    saveCacheAsync(vaultId, nextCache).catch((err) => {
+      console.error('[Storage] manifest 扫描缓存保存失败:', vaultId, (err && err.message) || err);
+    });
+    inMemoryManifestCache.set(vaultId, { manifest, lastScanned: Date.now() });
+    return manifest;
   }
-
-  saveCacheAsync(vaultId, nextCache).catch(() => {});
-  inMemoryManifestCache.set(vaultId, { manifest, lastScanned: Date.now() });
-  return manifest;
 }
 
 /** Build a manifest: { path: { size, mtimeMs, hash } }, cached in memory and on disk. */

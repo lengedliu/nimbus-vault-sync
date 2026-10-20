@@ -498,7 +498,10 @@ function buildMcpServer(user, defaultVaultId) {
       const manifest = storage.getManifest(id) || {};
       const actualBaseHash = baseHash || manifest[cleanPath]?.hash;
       const buffer = Buffer.from(content, 'utf8');
-      const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash: actualBaseHash });
+      // 🛡️ 与 REST/WS 写路径共用同一把文件锁，跨端点并发一致
+      const result = await storage.withFileLock(id, cleanPath, async () => {
+        return storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash: actualBaseHash });
+      });
 
       if (!result.written && result.conflict) {
         fnsHub.broadcastFileChange(id, result.conflict, { currentHash: result.currentHash }, user.id, true);
@@ -561,7 +564,9 @@ function buildMcpServer(user, defaultVaultId) {
       const manifest = storage.getManifest(id) || {};
       const baseHash = manifest[cleanPath]?.hash;
       const buffer = Buffer.from(newText, 'utf8');
-      const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash });
+      const result = await storage.withFileLock(id, cleanPath, async () => {
+        return storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash });
+      });
 
       fnsHub.broadcastFileChange(id, cleanPath, result, user.id);
       return textResult(`Successfully appended content to "${cleanPath}". New size: ${buffer.length} bytes. Synced to all clients.`);
@@ -604,7 +609,9 @@ function buildMcpServer(user, defaultVaultId) {
       const manifest = storage.getManifest(id) || {};
       const baseHash = manifest[cleanPath]?.hash;
       const buffer = Buffer.from(newText, 'utf8');
-      const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash });
+      const result = await storage.withFileLock(id, cleanPath, async () => {
+        return storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash });
+      });
 
       fnsHub.broadcastFileChange(id, cleanPath, result, user.id);
       return textResult(`Successfully prepended content to "${cleanPath}". Synced to all clients.`);
@@ -642,7 +649,9 @@ function buildMcpServer(user, defaultVaultId) {
       const manifest = storage.getManifest(id) || {};
       const baseHash = manifest[cleanPath]?.hash;
       const buffer = Buffer.from(newText, 'utf8');
-      const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash });
+      const result = await storage.withFileLock(id, cleanPath, async () => {
+        return storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash });
+      });
 
       fnsHub.broadcastFileChange(id, cleanPath, result, user.id);
       return textResult(`Successfully patched "${cleanPath}". Replacement applied and synced.`);
@@ -682,7 +691,9 @@ function buildMcpServer(user, defaultVaultId) {
         throw new Error('Either contentBase64 or sourceUrl must be provided to upload an attachment.');
       }
 
-      const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now() });
+      const result = await storage.withFileLock(id, cleanPath, async () => {
+        return storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now() });
+      });
       fnsHub.broadcastFileChange(id, cleanPath, result, user.id);
 
       const fileName = cleanPath.split('/').pop() || cleanPath;
@@ -780,7 +791,9 @@ function buildMcpServer(user, defaultVaultId) {
         resolveWritableVaultId(vaultId);
         const initialContent = `# ${targetDate}\n\n## 📝 记录\n\n`;
         const buffer = Buffer.from(initialContent, 'utf8');
-        const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now() });
+        const result = await storage.withFileLock(id, cleanPath, async () => {
+          return storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now() });
+        });
         fnsHub.broadcastFileChange(id, cleanPath, result, user.id);
         return jsonResult({
           created: true,
@@ -859,7 +872,9 @@ function buildMcpServer(user, defaultVaultId) {
 
       const baseHash = manifest[cleanPath]?.hash;
       const buffer = Buffer.from(newText, 'utf8');
-      const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash });
+      const result = await storage.withFileLock(id, cleanPath, async () => {
+        return storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash });
+      });
 
       fnsHub.broadcastFileChange(id, cleanPath, result, user.id);
       return textResult(`Appended to Daily Note "${cleanPath}". Synced to Obsidian.`);
@@ -1037,9 +1052,13 @@ function buildMcpServer(user, defaultVaultId) {
       }
 
       // Write to new path
-      const result = await storage.writeFileAsync(id, cleanNew, buf, { mtime: Date.now() });
-      // Delete old path
-      await storage.deleteFileAsync(id, cleanOld);
+      // 🛡️ 与 REST/WS 移动路径共用同一把文件锁
+      const result = await storage.withFileLock(id, cleanOld, async () => {
+        const writeRes = await storage.writeFileAsync(id, cleanNew, buf, { mtime: Date.now() });
+        // Delete old path
+        await storage.deleteFileAsync(id, cleanOld);
+        return writeRes;
+      });
 
       // Broadcast both operations
       fnsHub.broadcastFileDelete(id, cleanOld, user.id);
@@ -1059,7 +1078,9 @@ function buildMcpServer(user, defaultVaultId) {
     async ({ vaultId, path: notePath }) => {
       const id = resolveWritableVaultId(vaultId);
       const cleanPath = normalizeVaultPath(notePath);
-      const ok = await storage.deleteFileAsync(id, cleanPath);
+      const ok = await storage.withFileLock(id, cleanPath, async () => {
+        return storage.deleteFileAsync(id, cleanPath);
+      });
       if (ok) {
         fnsHub.broadcastFileDelete(id, cleanPath, user.id);
         webhooks.trigger('file.deleted', {
