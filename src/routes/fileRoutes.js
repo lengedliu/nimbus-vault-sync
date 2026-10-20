@@ -170,7 +170,8 @@ router.put('/:vaultId/files/*', (req, res) => {
     try {
       const incomingHash = hash.digest('hex');
       const result = await storage.withFileLock(vaultId, relPath, async () => {
-        return storage.writeFileFromPath(vaultId, relPath, tempPath, incomingHash, { mtime, baseHash });
+        // 🛡️ async 版本：直到 deltaSync 变更记录与游标持久化完成，才广播/回包成功
+        return storage.writeFileFromPathAsync(vaultId, relPath, tempPath, incomingHash, { mtime, baseHash });
       });
       const rawDeviceId = req.headers['x-device-id'] || req.headers['x-client-id'] || null;
       const clientDeviceId = rawDeviceId ? safeDecodeHeader(rawDeviceId) : null;
@@ -249,7 +250,8 @@ router.delete('/:vaultId/files/*', asyncHandler(async (req, res) => {
   const rawDeviceId = req.headers['x-device-id'] || req.headers['x-client-id'] || null;
   const clientDeviceId = rawDeviceId ? safeDecodeHeader(rawDeviceId) : null;
   const ok = await storage.withFileLock(vaultId, relPath, async () => {
-    return storage.deleteFile(vaultId, relPath);
+    // 🛡️ async 版本：DELETE 变更记录持久化完成后再回包
+    return storage.deleteFileAsync(vaultId, relPath);
   });
   req.app.get('fnsHub').broadcastFileDelete(vaultId, relPath, req.user.id, clientDeviceId);
 
@@ -296,7 +298,8 @@ router.post('/:vaultId/batch/delete', express.json(), asyncHandler(async (req, r
     if (!rawPath || typeof rawPath !== 'string') continue;
     const relPath = rawPath.replace(/\\/g, '/');
     const ok = await storage.withFileLock(vaultId, relPath, async () => {
-      return storage.deleteFile(vaultId, relPath);
+      // 🛡️ async 版本：逐条等待 DELETE 变更记录持久化完成
+      return storage.deleteFileAsync(vaultId, relPath);
     });
     if (ok) {
       successCount++;
@@ -364,7 +367,7 @@ router.post('/:vaultId/batch/move', express.json(), asyncHandler(async (req, res
       continue;
     }
 
-    const moveRes = storage.moveVaultFile(vaultId, relPath, newRelPath);
+    const moveRes = await storage.moveVaultFileAsync(vaultId, relPath, newRelPath);
     if (moveRes.ok) {
       successCount++;
       batchChanges.push({ action: 'delete', path: relPath });

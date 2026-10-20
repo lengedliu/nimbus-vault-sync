@@ -455,17 +455,71 @@ async function pull(vaultId) {
   }
 
   // 远端拉取成功后，刷新 Manifest 缓存、倒排索引并向所有在线客户端广播变更
+  const changedPaths = [];
   try {
     const storage = require('./storage');
+    const deltaSync = require('./deltaSync');
+
+    // 🛡️ 记录 git pull 引入的文件变更：旧实现完全旁路 deltaSync，游标不推进，
+    // 增量终端（/changes）将永久漏掉这批变更，直到下次全量对账。
+    const diffRes = await execGit(vaultId, ['diff', '--name-status', 'ORIG_HEAD', 'HEAD']);
+    const upsertChanges = [];
+    if (diffRes.success && diffRes.stdout) {
+      for (const line of diffRes.stdout.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const parts = trimmed.split('\t');
+        const status = (parts[0] || '').charAt(0).toUpperCase();
+        const filePath = parts[parts.length - 1];
+        if (!filePath) continue;
+        const rel = filePath.replace(/\\/g, '/');
+        if (status === 'D' && parts.length === 2) {
+          upsertChanges.push({ path: rel, action: 'DELETE', size: 0, mtime: Date.now(), hash: '' });
+          continue;
+        }
+        if (parts.length >= 3 && (status === 'R' || status === 'C')) {
+          // R100/Copy 重命名：diff 只报告新路径，旧路径"消失"需要补一条 DELETE
+          upsertChanges.push({ path: parts[1].replace(/\\/g, '/'), action: 'DELETE', size: 0, mtime: Date.now(), hash: '' });
+        }
+        upsertChanges.push({ path: rel, action: 'UPSERT', size: 0, mtime: Date.now(), hash: '' });
+        changedPaths.push(rel);
+      }
+    }
+
     storage.invalidateManifestCache(vaultId);
     const newManifest = await storage.getManifestAsync(vaultId, true);
-    const ftsEngine = require('./ftsEngine');
-    if (ftsEngine && typeof ftsEngine.rebuildVaultIndex === 'function') {
-      ftsEngine.rebuildVaultIndex(vaultId).catch(() => {});
+
+    // 为 UPSERT 补齐 manifest 里的精确元数据（size/mtime/hash）
+    const finalChanges = [];
+    for (const ch of upsertChanges) {
+      const meta = newManifest[ch.path];
+      if (ch.action === 'UPSERT' && meta) {
+        finalChanges.push({ path: ch.path, action: 'UPSERT', size: meta.size, mtime: meta.mtime, hash: meta.hash });
+      } else {
+        finalChanges.push(ch);
+      }
     }
+
+    if (finalChanges.length > 0) {
+      try {
+        await deltaSync.recordBatchChanges(vaultId, finalChanges);
+        console.log(`[GitSync] 已将 git pull 引入的 ${finalChanges.length} 条文件变更写入增量记录`);
+      } catch (err) {
+        console.error(`[GitSync] git pull 变更写入增量记录失败 (${vaultId})，增量终端可能漏拉，建议执行一次全量同步对账:`, err);
+      }
+    }
+
+    // FTS 倒排索引：使用实际存在的 buildVaultIndexAsync（此前的 rebuildVaultIndex 根本不存在，
+    // typeof 判断让它被静默跳过，FTS 索引在 pull 后一直是过期状态）
+    const ftsEngine = require('./ftsEngine');
+    if (ftsEngine && typeof ftsEngine.buildVaultIndexAsync === 'function') {
+      ftsEngine.buildVaultIndexAsync(vaultId, newManifest, (p) => storage.readFile(vaultId, p)).catch(() => {});
+    }
+
     const wsHub = require('./wsHub');
-    if (wsHub && typeof wsHub.broadcastBatchFileChange === 'function') {
-      wsHub.broadcastBatchFileChange(vaultId, Object.keys(newManifest), null, null);
+    if (wsHub && typeof wsHub.broadcastBatchFileChange === 'function' && changedPaths.length > 0) {
+      // 只广播本次 pull 真正变更的路径，而不是全库所有文件
+      wsHub.broadcastBatchFileChange(vaultId, changedPaths, null, null);
     }
   } catch (err) {
     console.error(`[GitSync] 远端拉取后刷新缓存/广播失败: ${vaultId}`, err);

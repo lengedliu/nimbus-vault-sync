@@ -31,18 +31,25 @@ router.get('/:vaultId/history/:versionId', (req, res) => {
 });
 
 // POST /api/vaults/:vaultId/history/:versionId/restore -> makes this version the current content
-router.post('/:vaultId/history/:versionId/restore', (req, res) => {
+router.post('/:vaultId/history/:versionId/restore', asyncHandler(async (req, res) => {
   if (!requireWriteAccess(req, res)) return;
   const { vaultId, versionId } = req.params;
   const result = storage.readHistoryVersion(vaultId, versionId);
   if (!result) return res.status(404).json({ error: 'Version not found' });
 
-  const writeResult = storage.writeFile(vaultId, result.entry.path, result.buffer, { mtime: Date.now() });
+  // 🛡️ async 版本：历史恢复同样要等 deltaSync 变更记录持久化完成后再广播/回包
+  let writeResult;
+  try {
+    writeResult = await storage.writeFileAsync(vaultId, result.entry.path, result.buffer, { mtime: Date.now() });
+  } catch (err) {
+    console.error('[HistoryRestore] deltaSync 持久化失败:', (err && err.message) || err);
+    return res.status(500).json({ error: '变更记录持久化失败，请重试' });
+  }
   if (writeResult.written) {
     req.app.get('fnsHub').broadcastFileChange(vaultId, result.entry.path, writeResult, req.user.id, true);
   }
   res.json({ path: result.entry.path, ...writeResult });
-});
+}));
 
 // ---------------------------------- trash ---------------------------------------
 

@@ -509,12 +509,21 @@ class FnsHub {
         }
 
         const buffer = Buffer.from(msg.content, 'base64');
-        const result = await storage.withFileLock(vaultId, msg.path, async () => {
-          return storage.writeFile(vaultId, msg.path, buffer, {
-            mtime: msg.mtime,
-            baseHash: msg.baseHash,
+        let result;
+        try {
+          result = await storage.withFileLock(vaultId, msg.path, async () => {
+            // 🛡️ 使用 async 版本：变更记录与游标持久化完成前，绝不 ack 成功
+            return storage.writeFileAsync(vaultId, msg.path, buffer, {
+              mtime: msg.mtime,
+              baseHash: msg.baseHash,
+            });
           });
-        });
+        } catch (err) {
+          // 文件可能已落盘，但 deltaSync 变更记录/游标持久化失败——
+          // 增量终端将永远看不到这次变更，必须拒绝 ack 成功让客户端重试
+          console.error('[WsHub] 文件写入持久化失败:', vaultId, msg.path, (err && err.message) || err);
+          return this._send(client.ws, { type: 'error', message: '服务端变更记录持久化失败，请重试', path: msg.path });
+        }
 
         if (!result.written && result.conflict) {
           this._logActivity(vaultId, { type: 'conflict', path: msg.path, conflictPath: result.conflict, userId: client.userId });
@@ -580,7 +589,8 @@ class FnsHub {
         }
 
         const ok = await storage.withFileLock(vaultId, msg.path, async () => {
-          return storage.deleteFile(vaultId, msg.path);
+          // 🛡️ async 版本：DELETE 变更记录与游标持久化完成后再回 ack
+          return storage.deleteFileAsync(vaultId, msg.path);
         });
         const completed = ok || !await storage.getManifestEntryAsync(vaultId, msg.path);
         this._logActivity(vaultId, { type: 'delete', path: msg.path, userId: client.userId });

@@ -117,22 +117,23 @@ async function resolveConflict(vaultId, { conflictPath, resolution, customConten
 
   if (!fs.existsSync(fullConflict)) throw new Error('冲突文件已被移除或不存在');
 
+  // 🛡️ 以下写/删统一使用 async 版本：变更记录与游标持久化完成后，才进入失效缓存与广播阶段
   let resolvedBuffer = null;
 
   if (resolution === 'keep-current') {
     // Keep server current version -> safely delete conflict copy with deltaSync & trash tracking
     await storage.withFileLock(vaultId, conflictPath, async () => {
-      storage.deleteFile(vaultId, conflictPath);
+      await storage.deleteFileAsync(vaultId, conflictPath);
     });
   } else if (resolution === 'keep-conflict') {
     // Keep conflict version -> overwrite base with conflict file, delete conflict file
     const buf = fs.readFileSync(fullConflict);
     resolvedBuffer = buf;
     await storage.withFileLock(vaultId, basePath, async () => {
-      storage.writeFile(vaultId, basePath, buf, { mtime: Date.now() });
+      await storage.writeFileAsync(vaultId, basePath, buf, { mtime: Date.now() });
     });
     await storage.withFileLock(vaultId, conflictPath, async () => {
-      storage.deleteFile(vaultId, conflictPath);
+      await storage.deleteFileAsync(vaultId, conflictPath);
     });
   } else if (resolution === 'merge-both') {
     // Merge both with conflict markers
@@ -141,19 +142,19 @@ async function resolveConflict(vaultId, { conflictPath, resolution, customConten
     const combined = `<<<<<<< [当前版本 (服务端)]\n${baseBuf.toString('utf8')}\n=======\n${conflictBuf.toString('utf8')}\n>>>>>>> [冲突版本 (客户端)]\n`;
     resolvedBuffer = Buffer.from(combined, 'utf8');
     await storage.withFileLock(vaultId, basePath, async () => {
-      storage.writeFile(vaultId, basePath, resolvedBuffer, { mtime: Date.now() });
+      await storage.writeFileAsync(vaultId, basePath, resolvedBuffer, { mtime: Date.now() });
     });
     await storage.withFileLock(vaultId, conflictPath, async () => {
-      storage.deleteFile(vaultId, conflictPath);
+      await storage.deleteFileAsync(vaultId, conflictPath);
     });
   } else if (resolution === 'custom') {
     if (typeof customContent !== 'string') throw new Error('缺少自定义合并内容');
     resolvedBuffer = Buffer.from(customContent, 'utf8');
     await storage.withFileLock(vaultId, basePath, async () => {
-      storage.writeFile(vaultId, basePath, resolvedBuffer, { mtime: Date.now() });
+      await storage.writeFileAsync(vaultId, basePath, resolvedBuffer, { mtime: Date.now() });
     });
     await storage.withFileLock(vaultId, conflictPath, async () => {
-      storage.deleteFile(vaultId, conflictPath);
+      await storage.deleteFileAsync(vaultId, conflictPath);
     });
   } else {
     throw new Error('未知的冲突解决策略 (可选: keep-current, keep-conflict, merge-both, custom)');

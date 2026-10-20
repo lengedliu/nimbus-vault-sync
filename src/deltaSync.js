@@ -143,7 +143,13 @@ class DeltaSyncService {
       await this.initVault(vaultId);
     }
     return this._enqueueWrite(vaultId, async () => {
-      const st = this.vaultState.get(vaultId);
+      // 🛡️ 状态可能在排队期间被并发清理（级联删除/缓存清理），此时安全重建而不是抛 undefined 错误
+      let st = this.vaultState.get(vaultId);
+      if (!st) {
+        await this.initVault(vaultId);
+        st = this.vaultState.get(vaultId);
+        if (!st) throw new Error(`[DeltaSync] vault state unavailable: ${vaultId}`);
+      }
       const changeItem = {
         cursor: st.latestCursor + 1,
         path: relPath,
@@ -173,7 +179,13 @@ class DeltaSyncService {
       await this.initVault(vaultId);
     }
     return this._enqueueWrite(vaultId, async () => {
-      const st = this.vaultState.get(vaultId);
+      // 🛡️ 与 recordChange 相同：排队期间状态可能被重建，安全兜底
+      let st = this.vaultState.get(vaultId);
+      if (!st) {
+        await this.initVault(vaultId);
+        st = this.vaultState.get(vaultId);
+        if (!st) throw new Error(`[DeltaSync] vault state unavailable: ${vaultId}`);
+      }
       const createdAt = Date.now();
       const changeItems = items.map((item, index) => ({
         cursor: st.latestCursor + index + 1,
@@ -219,6 +231,8 @@ class DeltaSyncService {
               `INSERT INTO vault_changes (vault_id, \`cursor\`, path, action, size, mtime, hash, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
             );
+            let rowErrors = 0;
+            let firstRowError = null;
             for (const change of changeItems) {
               stmt.run([
                 vaultId,
@@ -229,11 +243,27 @@ class DeltaSyncService {
                 change.mtime || 0,
                 change.hash || '',
                 change.createdAt || Date.now(),
-              ]);
+              ], (err) => {
+                if (err) {
+                  rowErrors++;
+                  if (!firstRowError) firstRowError = err;
+                }
+              });
             }
             stmt.finalize();
             db.run('COMMIT', (err) => {
-              if (err) return reject(err);
+              // 🛡️ 行级失败尤其不能吞掉：sqlite3 的 stmt.run 无回调时错误完全不可见，
+              // COMMIT 可能照样成功，库里缺行而内存环以为齐全——重启后增量断层直接引发全量重同步。
+              if (rowErrors > 0) {
+                console.error(`[DeltaSync] SQLite 批量持久化失败: ${rowErrors}/${changeItems.length} 行写入异常:`, (firstRowError && firstRowError.message) || '');
+                db.run('ROLLBACK', () => reject(firstRowError || new Error(`${rowErrors} batch rows failed`)));
+                return;
+              }
+              if (err) {
+                console.error('[DeltaSync] SQLite 批量持久化 COMMIT 失败:', err.message);
+                db.run('ROLLBACK', () => reject(err));
+                return;
+              }
               resolve();
             });
           });
@@ -623,6 +653,10 @@ class DeltaSyncService {
   /**
    * 删除指定 Vault 的全部增量同步状态与持久化数据
    */
+  hasVaultState(vaultId) {
+    return this.vaultState.has(vaultId);
+  }
+
   async removeVaultData(vaultId) {
     if (!vaultId) return;
     if (dbManager.type !== 'json') {
