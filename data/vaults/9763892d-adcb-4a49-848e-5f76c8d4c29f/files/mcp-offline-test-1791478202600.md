@@ -1,1 +1,0 @@
-# MCP Note Created Offline
