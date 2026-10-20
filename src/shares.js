@@ -40,8 +40,8 @@ async function loadFromDb() {
       viewCount: Number(r.view_count || r.viewCount || 0),
     }));
   } catch (err) {
-    console.error('[Shares] Error loading shares from SQL database, fallback to JSON:', err.message);
-    refreshCacheFromJson();
+    console.error('[Shares] Error loading shares from SQL database:', err.message);
+    throw err;
   }
 }
 
@@ -85,30 +85,16 @@ async function create({ vaultId, userId, filePath, title, password, expiresDays,
     viewCount: 0,
   };
 
-  sharesCache = [record, ...sharesCache];
-
   if (dbManager.type === 'json') {
     jsonDb.update((list) => [record, ...(Array.isArray(list) ? list : [])]);
   } else {
-    dbManager
-      .execute(
-        'INSERT INTO shares (id, vault_id, user_id, file_path, title, has_password, password_hash, allow_copy, created_at, expires_at, view_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [
-          record.id,
-          record.vaultId,
-          record.userId,
-          record.filePath,
-          record.title,
-          record.hasPassword ? 1 : 0,
-          record.passwordHash,
-          record.allowCopy ? 1 : 0,
-          record.createdAt,
-          record.expiresAt,
-          record.viewCount,
-        ]
-      )
-      .catch((err) => console.error('[Shares] DB insert error:', err));
+    await dbManager.execute(
+      'INSERT INTO shares (id, vault_id, user_id, file_path, title, has_password, password_hash, allow_copy, created_at, expires_at, view_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [record.id, record.vaultId, record.userId, record.filePath, record.title, record.hasPassword ? 1 : 0, record.passwordHash,
+        record.allowCopy ? 1 : 0, record.createdAt, record.expiresAt, record.viewCount]
+    );
   }
+  sharesCache = [record, ...sharesCache];
 
   return {
     id: record.id,
@@ -129,7 +115,14 @@ async function verifyPassword(shareId, password) {
   return bcrypt.compare(password || '', share.passwordHash);
 }
 
-function remove(id, userId) {
+async function remove(id, userId) {
+  if (dbManager.type === 'json') {
+    jsonDb.update((list) =>
+      (Array.isArray(list) ? list : []).filter((s) => !(s.id === id && (!userId || s.userId === userId)))
+    );
+  } else {
+    await dbManager.execute('DELETE FROM shares WHERE id = ?' + (userId ? ' AND user_id = ?' : ''), userId ? [id, userId] : [id]);
+  }
   let found = false;
   sharesCache = sharesCache.filter((s) => {
     if (s.id === id && (!userId || s.userId === userId)) {
@@ -139,62 +132,38 @@ function remove(id, userId) {
     return true;
   });
 
-  if (dbManager.type === 'json') {
-    jsonDb.update((list) =>
-      (Array.isArray(list) ? list : []).filter((s) => {
-        if (s.id === id && (!userId || s.userId === userId)) return false;
-        return true;
-      })
-    );
-  } else {
-    dbManager
-      .execute('DELETE FROM shares WHERE id = ?' + (userId ? ' AND user_id = ?' : ''), userId ? [id, userId] : [id])
-      .catch((err) => console.error('[Shares] DB delete error:', err));
-  }
-
   return found;
 }
 
 async function removeAllForVault(vaultId) {
   if (!vaultId) return;
-  sharesCache = sharesCache.filter((s) => s.vaultId !== vaultId);
   if (dbManager.type === 'json') {
     jsonDb.update((list) => (Array.isArray(list) ? list : []).filter((s) => s.vaultId !== vaultId));
   } else {
-    try {
-      await dbManager.execute('DELETE FROM shares WHERE vault_id = ?', [vaultId]);
-    } catch (err) {
-      console.error('[Shares] DB removeAllForVault error:', err.message);
-    }
+    await dbManager.execute('DELETE FROM shares WHERE vault_id = ?', [vaultId]);
   }
+  sharesCache = sharesCache.filter((s) => s.vaultId !== vaultId);
 }
 
 async function removeAllForUser(userId) {
   if (!userId) return;
-  sharesCache = sharesCache.filter((s) => s.userId !== userId);
   if (dbManager.type === 'json') {
     jsonDb.update((list) => (Array.isArray(list) ? list : []).filter((s) => s.userId !== userId));
   } else {
-    try {
-      await dbManager.execute('DELETE FROM shares WHERE user_id = ?', [userId]);
-    } catch (err) {
-      console.error('[Shares] DB removeAllForUser error:', err.message);
-    }
+    await dbManager.execute('DELETE FROM shares WHERE user_id = ?', [userId]);
   }
+  sharesCache = sharesCache.filter((s) => s.userId !== userId);
 }
 
-function recordView(id) {
-  sharesCache = sharesCache.map((s) => (s.id === id ? { ...s, viewCount: (s.viewCount || 0) + 1 } : s));
-
+async function recordView(id) {
   if (dbManager.type === 'json') {
     jsonDb.update((list) =>
       (Array.isArray(list) ? list : []).map((s) => (s.id === id ? { ...s, viewCount: (s.viewCount || 0) + 1 } : s))
     );
   } else {
-    dbManager
-      .execute('UPDATE shares SET view_count = view_count + 1 WHERE id = ?', [id])
-      .catch((err) => console.error('[Shares] DB update view_count error:', err));
+    await dbManager.execute('UPDATE shares SET view_count = view_count + 1 WHERE id = ?', [id]);
   }
+  sharesCache = sharesCache.map((s) => (s.id === id ? { ...s, viewCount: (s.viewCount || 0) + 1 } : s));
 }
 
 refreshCacheFromJson();

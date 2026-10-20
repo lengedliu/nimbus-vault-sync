@@ -95,42 +95,30 @@ function getSystemSettings() {
   return { ...cachedSettings };
 }
 
-function updateSystemSettings(updates) {
-  cachedSettings = { ...cachedSettings, ...updates };
-
+async function updateSystemSettings(updates) {
   if (dbManager.type === 'json') {
-    settingsJsonDb.update(() => cachedSettings);
+    settingsJsonDb.update((current) => ({ ...DEFAULT_SYSTEM_SETTINGS, ...current, ...updates }));
   } else {
-    // Save to DB
     const now = Date.now();
     for (const [key, val] of Object.entries(updates)) {
       const jsonVal = JSON.stringify(val);
       if (dbManager.type === 'sqlite') {
-        dbManager
-          .execute('INSERT OR REPLACE INTO system_settings (setting_key, value_json, updated_at) VALUES (?, ?, ?)', [
-            key,
-            jsonVal,
-            now,
-          ])
-          .catch((err) => console.error('[Settings] SQLite save error:', err));
+        await dbManager.execute('INSERT OR REPLACE INTO system_settings (setting_key, value_json, updated_at) VALUES (?, ?, ?)', [key, jsonVal, now]);
       } else if (dbManager.type === 'postgres') {
-        dbManager
-          .execute(
-            'INSERT INTO system_settings (setting_key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT (setting_key) DO UPDATE SET value_json = EXCLUDED.value_json, updated_at = EXCLUDED.updated_at',
-            [key, jsonVal, now]
-          )
-          .catch((err) => console.error('[Settings] Postgres save error:', err));
+        await dbManager.execute(
+          'INSERT INTO system_settings (setting_key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT (setting_key) DO UPDATE SET value_json = EXCLUDED.value_json, updated_at = EXCLUDED.updated_at',
+          [key, jsonVal, now]
+        );
       } else if (dbManager.type === 'mysql') {
-        dbManager
-          .execute(
-            'INSERT INTO system_settings (setting_key, value_json, updated_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE value_json = VALUES(value_json), updated_at = VALUES(updated_at)',
-            [key, jsonVal, now]
-          )
-          .catch((err) => console.error('[Settings] MySQL save error:', err));
+        await dbManager.execute(
+          'INSERT INTO system_settings (setting_key, value_json, updated_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE value_json = VALUES(value_json), updated_at = VALUES(updated_at)',
+          [key, jsonVal, now]
+        );
       }
     }
   }
 
+  cachedSettings = { ...cachedSettings, ...updates };
   return cachedSettings;
 }
 
@@ -148,7 +136,7 @@ function listTokensForUser(userId) {
   }));
 }
 
-function createTokenForUser(userId, username, label = 'Obsidian Device', expiresInDays = 365) {
+async function createTokenForUser(userId, username, label = 'Obsidian Device', expiresInDays = 365) {
   const tokenId = crypto.randomBytes(8).toString('hex');
   const token = jwt.sign(
     { sub: userId, username, tid: tokenId, label },
@@ -165,18 +153,15 @@ function createTokenForUser(userId, username, label = 'Obsidian Device', expires
     lastUsedAt: null,
   };
 
-  cachedTokens.unshift(entry);
-
   if (dbManager.type === 'json') {
     tokensJsonDb.update((list) => [entry, ...(Array.isArray(list) ? list : [])]);
   } else {
-    dbManager
-      .execute(
-        'INSERT INTO api_tokens (id, user_id, label, token, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?)',
-        [entry.id, entry.userId, entry.label, entry.token, entry.createdAt, entry.lastUsedAt]
-      )
-      .catch((err) => console.error('[Settings] DB insert token error:', err));
+    await dbManager.execute(
+      'INSERT INTO api_tokens (id, user_id, label, token, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [entry.id, entry.userId, entry.label, entry.token, entry.createdAt, entry.lastUsedAt]
+    );
   }
+  cachedTokens.unshift(entry);
 
   return {
     id: entry.id,
@@ -186,7 +171,15 @@ function createTokenForUser(userId, username, label = 'Obsidian Device', expires
   };
 }
 
-function revokeToken(tokenId, userId) {
+async function revokeToken(tokenId, userId) {
+  if (dbManager.type === 'json') {
+    tokensJsonDb.update((list) =>
+      (Array.isArray(list) ? list : []).filter((t) => !(t.id === tokenId && (!userId || t.userId === userId)))
+    );
+  } else {
+    await dbManager.execute('DELETE FROM api_tokens WHERE id = ?' + (userId ? ' AND user_id = ?' : ''), userId ? [tokenId, userId] : [tokenId]);
+  }
+
   let found = false;
   cachedTokens = cachedTokens.filter((t) => {
     if (t.id === tokenId && (!userId || t.userId === userId)) {
@@ -195,19 +188,6 @@ function revokeToken(tokenId, userId) {
     }
     return true;
   });
-
-  if (dbManager.type === 'json') {
-    tokensJsonDb.update((list) =>
-      (Array.isArray(list) ? list : []).filter((t) => {
-        if (t.id === tokenId && (!userId || t.userId === userId)) return false;
-        return true;
-      })
-    );
-  } else {
-    dbManager
-      .execute('DELETE FROM api_tokens WHERE id = ?' + (userId ? ' AND user_id = ?' : ''), userId ? [tokenId, userId] : [tokenId])
-      .catch((err) => console.error('[Settings] DB delete token error:', err));
-  }
 
   return found;
 }
@@ -247,8 +227,7 @@ function get(key) {
 }
 
 function set(key, val) {
-  updateSystemSettings({ [key]: val });
-  return val;
+  return updateSystemSettings({ [key]: val }).then(() => val);
 }
 
 module.exports = {

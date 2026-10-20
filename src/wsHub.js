@@ -328,7 +328,9 @@ class FnsHub {
 
     try {
       const devicesStore = require('./devices');
-      devicesStore.recordActivity(deviceId, { deviceName });
+      devicesStore.recordActivity(deviceId, { deviceName }).catch((err) => {
+        console.error('[WS] Failed to persist device activity:', err.message);
+      });
     } catch {}
 
     ws.on('pong', () => {

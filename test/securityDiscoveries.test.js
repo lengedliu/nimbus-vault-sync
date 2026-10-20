@@ -11,13 +11,13 @@ test('Discovery 1: 设备令牌重新生成后旧令牌必须失效，被吊销�
   const dummyUser = { id: 'u_test_sec_1', username: 'test_sec_user' };
   
   // 1. 生成设备令牌
-  const dev = devices.generateDeviceToken(dummyUser, 'Test-MacBook', 'desktop', 30);
+  const dev = await devices.generateDeviceToken(dummyUser, 'Test-MacBook', 'desktop', 30);
   const originalToken = dev.token;
   assert.ok(originalToken, '应该生成原始 token');
   assert.equal(devices.isTokenRevoked(originalToken), false, '刚生成的 token 不应被判定为 revoked');
 
   // 2. 重新生成令牌 (Regenerate)
-  const updatedDev = devices.regenerateDeviceToken(dev.id, dummyUser, 30);
+  const updatedDev = await devices.regenerateDeviceToken(dev.id, dummyUser, 30);
   assert.ok(updatedDev.token, '应该生成新 token');
   assert.notEqual(updatedDev.token, originalToken, '新旧 token 必须不同');
 
@@ -27,7 +27,7 @@ test('Discovery 1: 设备令牌重新生成后旧令牌必须失效，被吊销�
   assert.equal(devices.isTokenRevoked(updatedDev.token), false, '新 token 应当有效');
 
   // 3. 吊销设备 (Revoke)
-  const revoked = devices.revokeDevice(dev.id, dummyUser.id);
+  const revoked = await devices.revokeDevice(dev.id, dummyUser.id);
   assert.equal(revoked, true, '应当成功吊销设备');
   assert.equal(devices.isTokenRevoked(updatedDev.token), true, '吊销后新 token 也必须立即失效');
 });
@@ -122,14 +122,14 @@ test('Discovery 6: 用户注销级联吊销设备令牌与成员关系', async (
   const vaultMembers = require('../src/vaultMembers');
 
   const testUser = { id: 'u_cascade_test', username: 'cascade_user' };
-  const dev = devices.generateDeviceToken(testUser, 'Cascade Phone', 'ios');
+  const dev = await devices.generateDeviceToken(testUser, 'Cascade Phone', 'ios');
   assert.equal(devices.isTokenRevoked(dev.token), false);
 
   await vaultMembers.addOrUpdateMember('vlt_cascade_dummy', testUser.id, 'read-only');
   assert.equal(vaultMembers.listForUser(testUser.id).length >= 1, true);
 
   // 执行级联清理
-  devices.revokeAllForUser(testUser.id);
+  await devices.revokeAllForUser(testUser.id);
   await vaultMembers.removeAllForUser(testUser.id);
 
   // 验证令牌被即时吊销

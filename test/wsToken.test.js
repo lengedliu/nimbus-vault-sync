@@ -97,9 +97,9 @@ test('WebSocket Token: 验证 token 提取、前缀清洗、authToken 引用兼�
   });
 
   await t.test('6. 撤销的设备 token 升级连接被拦截 (401 Unauthorized)', async () => {
-    const dev = devicesStore.generateDeviceToken(user, 'Test Device For Revoke', 'desktop', 1);
+    const dev = await devicesStore.generateDeviceToken(user, 'Test Device For Revoke', 'desktop', 1);
     const deviceToken = dev.token;
-    devicesStore.revokeDevice(dev.id, user.id);
+    await devicesStore.revokeDevice(dev.id, user.id);
 
     await assert.rejects(
       new Promise((resolve, reject) => {
@@ -119,7 +119,7 @@ test('WebSocket Token: 验证 token 提取、前缀清洗、authToken 引用兼�
   });
 
   await t.test('7. 在线连接触发 disconnectToken 时收到 auth_revoked 并断开 (code 4001)', async () => {
-    const dev = devicesStore.generateDeviceToken(user, 'Test Online Device', 'desktop', 1);
+    const dev = await devicesStore.generateDeviceToken(user, 'Test Online Device', 'desktop', 1);
     const activeToken = dev.token;
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${activeToken}&vaultId=${vault.id}`);

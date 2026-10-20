@@ -625,28 +625,15 @@ class DeltaSyncService {
    */
   async removeVaultData(vaultId) {
     if (!vaultId) return;
+    if (dbManager.type !== 'json') {
+      await dbManager.execute('DELETE FROM vault_changes WHERE vault_id = ?', [vaultId]);
+    } else {
+      const storePath = path.join(DATA_DIR, 'changes', `changes_${vaultId}.json`);
+      if (fs.existsSync(storePath)) fs.unlinkSync(storePath);
+    }
     this.vaultState.delete(vaultId);
     this.jsonStores.delete(vaultId);
     this.initPromises.delete(vaultId);
-
-    // 删除 JSON 存储文件（如存在）
-    try {
-      const storePath = path.join(DATA_DIR, 'changes', `changes_${vaultId}.json`);
-      if (fs.existsSync(storePath)) {
-        fs.unlinkSync(storePath);
-      }
-    } catch (err) {
-      console.error('[DeltaSync] Failed to delete changes JSON file:', err.message);
-    }
-
-    // 删除 SQL 数据库记录（SQLite / PostgreSQL / MySQL）
-    if (dbManager.type !== 'json') {
-      try {
-        await dbManager.execute('DELETE FROM vault_changes WHERE vault_id = ?', [vaultId]);
-      } catch (err) {
-        console.error('[DeltaSync] Error deleting vault_changes from DB:', err.message);
-      }
-    }
   }
 }
 

@@ -29,7 +29,7 @@ function getWebhookConfig() {
   return { ...config, secret: decryptField(config.secret) };
 }
 
-function saveWebhookConfig(config) {
+async function saveWebhookConfig(config) {
   const current = getWebhookConfig(); // 已经是解密后的明文
   const updated = {
     ...current,
@@ -41,7 +41,7 @@ function saveWebhookConfig(config) {
     events: Array.isArray(config.events) ? config.events : current.events,
   };
   // 落盘前才加密，返回给调用方的 updated 保持明文。
-  settings.set('webhook_config', { ...updated, secret: encryptField(updated.secret) });
+  await settings.set('webhook_config', { ...updated, secret: encryptField(updated.secret) });
   return updated;
 }
 

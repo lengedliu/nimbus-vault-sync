@@ -182,11 +182,11 @@ router.get('/:vaultId/rules', (req, res) => {
   res.json({ rules });
 });
 
-router.put('/:vaultId/rules', (req, res) => {
+router.put('/:vaultId/rules', asyncHandler(async (req, res) => {
   if (!requireWriteAccess(req, res)) return;
-  const updated = syncRules.saveRules(req.params.vaultId, req.body || {});
+  const updated = await syncRules.saveRules(req.params.vaultId, req.body || {});
   res.json({ rules: updated });
-});
+}));
 
 const conflicts = require('../conflicts');
 const backups = require('../backups');

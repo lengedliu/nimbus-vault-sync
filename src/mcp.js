@@ -11,6 +11,7 @@ const fnsHub = require('./wsHub');
 const gitSync = require('./gitSync');
 const webhooks = require('./webhooks');
 const { resolvePublicAddresses, createPinnedLookup } = require('./utils/ssrfGuard');
+const { searchRegexDocuments } = require('./utils/regexSearch');
 const { VERSION } = require('./config');
 
 // upload_attachment 的 sourceUrl 允许下载的最大字节数，防止一个巨大的远程文件把内存吃爆。
@@ -905,45 +906,49 @@ function buildMcpServer(user, defaultVaultId) {
         notePaths = notePaths.filter((p) => p.startsWith(cleanFolder) || p === folder);
       }
 
-      let regex;
       if (useRegex) {
         if (query.length > 256 || /\([^)]*[+*][^)]*\)[+*{]|(?:\.\*|\.\+){2}|\([^)]*\|[^)]*\)[+*{]/.test(query)) {
           return textResult('Regex query is too complex or too long. Please simplify it (maximum 256 characters).');
         }
-        regex = new RegExp(query, caseSensitive ? 'g' : 'gi');
-      } else {
-        const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        regex = new RegExp(escaped, caseSensitive ? 'g' : 'gi');
       }
 
       const results = [];
-
-      let processed = 0;
-      for (const p of notePaths) {
-        if (results.length >= limit) break;
-        const meta = manifest[p];
-        const text = storage.getTextContent(id, p, meta);
-        if (!text) continue;
-        const lines = text.split(/\r?\n/);
-
-        for (let i = 0; i < lines.length; i++) {
-          if (results.length >= limit) break;
-          const line = lines[i];
-          if (regex.test(line)) {
-            // Reset regex state for global
-            regex.lastIndex = 0;
-            results.push({
-              path: p,
-              lineNumber: i + 1,
-              snippet: line.trim(),
-            });
+      if (useRegex) {
+        try {
+          // 预先校验语法，向 MCP 客户端返回即时且清晰的表达式错误。
+          new RegExp(query, caseSensitive ? 'g' : 'gi');
+          async function* documents() {
+            let processed = 0;
+            for (const p of notePaths) {
+              const text = storage.getTextContent(id, p, manifest[p]);
+              if (text) yield { path: p, text };
+              processed++;
+              if (processed % storage.SEARCH_YIELD_BATCH_SIZE === 0) await storage.yieldToEventLoop();
+            }
           }
+          const configuredTimeout = Number.parseInt(process.env.MCP_REGEX_TIMEOUT_MS || '5000', 10);
+          const timeoutMs = Number.isFinite(configuredTimeout) ? Math.min(30_000, Math.max(250, configuredTimeout)) : 5000;
+          results.push(...await searchRegexDocuments(documents(), { query, caseSensitive, limit, timeoutMs }));
+        } catch (err) {
+          return textResult(err.message);
         }
-
-        // 大 vault 逐个读文件正则匹配也是同步 I/O + CPU 密集操作，同样需要定期让出事件循环。
-        processed++;
-        if (processed % storage.SEARCH_YIELD_BATCH_SIZE === 0) {
-          await storage.yieldToEventLoop();
+      } else {
+        const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(escaped, caseSensitive ? 'g' : 'gi');
+        let processed = 0;
+        for (const p of notePaths) {
+          if (results.length >= limit) break;
+          const text = storage.getTextContent(id, p, manifest[p]);
+          if (!text) continue;
+          const lines = text.split(/\r?\n/);
+          for (let i = 0; i < lines.length && results.length < limit; i++) {
+            if (regex.test(lines[i])) {
+              regex.lastIndex = 0;
+              results.push({ path: p, lineNumber: i + 1, snippet: lines[i].trim() });
+            }
+          }
+          processed++;
+          if (processed % storage.SEARCH_YIELD_BATCH_SIZE === 0) await storage.yieldToEventLoop();
         }
       }
 

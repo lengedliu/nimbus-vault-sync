@@ -91,29 +91,25 @@ function hasWriteAccess(userId, vaultId, isAdmin = false) {
 
 async function create(ownerId, name) {
   const vault = { id: uuid(), ownerId, name, createdAt: new Date().toISOString() };
-  vaultsCache.push(vault);
-
-  if (dbManager.type === 'json') {
-    jsonDb.update((data) => {
-      data.vaults = data.vaults || [];
-      data.vaults.push(vault);
-      return data;
-    });
-  } else {
-    try {
-      await dbManager.execute('INSERT INTO vaults (id, owner_id, name, created_at) VALUES (?, ?, ?, ?)', [
-        vault.id,
-        vault.ownerId,
-        vault.name,
-        vault.createdAt,
-      ]);
-    } catch (err) {
-      console.error('[Vaults] DB insert vault error:', err);
-    }
-  }
-
   const root = vaultFilesRoot(vault.id);
   fs.mkdirSync(root, { recursive: true });
+  try {
+    if (dbManager.type === 'json') {
+      jsonDb.update((data) => {
+        data.vaults = data.vaults || [];
+        data.vaults.push(vault);
+        return data;
+      });
+    } else {
+      await dbManager.execute('INSERT INTO vaults (id, owner_id, name, created_at) VALUES (?, ?, ?, ?)', [
+        vault.id, vault.ownerId, vault.name, vault.createdAt,
+      ]);
+    }
+  } catch (err) {
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
+    throw err;
+  }
+  vaultsCache.push(vault);
   return vault;
 }
 
@@ -170,75 +166,41 @@ async function ensureDefaultVaults(ownerId) {
 }
 
 async function remove(vaultId) {
-  vaultsCache = vaultsCache.filter((v) => v.id !== vaultId);
-
   // 1. 显式删除 vault_members 关联成员记录 (SQL & JSON & 内存)
-  try {
-    await vaultMembers.removeAllForVault(vaultId);
-  } catch (e) {
-    console.error(`[Vaults] Error removing members for vault ${vaultId}:`, e.message);
-  }
+  await vaultMembers.removeAllForVault(vaultId);
 
   // 2. 显式删除 vault_changes 增量同步变更历史 (SQL & JSON & 内存)
-  try {
-    const deltaSync = require('./deltaSync');
-    await deltaSync.removeVaultData(vaultId);
-  } catch (e) {
-    console.error(`[Vaults] Error removing delta sync data for vault ${vaultId}:`, e.message);
-  }
+  const deltaSync = require('./deltaSync');
+  await deltaSync.removeVaultData(vaultId);
 
   // 3. 显式删除 sync_rules 规则记录 (SQL & 内存)
-  try {
-    const syncRules = require('./syncRules');
-    await syncRules.removeRulesForVault(vaultId);
-  } catch (e) {
-    console.error(`[Vaults] Error removing sync rules for vault ${vaultId}:`, e.message);
-  }
+  const syncRules = require('./syncRules');
+  await syncRules.removeRulesForVault(vaultId);
 
   // 4. 显式删除 shares 分享外链记录 (SQL & 内存)
-  try {
-    const shares = require('./shares');
-    await shares.removeAllForVault(vaultId);
-  } catch (e) {
-    console.error(`[Vaults] Error removing shares for vault ${vaultId}:`, e.message);
-  }
+  const shares = require('./shares');
+  await shares.removeAllForVault(vaultId);
 
-  // 5. 清理全文搜索索引文件与内存状态
-  try {
-    const ftsEngine = require('./ftsEngine');
-    ftsEngine.removeVaultIndex(vaultId);
-  } catch (e) {
-    console.error(`[Vaults] Error removing FTS index for vault ${vaultId}:`, e.message);
-  }
-
-  // 6. 广播并断开 WebSocket 活跃房间
-  try {
-    const wsHub = require('./wsHub');
-    wsHub.closeVault(vaultId);
-  } catch (e) {}
-
-  // 7. 彻底清理 Vault 磁盘目录（含 files/, history/, trash/）及独立 data/trash/:vaultId
-  try {
-    const storage = require('./storage');
-    await storage.waitForVaultLocks(vaultId);
-    storage.deleteVaultDirectory(vaultId);
-  } catch (e) {
-    console.error(`[Vaults] Error removing storage directory for vault ${vaultId}:`, e.message);
-  }
-
-  // 8. 彻底清理 vaults 表中的记录
+  // 7. 先持久化删除主记录，再清缓存。若数据库删除失败，保留笔记文件供重试。
   if (dbManager.type === 'json') {
     jsonDb.update((data) => {
       data.vaults = (data.vaults || []).filter((v) => v.id !== vaultId);
       return data;
     });
   } else {
-    try {
-      await dbManager.execute('DELETE FROM vaults WHERE id = ?', [vaultId]);
-    } catch (err) {
-      console.error('[Vaults] DB delete vault error:', err);
-    }
+    await dbManager.execute('DELETE FROM vaults WHERE id = ?', [vaultId]);
   }
+  vaultsCache = vaultsCache.filter((v) => v.id !== vaultId);
+
+  // 8. 主记录删除成功后再清理磁盘；文件系统和数据库之间无法构成单一事务。
+  const storage = require('./storage');
+  await storage.waitForVaultLocks(vaultId);
+  storage.deleteVaultDirectory(vaultId);
+
+  try { require('./ftsEngine').removeVaultIndex(vaultId); } catch (e) {
+    console.error(`[Vaults] Error removing FTS index for vault ${vaultId}:`, e.message);
+  }
+  try { require('./wsHub').closeVault(vaultId); } catch {}
 }
 
 function vaultRoot(vaultId) {
@@ -266,7 +228,6 @@ function listOwnedByUser(userId) {
 async function transferOwnership(vaultId, newOwnerId) {
   const vault = getById(vaultId);
   if (!vault) return null;
-  vault.ownerId = newOwnerId;
 
   if (dbManager.type === 'json') {
     jsonDb.update((data) => {
@@ -274,12 +235,12 @@ async function transferOwnership(vaultId, newOwnerId) {
       return data;
     });
   } else {
-    dbManager
-      .execute('UPDATE vaults SET owner_id = ? WHERE id = ?', [newOwnerId, vaultId])
-      .catch((err) => console.error('[Vaults] DB transfer ownership error:', err));
+    await dbManager.execute('UPDATE vaults SET owner_id = ? WHERE id = ?', [newOwnerId, vaultId]);
   }
 
-  return vault;
+  const updated = { ...vault, ownerId: newOwnerId };
+  vaultsCache = vaultsCache.map((v) => v.id === vaultId ? updated : v);
+  return updated;
 }
 
 refreshCacheFromJson();

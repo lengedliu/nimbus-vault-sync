@@ -48,7 +48,7 @@ test('Cascade Cleanup: deleting a vault completely purges members, changes, rule
 
   // 2. Add member, sync rule, change record, share, and write a file
   await vaultMembers.addOrUpdateMember(vaultId, testMember, 'read-write');
-  syncRules.saveRules(vaultId, { ignorePatterns: ['*.tmp', 'secret.key'] });
+  await syncRules.saveRules(vaultId, { ignorePatterns: ['*.tmp', 'secret.key'] });
   await deltaSync.initVault(vaultId);
   await deltaSync.recordChange(vaultId, 'note.md', 'update', { size: 12, mtime: Date.now(), hash: 'hash123' });
   await shares.create({ vaultId, userId: testOwner, filePath: 'note.md', title: 'Share Note' });

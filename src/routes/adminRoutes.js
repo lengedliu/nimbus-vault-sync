@@ -206,7 +206,7 @@ router.delete('/users/:userId', express.json(), asyncHandler(async (req, res) =>
   }
 
   // 2. 撤销该用户所有活跃的设备与 API 令牌
-  devicesStore.revokeAllForUser(userId);
+  await devicesStore.revokeAllForUser(userId);
 
   // 3. 移除该用户在所有库中的成员资格
   await vaultMembers.removeAllForUser(userId);
