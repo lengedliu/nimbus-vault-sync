@@ -225,13 +225,24 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   }
 
   scheduleSaveSettings() {
+    // 🛡️ 防抖但给硬截止：400ms 防抖在高频变更风暴下会无限后移，强杀进程时整个窗口全部丢失。
+    // 首次调用起 5 秒内必须落盘一次。
+    if (!this._saveSettingsDeadline) {
+      this._saveSettingsDeadline = Date.now() + 5000;
+    }
     if (this._saveSettingsTimer) {
       clearTimeout(this._saveSettingsTimer);
     }
+    const wait = Math.max(50, Math.min(400, this._saveSettingsDeadline - Date.now()));
     this._saveSettingsTimer = setTimeout(async () => {
       this._saveSettingsTimer = null;
-      await this.saveSettings();
-    }, 400);
+      this._saveSettingsDeadline = null;
+      try {
+        await this.saveSettings();
+      } catch (e) {
+        console.error('[Nimbus] 保存设置失败:', e);
+      }
+    }, wait);
   }
 
   async loadBaselineCache() {
@@ -274,13 +285,23 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   }
 
   scheduleSaveBaselineCache() {
+    // 🛡️ 与 scheduleSaveSettings 相同：5 秒硬截止防无限后移
+    if (!this._saveBaselineDeadline) {
+      this._saveBaselineDeadline = Date.now() + 5000;
+    }
     if (this._saveBaselineTimer) {
       clearTimeout(this._saveBaselineTimer);
     }
+    const wait = Math.max(50, Math.min(400, this._saveBaselineDeadline - Date.now()));
     this._saveBaselineTimer = setTimeout(async () => {
       this._saveBaselineTimer = null;
-      await this.saveBaselineCache();
-    }, 400);
+      this._saveBaselineDeadline = null;
+      try {
+        await this.saveBaselineCache();
+      } catch (e) {
+        console.error('[Nimbus] 保存基线缓存失败:', e);
+      }
+    }, wait);
   }
 
   getVaultBaseline(vaultId = this.settings.vaultId) {
@@ -566,6 +587,24 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     const host = baseUrl.replace(/^https?:\/\//i, '');
     const localCursor = this.getVaultCursor(this.settings.vaultId || 'default');
     const wsUrl = `${wsProto}//${host}/ws?token=${encodeURIComponent(cleanToken)}&vaultId=${encodeURIComponent(this.settings.vaultId)}&deviceId=${encodeURIComponent(this.settings.deviceId || 'Obsidian Device')}&cursor=${encodeURIComponent(localCursor)}`;
+
+    // 🛡️ 多库切换卫生：目标库变化时清空上一库的内存状态（回声哈希、防抖队列、挂起队列），
+    // 并用新库基线重播 fileHashes。否则旧库哈希会参与新库的回声抑制，造成漏拉/漏推。
+    if (this._connectedVaultId && this._connectedVaultId !== this.settings.vaultId) {
+      if (this.localChangeQueue) {
+        for (const timer of this.localChangeQueue.values()) clearTimeout(timer);
+        this.localChangeQueue.clear();
+      }
+      this.fileHashes = new Map();
+      if (this.pendingLocalQueueWhileBarrier) this.pendingLocalQueueWhileBarrier.clear();
+      if (this.pendingLocalDeletes) this.pendingLocalDeletes.clear();
+      const nextBaseline = this.getVaultBaseline(this.settings.vaultId);
+      for (const [path, meta] of Object.entries(nextBaseline)) {
+        if (meta && meta.hash) this.fileHashes.set(path, meta.hash);
+      }
+      console.log(`[Nimbus] 切换笔记库: ${this._connectedVaultId} -> ${this.settings.vaultId}（已重置内存同步状态）`);
+    }
+    this._connectedVaultId = this.settings.vaultId;
 
     try {
       const socket = new WebSocket(wsUrl);
@@ -1021,6 +1060,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       const toLocalConflictBackup = [];
       let hasDeferredRemoteDeletes = false;
       let hasDeferredLocalDeletes = false;
+      let hasDeferredLocalPushes = false;
 
       // 3-Way 对比分析：Local (本地当前) vs Remote (云端当前) vs Base (上次同步基线)
       for (const path of allPaths) {
@@ -1137,6 +1177,8 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         console.warn(`[Nimbus 安全熔断] 拦截异常大批量推送: 尝试上传 ${toPush.length} 篇，云端总数: ${remoteCountVal}`);
         new Notice(`⚠️ [Nimbus 安全熔断] 检测到当前设备尝试单次向云端推送 ${toPush.length} 篇笔记（超过安全阈值）！\n已自动暂停大批量推送以防意外覆盖云端较新笔记。请在控制台核对。`, 12000);
         toPush.length = 0;
+        // 🛡️ 与删除熔断同一语义：熔断 = 未完成，绝不推进游标（否则下次增量对齐会跳过这批推送）
+        hasDeferredLocalPushes = true;
       }
 
       const pullCount = toPull.length;
@@ -1145,7 +1187,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       const remoteDelCount = toRemoteDelete.length;
       const conflictBackupCount = toLocalConflictBackup.length;
 
-      if (pullCount === 0 && pushCount === 0 && localDelCount === 0 && remoteDelCount === 0 && conflictBackupCount === 0 && !hasDeferredRemoteDeletes && !hasDeferredLocalDeletes) {
+      if (pullCount === 0 && pushCount === 0 && localDelCount === 0 && remoteDelCount === 0 && conflictBackupCount === 0 && !hasDeferredRemoteDeletes && !hasDeferredLocalDeletes && !hasDeferredLocalPushes) {
         if (!this.baselinesCache) this.baselinesCache = {};
         this.baselinesCache[vaultId] = baseline;
         await this.saveBaselineCache();
@@ -1241,10 +1283,10 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       if (!this.baselinesCache) this.baselinesCache = {};
       this.baselinesCache[vaultId] = sanitizedBaseline;
       await this.saveBaselineCache();
-      if (typeof remoteCursor === 'number' && remoteCursor >= 0 && !hasCriticalFailure && !hasPullFailure && !hasDeferredRemoteDeletes && !hasDeferredLocalDeletes) {
+      if (typeof remoteCursor === 'number' && remoteCursor >= 0 && !hasCriticalFailure && !hasPullFailure && !hasDeferredRemoteDeletes && !hasDeferredLocalDeletes && !hasDeferredLocalPushes) {
         this.setVaultCursor(vaultId, remoteCursor);
         await this.saveSettings();
-      } else if (hasCriticalFailure || hasPullFailure || hasDeferredRemoteDeletes || hasDeferredLocalDeletes) {
+      } else if (hasCriticalFailure || hasPullFailure || hasDeferredRemoteDeletes || hasDeferredLocalDeletes || hasDeferredLocalPushes) {
         console.warn('[Nimbus] 3-Way 同步存在未完成操作或拉取失败，暂不推进最新游标以备下次重试完整对齐');
         new Notice('⚠️ 部分同步操作未完成，暂不推进游标以防漏拉，将在网络稳定后自动重试');
       }
@@ -1464,7 +1506,15 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         }
       }
 
-      const calculatedHash = hash || (await computeSha256(buffer));
+      // 🛡️ 字节级完整性校验：始终对“实际落盘内容”计算 sha256。
+      // 若服务端声明了 hash 而内容不匹配（代理/防盗门错误页、传输损坏），
+      // 绝不能把错误内容写入文件并盖上“云端最新 hash”的基线（那会产生伪对齐）。
+      const actualHash = await computeSha256(buffer);
+      if (hash && actualHash && String(hash) !== actualHash) {
+        console.error(`[Nimbus] 拉取内容与其声明哈希不一致，拒绝写入: ${cleanPath} expected=${hash} actual=${actualHash}`);
+        return false;
+      }
+      const calculatedHash = actualHash || hash;
       if (calculatedHash) {
         this.fileHashes.set(cleanPath, calculatedHash);
         this.updateBaselineEntry(this.settings.vaultId, cleanPath, {
