@@ -907,6 +907,9 @@ function buildMcpServer(user, defaultVaultId) {
 
       let regex;
       if (useRegex) {
+        if (query.length > 256 || /\([^)]*[+*][^)]*\)[+*{]|(?:\.\*|\.\+){2}|\([^)]*\|[^)]*\)[+*{]/.test(query)) {
+          return textResult('Regex query is too complex or too long. Please simplify it (maximum 256 characters).');
+        }
         regex = new RegExp(query, caseSensitive ? 'g' : 'gi');
       } else {
         const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

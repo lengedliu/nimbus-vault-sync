@@ -223,7 +223,7 @@ router.delete('/users/:userId', express.json(), asyncHandler(async (req, res) =>
   }
 
   // 6. 删除用户账号记录
-  users.remove(userId);
+  await users.remove(userId);
 
   res.json({
     ok: true,

@@ -162,11 +162,13 @@ docker run -d -p 3000:3000 \
 | `JWT_SECRET` | 隨機產生（寫入 `.jwt_secret`） | 使用者驗證與 JWT 權杖加密金鑰（正式生產環境強烈建議指定高強度隨機字串） |
 | `ENCRYPTION_KEY` | 回退至 `JWT_SECRET` | 敏感憑證與 Git 密碼的對稱加密金鑰 |
 | `TOKEN_TTL` | `30d` | 使用者登入及 API 裝置權杖預設有效期（如 `7d`, `30d`, `90d`） |
-| `INITIAL_ADMIN_PASSWORD` | `admin123` | 首次初始化引導建立系統管理員的預設密碼 |
-| `TRUST_PROXY` | `true` | 是否信任前置反向代理（Nginx / Caddy / Cloudflare / K8s Ingress）傳遞的 X-Forwarded-* 標頭 |
+| `INITIAL_ADMIN_PASSWORD` | 無預設值 | 首次建立管理員時必填，至少 12 個字元 |
+| `TRUST_PROXY` | `false` | 僅在受控反向代理後方部署時設為 `true`；直接對外服務時保持關閉 |
+| `ALLOW_PRIVATE_CLOUD_BACKUP_TARGETS` | `false` | 僅在確需連線至可信任的內網 NAS 時允許雲端備份連線至私有網路 |
 | `CORS_ALLOWED_ORIGINS` | `*`（允許所有） | 允許跨域請求的白名單來源（多個來源以半形逗號分隔，如 `https://note.example.com`） |
 | **容量與上傳限制** | | |
 | `MAX_UPLOAD_MB` | `500` | 單次檔案或附件直接上傳的最大容量限制（MB） |
+| `MAX_CONCURRENT_UPLOADS` | `4` | 每個服務程序可同時接收的上傳數量，超過時請稍後重試 |
 | `ATTACHMENT_MAX_MB` | `200` | 透過 MCP / AI 工具遠端轉存或提取附件的最大位元組限制（MB） |
 | **增量同步保留策略** | | |
 | `MAX_DELTA_CHANGES_PER_VAULT` | `5000` | 每個筆記庫在 SQLite / JSON 儲存中保留的最新增量變更紀錄條數（超量自動回收） |

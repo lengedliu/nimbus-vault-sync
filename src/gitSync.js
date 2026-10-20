@@ -18,36 +18,19 @@ const { encryptField, decryptField } = require('./utils/crypto');
 const debounceTimers = new Map(); // vaultId -> NodeJS.Timeout
 const vaultLocks = new Map(); // vaultId -> Promise chain
 
-function cleanStaleGitLock(vaultId) {
-  try {
-    const lockPath = path.join(vaultFilesRoot(vaultId), '.git', 'index.lock');
-    if (fs.existsSync(lockPath)) {
-      const stats = fs.statSync(lockPath);
-      // If older than 10 seconds, it's a stale lock from a dead or aborted process
-      if (Date.now() - stats.mtimeMs > 10000) {
-        fs.unlinkSync(lockPath);
-        console.warn(`[GitSync] Cleaned stale git index.lock for vault ${vaultId}`);
-        return true;
-      }
-    }
-  } catch {}
-  return false;
-}
-
 async function withVaultLock(vaultId, fn) {
-  cleanStaleGitLock(vaultId);
   const current = vaultLocks.get(vaultId) || Promise.resolve();
   let release;
   const next = new Promise((resolve) => { release = resolve; });
-  vaultLocks.set(vaultId, current.then(() => next, () => next));
+  const queued = current.then(() => next, () => next);
+  vaultLocks.set(vaultId, queued);
 
   try {
     await current;
-    cleanStaleGitLock(vaultId);
     return await fn();
   } finally {
     release();
-    if (vaultLocks.get(vaultId) === next) {
+    if (vaultLocks.get(vaultId) === queued) {
       vaultLocks.delete(vaultId);
     }
   }
@@ -138,14 +121,7 @@ function execGitRaw(vaultId, args, env = {}) {
 }
 
 async function execGit(vaultId, args, env = {}) {
-  let res = await execGitRaw(vaultId, args, env);
-  if (!res.success && res.stderr && res.stderr.includes('index.lock')) {
-    if (cleanStaleGitLock(vaultId)) {
-      // Retry once after successfully unlinking the stale lock file
-      res = await execGitRaw(vaultId, args, env);
-    }
-  }
-  return res;
+  return execGitRaw(vaultId, args, env);
 }
 
 function formatCommitMessage(template, filesCount) {

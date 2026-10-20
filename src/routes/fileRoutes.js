@@ -25,6 +25,8 @@ function safeDecodeHeader(val, fallback = '') {
 // 单次上传大小上限（字节），可用 MAX_UPLOAD_MB 环境变量覆盖。
 // 流式写入之后，这个上限只是"防止无限占用磁盘"的安全阀，不再等价于"这么大都要先进内存"。
 const MAX_UPLOAD_BYTES = parseInt(process.env.MAX_UPLOAD_MB || '500', 10) * 1024 * 1024;
+const MAX_CONCURRENT_UPLOADS = Math.max(1, parseInt(process.env.MAX_CONCURRENT_UPLOADS || '4', 10) || 4);
+let activeUploads = 0;
 
 // GET file content — 流式下载，不再把整个文件先读进内存。
 router.get('/:vaultId/files/*', (req, res) => {
@@ -107,11 +109,16 @@ router.put('/:vaultId/files/*', (req, res) => {
   if (declaredLength && declaredLength > MAX_UPLOAD_BYTES) {
     return res.status(413).json({ error: `文件超过单次上传上限（${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB）` });
   }
+  if (activeUploads >= MAX_CONCURRENT_UPLOADS) {
+    return res.status(429).json({ error: '当前上传任务较多，请稍后重试' });
+  }
+  activeUploads++;
 
   let tempPath;
   try {
     tempPath = storage.createUploadTempPath(vaultId);
   } catch (e) {
+    activeUploads--;
     return res.status(500).json({ error: `无法创建临时文件: ${e.message}` });
   }
 
@@ -140,6 +147,7 @@ router.put('/:vaultId/files/*', (req, res) => {
 
   pipeline(req, hashingPass, writeStream, async (err) => {
     if (err) {
+      activeUploads--;
       cleanupTemp();
       const status = aborted ? 413 : 400;
       const message = err.message || '上传失败';
@@ -206,7 +214,9 @@ router.put('/:vaultId/files/*', (req, res) => {
         ...result,
         hash: result.currentHash,
       });
+      activeUploads--;
     } catch (e) {
+      activeUploads--;
       cleanupTemp();
       syncLogger.recordLog({
         vaultId,

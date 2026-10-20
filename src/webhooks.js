@@ -186,7 +186,16 @@ async function sendHttpRequest(targetUrl, payload) {
     const client = parsed.protocol === 'https:' ? https : http;
     const req = client.request(options, (res) => {
       let body = '';
-      res.on('data', (chunk) => (body += chunk));
+      let bodyBytes = 0;
+      const maxResponseBytes = 16 * 1024;
+      res.on('data', (chunk) => {
+        bodyBytes += chunk.length;
+        if (bodyBytes > maxResponseBytes) {
+          req.destroy(new Error('Webhook response exceeded 16 KB limit'));
+          return;
+        }
+        body += chunk;
+      });
       res.on('end', () => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           resolve({ ok: true, statusCode: res.statusCode, body });

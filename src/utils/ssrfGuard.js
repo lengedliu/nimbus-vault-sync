@@ -50,11 +50,20 @@ function isPrivateOrReservedIp(ip) {
     if (a === 169 && b === 254) return true; // link-local, includes cloud metadata 169.254.169.254
     if (a === 0) return true; // 0.0.0.0/8
     if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 carrier-grade NAT
+    if (a === 192 && b === 0) return true; // protocol assignments and documentation ranges
+    if (a === 192 && b === 2) return true; // TEST-NET-1
+    if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking
+    if (a === 198 && b === 51) return true; // TEST-NET-2
+    if (a === 203 && b === 0) return true; // TEST-NET-3
+    if (a >= 224) return true; // multicast and reserved
     return false;
   }
   if (kind === 6) {
     const lower = ip.toLowerCase();
     if (lower === '::1') return true; // loopback
+    if (lower === '::') return true; // unspecified
+    if (lower.startsWith('2001:db8:')) return true; // documentation range
+    if (lower.startsWith('ff')) return true; // multicast
     if (/^fe[89ab][0-9a-f]:/.test(lower)) return true; // fe80::/10 link-local
     if (/^f[cd][0-9a-f]{2}:/.test(lower)) return true; // fc00::/7 unique local
     if (lower.startsWith('::ffff:')) {

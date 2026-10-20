@@ -50,11 +50,9 @@ module.exports = {
   VAULTS_DIR: path.join(DATA_DIR, 'vaults'),
   USERS_FILE: path.join(DATA_DIR, 'users.json'),
   VAULTS_FILE: path.join(DATA_DIR, 'vaults.json'),
-  // Optional: if both are set, the server listens over HTTPS/WSS using these
-  // files. If either is missing, it falls back to plain HTTP/WS.
+  // Optional: set both paths to serve HTTPS/WSS directly; setting only one is an error.
   TLS_CERT_PATH: process.env.TLS_CERT_PATH || '',
   TLS_KEY_PATH: process.env.TLS_KEY_PATH || '',
-  // 部署在 Nginx/Caddy/Traefik/Cloud Run 等反向代理或容器环境之后时，Express 应信任反向代理。
-  // 默认启用 1 层反代信任（可通过 TRUST_PROXY=0 或 false 显式关闭）。
-  TRUST_PROXY: process.env.TRUST_PROXY !== '0' && process.env.TRUST_PROXY !== 'false',
+  // 反向代理部署时显式设置 TRUST_PROXY=true；默认不信任客户端提供的转发头。
+  TRUST_PROXY: process.env.TRUST_PROXY === '1' || process.env.TRUST_PROXY === 'true',
 };

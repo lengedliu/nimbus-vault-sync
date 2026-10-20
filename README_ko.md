@@ -159,11 +159,13 @@ Docker 컨테이너를 직접 실행하거나 `docker-compose.yml`을 통해 오
 | `JWT_SECRET` | 자동 생성 (`.jwt_secret`에 저장) | 사용자 인증 및 API 디바이스 JWT 토큰 서명용 비밀키 (운영 환경에서는 명시적 지정을 적극 권장) |
 | `ENCRYPTION_KEY` | `JWT_SECRET`으로 대체 | 저장된 Git 인증 정보 및 민감한 자격 증명의 대칭 암호화 키 |
 | `TOKEN_TTL` | `30d` | 사용자 로그인 세션 및 API 토큰 유효 기간 (예: `7d`, `30d`, `90d`) |
-| `INITIAL_ADMIN_PASSWORD` | `admin123` | 최초 설치 마법사에서 생성되는 초기 관리자 계정의 기본 비밀번호 |
-| `TRUST_PROXY` | `true` | 상위 역방향 프록시(Nginx / Caddy / Cloudflare / K8s Ingress 등)의 `X-Forwarded-*` 헤더 신뢰 여부 |
+| `INITIAL_ADMIN_PASSWORD` | 기본값 없음 | 최초 관리자 생성 시 필수이며 12자 이상이어야 합니다 |
+| `TRUST_PROXY` | `false` | 관리되는 역방향 프록시 뒤에서 운영할 때만 `true`로 설정하세요 |
+| `ALLOW_PRIVATE_CLOUD_BACKUP_TARGETS` | `false` | 신뢰할 수 있는 NAS 백업이 필요한 경우에만 사설 네트워크 대상을 허용하세요 |
 | `CORS_ALLOWED_ORIGINS` | `*` (모두 허용) | 교차 출처(CORS) 허용 도메인 화이트리스트 (쉼표로 구분, 예: `https://notes.example.com`) |
 | **업로드 및 첨부 파일 제한** | | |
 | `MAX_UPLOAD_MB` | `500` | 일반 파일 및 첨부 파일 1회 업로드 최대 허용 크기 (MB) |
+| `MAX_CONCURRENT_UPLOADS` | `4` | 서버 프로세스당 동시 파일 업로드 한도이며 초과 요청은 나중에 재시도합니다 |
 | `ATTACHMENT_MAX_MB` | `200` | MCP / AI 도구를 통한 원격 첨부 파일 전송 시 최대 허용 크기 (MB) |
 | **증분 동기화 보존 정책** | | |
 | `MAX_DELTA_CHANGES_PER_VAULT` | `5000` | 각 볼트별 SQLite / JSON 저장소에 보존할 최신 증분 변경 로그 수 (초과 시 자동 정리) |

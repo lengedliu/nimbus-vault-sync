@@ -118,6 +118,15 @@ function isNoisePath(relPath) {
   return NOISE_PATH_REGEXES.some((rx) => rx.test(norm));
 }
 
+/** 凭据保护：识别 vault 内任意位置下的 Nimbus Sync 插件 data.json（例如 .config/plugins/...） */
+function isPrivateVaultPath(relPath) {
+  const normalized = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+  const segments = normalized.split('/');
+  return segments.includes('.git') || (segments.length >= 4
+    && segments[segments.length - 4].startsWith('.')
+    && segments.slice(-3).join('/') === 'plugins/nimbus-sync/data.json');
+}
+
 /** Prevent path traversal: resolve relPath against root and ensure it stays inside root. */
 function safeJoin(root, relPath) {
   const normalized = path.normalize(relPath).replace(/^(\.\.[/\\])+/, '');
@@ -129,9 +138,35 @@ function safeJoin(root, relPath) {
   if (segments.some((seg) => seg === '.git')) {
     throw new Error('Access to the .git directory is not allowed.');
   }
+  const normalizedSegments = segments.map((seg) => seg.toLowerCase());
+  if (normalizedSegments.length >= 4
+    && normalizedSegments[normalizedSegments.length - 4].startsWith('.')
+    && normalizedSegments.slice(-3).join('/') === 'plugins/nimbus-sync/data.json') {
+    throw new Error('Access to the Nimbus Sync plugin credentials file is not allowed.');
+  }
   const full = path.join(root, normalized);
   if (!full.startsWith(path.resolve(root) + path.sep) && full !== path.resolve(root)) {
     throw new Error('Invalid path (outside vault root)');
+  }
+
+  // Lexical containment alone does not stop an in-vault symlink from pointing
+  // outside the vault. Reject symlinked path components before any read/write.
+  let current = path.resolve(root);
+  const rootStat = fs.existsSync(current) ? fs.lstatSync(current) : null;
+  if (rootStat && rootStat.isSymbolicLink()) {
+    throw new Error('Symbolic links are not allowed in vault storage paths.');
+  }
+  const relative = path.relative(current, full);
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) {
+        throw new Error('Symbolic links are not allowed in vault storage paths.');
+      }
+    } catch (err) {
+      if (err.code === 'ENOENT' || err.code === 'ENOTDIR') break;
+      throw err;
+    }
   }
   return full;
 }
@@ -294,7 +329,7 @@ async function walkAsync(dir, base, out = []) {
       if (entry.isFile() && isNoiseFile(entry.name)) continue;
       const full = path.join(dir, entry.name);
       const rel = path.relative(base, full).split(path.sep).join('/');
-      if (isNoisePath(rel)) continue;
+      if (isNoisePath(rel) || isPrivateVaultPath(rel)) continue;
       if (entry.isDirectory()) {
         await walkAsync(full, base, out);
       } else if (entry.isFile()) {
@@ -317,7 +352,7 @@ function walk(dir, base, out = []) {
     if (entry.isFile() && isNoiseFile(entry.name)) continue;
     const full = path.join(dir, entry.name);
     const rel = path.relative(base, full).split(path.sep).join('/');
-    if (isNoisePath(rel)) continue;
+    if (isNoisePath(rel) || isPrivateVaultPath(rel)) continue;
     if (entry.isDirectory()) {
       walk(full, base, out);
     } else if (entry.isFile()) {
@@ -1448,7 +1483,7 @@ function exportVaultZip(vaultId, outputStream) {
   archive.pipe(outputStream);
   const root = vaultFilesRoot(vaultId);
   if (fs.existsSync(root)) {
-    archive.directory(root, false);
+    archive.directory(root, false, (entry) => !isPrivateVaultPath(entry.name));
   }
   return archive.finalize();
 }

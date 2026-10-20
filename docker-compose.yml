@@ -1,7 +1,6 @@
 # Usage:
-#   cp .env.example .env      # set a real JWT_SECRET before first run
+#   cp .env.example .env      # set JWT_SECRET and INITIAL_ADMIN_PASSWORD (12+ characters)
 #   docker compose up -d --build
-#   docker compose exec nimbus npm run create-user   # create the first (admin) account
 #
 # Dashboard:  http://localhost:3000/
 # WebSocket:  ws://localhost:3000/ws
@@ -19,7 +18,11 @@ services:
     environment:
       PORT: ${PORT:-3000}
       JWT_SECRET: ${JWT_SECRET:-}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
       TOKEN_TTL: ${TOKEN_TTL:-30d}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      ALLOW_PRIVATE_CLOUD_BACKUP_TARGETS: ${ALLOW_PRIVATE_CLOUD_BACKUP_TARGETS:-false}
+      MAX_CONCURRENT_UPLOADS: ${MAX_CONCURRENT_UPLOADS:-4}
       DATA_DIR: /app/data
       # Optional — leave unset to serve plain HTTP/WS. Set both + uncomment
       # the volume line below to serve HTTPS/WSS directly from this container.

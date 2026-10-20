@@ -76,6 +76,8 @@ router.delete('/vaults/:vaultId/shares/:shareId', requireAuth, (req, res) => {
 
 // Lightweight in-memory rate limiter for public share password brute-force protection
 const sharePasswordAttempts = new Map(); // `${ip}:${shareId}` -> { count, firstAttempt }
+const SHARE_ATTEMPT_WINDOW_MS = 60 * 1000;
+const MAX_TRACKED_SHARE_ATTEMPTS = 10000;
 
 router.get('/public/shares/:shareId', asyncHandler(async (req, res) => {
   const { shareId } = req.params;
@@ -84,11 +86,20 @@ router.get('/public/shares/:shareId', asyncHandler(async (req, res) => {
 
   const password = req.query.password || req.headers['x-share-password'];
   if (share.hasPassword) {
-    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+    const ip = req.ip || req.socket.remoteAddress || '127.0.0.1';
     const rateKey = `${ip}:${shareId}`;
     const now = Date.now();
     const windowMs = 60 * 1000;
     const maxAttempts = 15;
+
+    if (!sharePasswordAttempts.has(rateKey) && sharePasswordAttempts.size >= MAX_TRACKED_SHARE_ATTEMPTS) {
+      for (const [key, record] of sharePasswordAttempts) {
+        if (now - record.firstAttempt > SHARE_ATTEMPT_WINDOW_MS) sharePasswordAttempts.delete(key);
+      }
+      if (sharePasswordAttempts.size >= MAX_TRACKED_SHARE_ATTEMPTS) {
+        return res.status(503).json({ error: '请求繁忙，请稍后重试' });
+      }
+    }
 
     const record = sharePasswordAttempts.get(rateKey);
     if (!record || now - record.firstAttempt > windowMs) {

@@ -334,6 +334,10 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     if (!filePath) return true;
     const clean = String(filePath).replace(/\\/g, '/').replace(/^\/+/, '');
 
+    // 插件凭据文件（无论所在配置目录叫什么）永远不同步
+    const configDir = ((this.app.vault && this.app.vault.configDir) || '.obsidian').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    if (`${configDir}/plugins/nimbus-sync/data.json`.toLowerCase() === clean.toLowerCase()) return true;
+
     // 无论是否开启配置目录同步，机台强绑定的本地 UI / 工作区状态 / 本插件运行态永远绝对忽略
     const alwaysIgnoredPatterns = [
       /^\.git(\/|$)/,

@@ -6,6 +6,14 @@ const { asyncHandler } = require('../utils/asyncHandler');
 
 const router = express.Router({ mergeParams: true });
 
+function redactSecrets(config) {
+  return {
+    ...config,
+    s3: { ...(config.s3 || {}), secretAccessKey: '', secretAccessKeyConfigured: Boolean(config.s3 && config.s3.secretAccessKey) },
+    webdav: { ...(config.webdav || {}), password: '', passwordConfigured: Boolean(config.webdav && config.webdav.password) },
+  };
+}
+
 // Check permission helper
 function checkVaultWrite(req, res, vaultId) {
   const vault = vaultsStore.getById(vaultId);
@@ -26,7 +34,7 @@ router.get('/config', requireAuth, (req, res) => {
   if (!checkVaultWrite(req, res, vaultId)) return;
 
   const config = cloudBackup.getVaultCloudConfig(vaultId);
-  res.json({ ok: true, config });
+  res.json({ ok: true, config: redactSecrets(config) });
 });
 
 // POST /api/vaults/:vaultId/cloud-backup/config
@@ -36,7 +44,7 @@ router.post('/config', requireAuth, (req, res) => {
 
   const config = req.body || {};
   const saved = cloudBackup.saveVaultCloudConfig(vaultId, config);
-  res.json({ ok: true, config: saved });
+  res.json({ ok: true, config: redactSecrets(saved) });
 });
 
 // POST /api/vaults/:vaultId/cloud-backup/test
@@ -44,7 +52,12 @@ router.post('/test', requireAuth, asyncHandler(async (req, res) => {
   const { vaultId } = req.params;
   if (!checkVaultWrite(req, res, vaultId)) return;
 
-  const { provider, s3, webdav } = req.body || {};
+  const { provider } = req.body || {};
+  const stored = cloudBackup.getVaultCloudConfig(vaultId);
+  const s3 = { ...stored.s3, ...((req.body || {}).s3 || {}) };
+  if (!s3.secretAccessKey) s3.secretAccessKey = stored.s3.secretAccessKey;
+  const webdav = { ...stored.webdav, ...((req.body || {}).webdav || {}) };
+  if (!webdav.password) webdav.password = stored.webdav.password;
   try {
     if (provider === 's3') {
       const result = await cloudBackup.testS3Config(s3 || {});

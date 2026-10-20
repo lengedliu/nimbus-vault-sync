@@ -77,6 +77,15 @@ if (TRUST_PROXY) {
   app.set('trust proxy', 1);
 }
 
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  next();
+});
+
 // 默认对所有来源开放（等价于原来的 cors()，避免默认就打破现有的 Web 客户端/插件），
 // 但支持用 CORS_ALLOWED_ORIGINS（逗号分隔）收紧到指定域名——自己部署 Web 面板在固定
 // 域名下时，强烈建议配置这个变量，把 CORS 收紧到只信任自己的前端。
@@ -225,6 +234,9 @@ process.on('uncaughtException', (err) => {
 
 let server;
 let usingTls = false;
+if (Boolean(TLS_CERT_PATH) !== Boolean(TLS_KEY_PATH)) {
+  throw new Error('TLS_CERT_PATH and TLS_KEY_PATH must either both be configured or both be empty.');
+}
 if (TLS_CERT_PATH && TLS_KEY_PATH) {
   try {
     const tlsOptions = {
@@ -234,8 +246,8 @@ if (TLS_CERT_PATH && TLS_KEY_PATH) {
     server = https.createServer(tlsOptions, app);
     usingTls = true;
   } catch (e) {
-    console.error(`Failed to load TLS cert/key (${e.message}). Falling back to plain HTTP.`);
-    server = http.createServer(app);
+    console.error(`Failed to load configured TLS cert/key (${e.message}). Refusing to start without TLS.`);
+    throw e;
   }
 } else {
   server = http.createServer(app);

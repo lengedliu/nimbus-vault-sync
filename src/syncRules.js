@@ -12,6 +12,7 @@ const DEFAULT_RULES = {
     '.obsidian/cache/**',
     '.obsidian/icons/**',
     '.obsidian/plugins/nimbus-sync/**',
+    '**/plugins/nimbus-sync/data.json',
     '**/*.tmp',
     '**/*.swp',
     '**/.DS_Store',

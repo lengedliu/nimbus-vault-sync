@@ -42,8 +42,15 @@ async function loadFromDb() {
 
 async function ensureDefaultAdmin() {
   if (!findByUsername('admin')) {
+    const configuredPassword = (process.env.INITIAL_ADMIN_PASSWORD || '').trim();
+    if (!configuredPassword) {
+      throw new Error('INITIAL_ADMIN_PASSWORD must be set before the first server startup to create the administrator account.');
+    }
+    if (configuredPassword.length < 12) {
+      throw new Error('INITIAL_ADMIN_PASSWORD must be at least 12 characters long.');
+    }
     try {
-      const initialPassword = (process.env.INITIAL_ADMIN_PASSWORD || 'admin123').trim();
+      const initialPassword = configuredPassword;
       const passwordHash = await bcrypt.hash(initialPassword, 10);
       const user = {
         id: uuid(),
@@ -52,7 +59,6 @@ async function ensureDefaultAdmin() {
         role: 'admin',
         createdAt: new Date().toISOString(),
       };
-      usersCache.push(user);
       if (dbManager.type === 'json') {
         jsonDb.update((data) => {
           data.users = data.users || [];
@@ -65,13 +71,11 @@ async function ensureDefaultAdmin() {
           [user.id, user.username, user.passwordHash, user.role, user.createdAt]
         );
       }
-      if (initialPassword === 'admin123') {
-        console.warn('⚠️ [安全警报] 初始管理员账号已创建: 用户名 admin, 默认密码 admin123 (高风险！请尽快在后台修改密码！)');
-      } else {
-        console.log('[Users] 初始管理员账号已创建，密码已通过环境变量注入');
-      }
+      usersCache.push(user);
+      console.log('[Users] 初始管理员账号已创建，密码已通过环境变量注入');
     } catch (err) {
       console.error('[Users] 自动初始化 admin 失败:', err.message);
+      throw err;
     }
   }
 }
@@ -108,8 +112,6 @@ async function createUser(username, password, role) {
     createdAt: new Date().toISOString(),
   };
 
-  usersCache.push(user);
-
   // Write through to active DB backend
   if (dbManager.type === 'json') {
     jsonDb.update((data) => {
@@ -118,13 +120,12 @@ async function createUser(username, password, role) {
       return data;
     });
   } else {
-    dbManager
-      .execute(
-        'INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)',
-        [user.id, user.username, user.passwordHash, user.role, user.createdAt]
-      )
-      .catch((err) => console.error('[Users] DB insert user error:', err));
+    await dbManager.execute(
+      'INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)',
+      [user.id, user.username, user.passwordHash, user.role, user.createdAt]
+    );
   }
+  usersCache.push(user);
 
   return { id: user.id, username: user.username, role: user.role };
 }
@@ -140,24 +141,21 @@ async function updatePassword(userId, newPassword) {
   const user = findById(userId);
   if (!user) throw new Error('User not found');
   const passwordHash = await bcrypt.hash(newPassword, 10);
-  user.passwordHash = passwordHash;
-
-  // Disconnect any active real-time sync sessions for this user so they must re-authenticate
-  try {
-    const wsHub = require('./wsHub');
-    wsHub.disconnectUser(userId, 'password_changed');
-  } catch {}
-
   if (dbManager.type === 'json') {
     jsonDb.update((data) => {
       data.users = (data.users || []).map((u) => (u.id === userId ? { ...u, passwordHash } : u));
       return data;
     });
   } else {
-    dbManager
-      .execute('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, userId])
-      .catch((err) => console.error('[Users] DB update password error:', err));
+    await dbManager.execute('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, userId]);
   }
+  user.passwordHash = passwordHash;
+
+  // Disconnect active real-time sync sessions after the new password is durable.
+  try {
+    const wsHub = require('./wsHub');
+    wsHub.disconnectUser(userId, 'password_changed');
+  } catch {}
   return true;
 }
 
@@ -165,32 +163,33 @@ async function updateUser(userId, { password, role }) {
   const user = findById(userId);
   if (!user) throw new Error('User not found');
 
-  if (role && (role === 'admin' || role === 'user')) {
-    user.role = role;
-  }
+  const updated = { ...user };
+  if (role && (role === 'admin' || role === 'user')) updated.role = role;
 
   const passwordChanged = !!(password && password.trim());
   if (passwordChanged) {
-    user.passwordHash = await bcrypt.hash(password, 10);
-    try {
-      const wsHub = require('./wsHub');
-      wsHub.disconnectUser(userId, 'password_changed_by_admin');
-    } catch {}
+    updated.passwordHash = await bcrypt.hash(password, 10);
   }
 
   if (dbManager.type === 'json') {
     jsonDb.update((data) => {
-      data.users = (data.users || []).map((u) => (u.id === userId ? { ...user } : u));
+      data.users = (data.users || []).map((u) => (u.id === userId ? { ...updated } : u));
       return data;
     });
   } else {
-    dbManager
-      .execute('UPDATE users SET password_hash = ?, role = ? WHERE id = ?', [
-        user.passwordHash,
-        user.role,
-        userId,
-      ])
-      .catch((err) => console.error('[Users] DB update user error:', err));
+    await dbManager.execute('UPDATE users SET password_hash = ?, role = ? WHERE id = ?', [
+      updated.passwordHash,
+      updated.role,
+      userId,
+    ]);
+  }
+
+  Object.assign(user, updated);
+  if (passwordChanged) {
+    try {
+      const wsHub = require('./wsHub');
+      wsHub.disconnectUser(userId, 'password_changed_by_admin');
+    } catch {}
   }
 
   return { id: user.id, username: user.username, role: user.role, createdAt: user.createdAt };
@@ -205,19 +204,16 @@ function listAll() {
   }));
 }
 
-function remove(userId) {
-  usersCache = usersCache.filter((u) => u.id !== userId);
-
+async function remove(userId) {
   if (dbManager.type === 'json') {
     jsonDb.update((data) => {
       data.users = (data.users || []).filter((u) => u.id !== userId);
       return data;
     });
   } else {
-    dbManager
-      .execute('DELETE FROM users WHERE id = ?', [userId])
-      .catch((err) => console.error('[Users] DB delete user error:', err));
+    await dbManager.execute('DELETE FROM users WHERE id = ?', [userId]);
   }
+  usersCache = usersCache.filter((u) => u.id !== userId);
 }
 
 function hasAnyUser() {
