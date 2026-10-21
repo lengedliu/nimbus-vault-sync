@@ -51,8 +51,11 @@ if (JWT_SECRET_SOURCE === 'env') {
   console.log('[AUTH] JWT_SECRET 运行于内存临时高熵密钥模式。');
 }
 
-// Initialize database
-(async () => {
+const cloudBackup = require('./src/cloudBackup');
+const gitSync = require('./src/gitSync');
+
+// Initialize database and background maintenance tasks
+const dbBootstrapPromise = (async () => {
   try {
     await dbManager.init();
     await users.loadFromDb();
@@ -70,6 +73,19 @@ if (JWT_SECRET_SOURCE === 'env') {
     if (adminUser) {
       await vaultsStore.ensureDefaultVaults(adminUser.id);
     }
+
+    // 启动后台自动备份、Git 周期同步与过期回收站清理调度器
+    cloudBackup.startCloudBackupScheduler();
+    gitSync.startGitSyncScheduler();
+    const trashTimer = setInterval(() => {
+      try {
+        const allVaults = vaultsStore.getRawVaults ? vaultsStore.getRawVaults() : [];
+        for (const v of allVaults) {
+          storage.purgeExpiredTrash(v.id).catch(() => {});
+        }
+      } catch {}
+    }, 6 * 60 * 60 * 1000);
+    if (trashTimer.unref) trashTimer.unref();
   } catch (err) {
     console.error('[DB] Initial startup load error:', err);
   }
@@ -248,14 +264,16 @@ fnsHub.init(server);
 
 const scheme = usingTls ? 'https' : 'http';
 const wsScheme = usingTls ? 'wss' : 'ws';
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Nimbus server listening on ${scheme}://0.0.0.0:${PORT}`);
-  console.log(`Management dashboard: ${scheme}://0.0.0.0:${PORT}/admin`);
-  console.log(`WebSocket sync endpoint: ${wsScheme}://0.0.0.0:${PORT}/ws`);
-  console.log(`Data dir: ${DATA_DIR}`);
-  if (!usingTls) {
-    console.log('TLS not configured (TLS_CERT_PATH/TLS_KEY_PATH) — serving plain HTTP/WS.');
-  }
+dbBootstrapPromise.finally(() => {
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Nimbus server listening on ${scheme}://0.0.0.0:${PORT}`);
+    console.log(`Management dashboard: ${scheme}://0.0.0.0:${PORT}/admin`);
+    console.log(`WebSocket sync endpoint: ${wsScheme}://0.0.0.0:${PORT}/ws`);
+    console.log(`Data dir: ${DATA_DIR}`);
+    if (!usingTls) {
+      console.log('TLS not configured (TLS_CERT_PATH/TLS_KEY_PATH) — serving plain HTTP/WS.');
+    }
+  });
 });
 
 // 优雅关闭：容器/进程被停止时，先停止接受新连接、给在飞请求（比如正在流式

@@ -38,7 +38,11 @@ router.post('/create', requireAuth, asyncHandler(async (req, res) => {
   const currentToken = token || req.headers.authorization?.replace(/^Bearer\s+/i, '');
 
   let vaultName = 'Vault';
-  if (vaultId) {
+  if (vaultId && vaultId !== 'default') {
+    const isAdmin = req.user.role === 'admin';
+    if (!vaultsStore.hasReadAccess(req.user.id, vaultId, isAdmin)) {
+      return res.status(404).json({ error: 'Vault not found or access denied' });
+    }
     const v = vaultsStore.getById(vaultId);
     if (v) vaultName = v.name;
   }
@@ -82,8 +86,26 @@ router.post('/create', requireAuth, asyncHandler(async (req, res) => {
   });
 }));
 
+const pairLookupAttempts = new Map(); // ip -> { count, firstAttempt }
+
 // GET /api/pair/:code - Public (used by mobile landing page)
 router.get('/:code', (req, res) => {
+  const ip = req.ip || req.socket?.remoteAddress || '127.0.0.1';
+  const now = Date.now();
+  const rec = pairLookupAttempts.get(ip);
+  if (!rec || now - rec.firstAttempt > 60_000) {
+    if (pairLookupAttempts.size >= 2000) {
+      const oldest = pairLookupAttempts.keys().next().value;
+      if (oldest !== undefined) pairLookupAttempts.delete(oldest);
+    }
+    pairLookupAttempts.set(ip, { count: 1, firstAttempt: now });
+  } else {
+    if (rec.count >= 20) {
+      return res.status(429).json({ error: '请求过于频繁，请稍后再试' });
+    }
+    rec.count++;
+  }
+
   const data = pairing.getPairSession(req.params.code);
   if (!data) {
     return res.status(404).json({ error: '配对二维码已过期或无效，请在电脑端重新生成' });

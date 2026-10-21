@@ -1,47 +1,142 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const dns = require('node:dns').promises;
 const { VAULTS_DIR, DATA_DIR } = require('./config');
 const { getById: getVaultById } = require('./vaults');
 const storage = require('./storage');
 const JsonDb = require('./jsonDb');
+const { encryptField, decryptField } = require('./utils/crypto');
+const { isPrivateOrReservedIp } = require('./utils/ssrfGuard');
 
 const cloudConfigDb = new JsonDb(path.join(DATA_DIR, 'cloud-backup-config.json'), { vaults: {} });
 
+const DEFAULT_CLOUD_CONFIG = {
+  enabled: false,
+  provider: 's3', // 's3' | 'webdav'
+  autoBackup: false,
+  backupIntervalHours: 24,
+  retentionCount: 10,
+  s3: {
+    endpoint: '', // e.g. https://s3.us-east-1.amazonaws.com or https://oss-cn-hangzhou.aliyuncs.com
+    region: 'us-east-1',
+    bucket: '',
+    accessKeyId: '',
+    secretAccessKey: '',
+    pathPrefix: 'nimbus-backups',
+  },
+  webdav: {
+    url: '', // e.g. https://dav.jianguoyun.com/dav/ or https://nas.local:5006/dav/
+    username: '',
+    password: '',
+    pathPrefix: '/nimbus-backups',
+  },
+  lastBackupAt: null,
+  lastBackupStatus: null, // { success: boolean, message: string, time: string }
+};
+
 function getVaultCloudConfig(vaultId) {
   const db = cloudConfigDb.read();
-  return (db.vaults && db.vaults[vaultId]) || {
-    enabled: false,
-    provider: 's3', // 's3' | 'webdav'
-    autoBackup: false,
-    backupIntervalHours: 24,
-    retentionCount: 10,
+  const raw = (db.vaults && db.vaults[vaultId]) || null;
+  if (!raw) {
+    return JSON.parse(JSON.stringify(DEFAULT_CLOUD_CONFIG));
+  }
+  return {
+    ...DEFAULT_CLOUD_CONFIG,
+    ...raw,
     s3: {
-      endpoint: '', // e.g. https://s3.us-east-1.amazonaws.com or https://oss-cn-hangzhou.aliyuncs.com
-      region: 'us-east-1',
-      bucket: '',
-      accessKeyId: '',
-      secretAccessKey: '',
-      pathPrefix: 'nimbus-backups',
+      ...DEFAULT_CLOUD_CONFIG.s3,
+      ...(raw.s3 || {}),
+      secretAccessKey: decryptField(raw.s3?.secretAccessKey || ''),
     },
     webdav: {
-      url: '', // e.g. https://dav.jianguoyun.com/dav/ or https://nas.local:5006/dav/
-      username: '',
-      password: '',
-      pathPrefix: '/nimbus-backups',
+      ...DEFAULT_CLOUD_CONFIG.webdav,
+      ...(raw.webdav || {}),
+      password: decryptField(raw.webdav?.password || ''),
     },
-    lastBackupAt: null,
-    lastBackupStatus: null, // { success: boolean, message: string, time: string }
   };
 }
 
 function saveVaultCloudConfig(vaultId, config) {
+  const current = getVaultCloudConfig(vaultId);
+  const incomingS3 = config.s3 || {};
+  const incomingWebdav = config.webdav || {};
+
+  const s3Secret =
+    incomingS3.secretAccessKey === '********' || incomingS3.secretAccessKey === undefined
+      ? current.s3.secretAccessKey
+      : incomingS3.secretAccessKey;
+
+  const webdavPass =
+    incomingWebdav.password === '********' || incomingWebdav.password === undefined
+      ? current.webdav.password
+      : incomingWebdav.password;
+
+  const merged = {
+    ...current,
+    ...config,
+    s3: {
+      ...current.s3,
+      ...incomingS3,
+      secretAccessKey: s3Secret || '',
+    },
+    webdav: {
+      ...current.webdav,
+      ...incomingWebdav,
+      password: webdavPass || '',
+    },
+  };
+
+  const toPersist = {
+    ...merged,
+    s3: {
+      ...merged.s3,
+      secretAccessKey: encryptField(merged.s3.secretAccessKey),
+    },
+    webdav: {
+      ...merged.webdav,
+      password: encryptField(merged.webdav.password),
+    },
+  };
+
   cloudConfigDb.update((data) => {
     if (!data.vaults) data.vaults = {};
-    data.vaults[vaultId] = config;
+    data.vaults[vaultId] = toPersist;
     return data;
   });
-  return config;
+  return merged;
+}
+
+async function assertSafeCloudUrl(targetUrl) {
+  if (!targetUrl || typeof targetUrl !== 'string') {
+    throw new Error('云存储目标 URL 不能为空');
+  }
+  let parsed;
+  try {
+    parsed = new URL(targetUrl);
+  } catch {
+    throw new Error(`无效的云存储 URL 格式: "${targetUrl}"`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('云存储 URL 仅支持 http:// 或 https:// 协议');
+  }
+  if (process.env.ALLOW_PRIVATE_CLOUD_BACKUP === 'true') {
+    return parsed;
+  }
+  let addresses;
+  try {
+    addresses = await dns.lookup(parsed.hostname, { all: true });
+  } catch (e) {
+    throw new Error(`无法解析云存储主机 "${parsed.hostname}": ${e.message}`);
+  }
+  for (const { address } of addresses) {
+    if (isPrivateOrReservedIp(address)) {
+      throw new Error(
+        `拒绝连接私有或保留内网地址 (${address})。若确需连接局域网自建 NAS/MinIO，请配置环境变量 ALLOW_PRIVATE_CLOUD_BACKUP=true`
+      );
+    }
+  }
+  return parsed;
 }
 
 // --------------------------- AWS SigV4 for S3 ---------------------------
@@ -62,7 +157,7 @@ function getSignatureKey(key, dateStamp, regionName, serviceName) {
 }
 
 async function s3Request({ method, url, headers = {}, body = null, accessKeyId, secretAccessKey, region = 'us-east-1' }) {
-  const parsedUrl = new URL(url);
+  const parsedUrl = await assertSafeCloudUrl(url);
   const host = parsedUrl.host;
   const canonicalUri = parsedUrl.pathname || '/';
   const canonicalQuery = parsedUrl.search ? parsedUrl.search.substring(1).split('&').sort().join('&') : '';
@@ -182,6 +277,7 @@ async function testWebDAVConfig(webdavConfig) {
   if (!url) throw new Error('WebDAV 服务端 URL 不能为空');
 
   const cleanUrl = url.replace(/\/+$/, '');
+  await assertSafeCloudUrl(cleanUrl);
   const headers = {
     'Depth': '0',
   };
@@ -206,6 +302,7 @@ async function uploadToWebDAV(webdavConfig, remotePath, buffer) {
   const { url, username, password } = webdavConfig;
   const cleanUrl = url.replace(/\/+$/, '');
   const targetUrl = `${cleanUrl}/${remotePath.replace(/^\/+/, '')}`;
+  await assertSafeCloudUrl(targetUrl);
 
   const headers = {
     'Content-Type': 'application/zip',
@@ -293,10 +390,38 @@ async function runVaultCloudBackup(vaultId, label = '多云容灾备份') {
   }
 }
 
+let cloudBackupScheduleTimer = null;
+
+function startCloudBackupScheduler() {
+  if (cloudBackupScheduleTimer) clearInterval(cloudBackupScheduleTimer);
+  cloudBackupScheduleTimer = setInterval(async () => {
+    try {
+      const db = cloudConfigDb.read();
+      const vaultsMap = db.vaults || {};
+      const now = Date.now();
+      for (const vaultId of Object.keys(vaultsMap)) {
+        const cfg = getVaultCloudConfig(vaultId);
+        if (!cfg.enabled || !cfg.autoBackup) continue;
+        const intervalHours = Math.max(1, Number(cfg.backupIntervalHours) || 24);
+        const lastMs = cfg.lastBackupAt ? new Date(cfg.lastBackupAt).getTime() : 0;
+        if (!lastMs || now - lastMs >= intervalHours * 3600 * 1000) {
+          await runVaultCloudBackup(vaultId, '定时自动多云容灾备份').catch((e) =>
+            console.warn(`[CloudBackup] Scheduled backup failed for ${vaultId}:`, e.message)
+          );
+        }
+      }
+    } catch (e) {
+      console.warn('[CloudBackup] Scheduler loop error:', e.message);
+    }
+  }, 15 * 60 * 1000);
+  if (cloudBackupScheduleTimer.unref) cloudBackupScheduleTimer.unref();
+}
+
 module.exports = {
   getVaultCloudConfig,
   saveVaultCloudConfig,
   testS3Config,
   testWebDAVConfig,
   runVaultCloudBackup,
+  startCloudBackupScheduler,
 };

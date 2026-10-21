@@ -47,6 +47,48 @@
       "userId": "u_perm_member",
       "permission": "read-write",
       "createdAt": 1791545093638
+    },
+    {
+      "id": "911440fc-41ae-4323-96e2-cc778abc6e50",
+      "vaultId": "b9363631-5ff8-4ab0-921d-3ac2b7c9e25b",
+      "userId": "u_perm_member",
+      "permission": "read-write",
+      "createdAt": 1792581916576
+    },
+    {
+      "id": "9e524df2-4c23-4f36-aed1-9747f003b7e8",
+      "vaultId": "ef4b09b4-2950-4ab2-bbff-39a641516892",
+      "userId": "u_perm_member",
+      "permission": "read-write",
+      "createdAt": 1792585217586
+    },
+    {
+      "id": "f6f71ad7-db42-4ff2-a45b-a24fe765f09a",
+      "vaultId": "0dea149e-0c58-45a0-9431-6ec1636679a5",
+      "userId": "u_perm_member",
+      "permission": "read-write",
+      "createdAt": 1792588641246
+    },
+    {
+      "id": "e60c17b1-d7a6-4641-b77e-34da6f30182b",
+      "vaultId": "09e66417-2f72-4c1f-90a8-53961f97322c",
+      "userId": "u_perm_member",
+      "permission": "read-write",
+      "createdAt": 1792590717418
+    },
+    {
+      "id": "4ceb071b-685e-4265-81f1-128223ab6aac",
+      "vaultId": "1d32efc7-33b3-4b4e-ab77-cdf8090f7478",
+      "userId": "u_perm_member",
+      "permission": "read-write",
+      "createdAt": 1792591716887
+    },
+    {
+      "id": "037d4ec4-3bdf-43d8-972a-39a853a6216d",
+      "vaultId": "b35bc83f-8abb-457f-b8cf-4bf08b4c6f90",
+      "userId": "u_perm_member",
+      "permission": "read-write",
+      "createdAt": 1792593358037
     }
   ]
 }

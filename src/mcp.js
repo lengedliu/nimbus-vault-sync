@@ -8,6 +8,7 @@ const permissions = require('./permissions');
 const sharesStore = require('./shares');
 const fnsHub = require('./wsHub');
 const gitSync = require('./gitSync');
+const syncRules = require('./syncRules');
 const webhooks = require('./webhooks');
 const { isPrivateOrReservedIp } = require('./utils/ssrfGuard');
 const { VERSION } = require('./config');
@@ -475,13 +476,24 @@ function buildMcpServer(user, defaultVaultId) {
     async ({ vaultId, path: notePath, content, baseHash }) => {
       const id = resolveWritableVaultId(vaultId);
       const cleanPath = normalizeVaultPath(notePath);
-      const manifest = storage.getManifest(id) || {};
-      const actualBaseHash = baseHash || manifest[cleanPath]?.hash;
+      if (syncRules.isPathIgnored(id, cleanPath)) {
+        throw new Error(`Path "${cleanPath}" is blocked by vault synchronization ignore rules.`);
+      }
       const buffer = Buffer.from(content, 'utf8');
-      const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash: actualBaseHash });
+      const result = await storage.withFileLock(id, cleanPath, async () => {
+        const manifest = storage.getManifest(id) || {};
+        const actualBaseHash = baseHash || manifest[cleanPath]?.hash;
+        return storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash: actualBaseHash });
+      });
+
+      if (!result.written && result.serverWin) {
+        return textResult(
+          `Conflict detected (server_win): "${cleanPath}" was updated on server since last read. Server version was preserved.`
+        );
+      }
 
       if (!result.written && result.conflict) {
-        fnsHub.broadcastFileChange(id, result.conflict, { currentHash: result.currentHash }, user.id, true);
+        fnsHub.broadcastFileChange(id, result.conflict, { currentHash: result.conflictHash || storage.sha256(buffer) }, user.id, null);
         return textResult(
           `Conflict detected: "${cleanPath}" was updated on server since last read. Your content was saved separately as "${result.conflict}".`
         );
@@ -506,42 +518,54 @@ function buildMcpServer(user, defaultVaultId) {
     async ({ vaultId, path: notePath, content, heading, withTimestamp = false, ensureNewline = true }) => {
       const id = resolveWritableVaultId(vaultId);
       const cleanPath = normalizeVaultPath(notePath);
-      const buf = storage.readFile(id, cleanPath);
-      let originalText = buf ? buf.toString('utf8') : '';
-
-      let textToAppend = content;
-      if (withTimestamp) {
-        const nowStr = new Date().toLocaleString('zh-CN', { hour12: false });
-        textToAppend = `- [${nowStr}] ${content}`;
+      if (syncRules.isPathIgnored(id, cleanPath)) {
+        throw new Error(`Path "${cleanPath}" is blocked by vault synchronization ignore rules.`);
       }
 
-      let newText = '';
-      if (!buf) {
-        // New file
-        if (heading) {
-          newText = `${heading}\n\n${textToAppend}\n`;
-        } else {
-          newText = `${textToAppend}\n`;
-        }
-      } else if (heading) {
-        // Locate heading
-        const headingRegex = new RegExp(`(^|\\n)(${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\n)`, 'i');
-        const match = originalText.match(headingRegex);
-        if (match) {
-          const insertPos = match.index + match[0].length;
-          newText = originalText.slice(0, insertPos) + `${textToAppend}\n` + originalText.slice(insertPos);
-        } else {
-          newText = originalText.trimEnd() + `\n\n${heading}\n\n${textToAppend}\n`;
-        }
-      } else {
-        const prefix = ensureNewline && originalText.length > 0 && !originalText.endsWith('\n') ? '\n\n' : '\n';
-        newText = originalText.trimEnd() + prefix + textToAppend + '\n';
-      }
+      const { result, buffer } = await storage.withFileLock(id, cleanPath, async () => {
+        const buf = storage.readFile(id, cleanPath);
+        let originalText = buf ? buf.toString('utf8') : '';
 
-      const manifest = storage.getManifest(id) || {};
-      const baseHash = manifest[cleanPath]?.hash;
-      const buffer = Buffer.from(newText, 'utf8');
-      const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash });
+        let textToAppend = content;
+        if (withTimestamp) {
+          const nowStr = new Date().toLocaleString('zh-CN', { hour12: false });
+          textToAppend = `- [${nowStr}] ${content}`;
+        }
+
+        let newText = '';
+        if (!buf) {
+          if (heading) {
+            newText = `${heading}\n\n${textToAppend}\n`;
+          } else {
+            newText = `${textToAppend}\n`;
+          }
+        } else if (heading) {
+          const headingRegex = new RegExp(`(^|\\n)(${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\n)`, 'i');
+          const match = originalText.match(headingRegex);
+          if (match) {
+            const insertPos = match.index + match[0].length;
+            newText = originalText.slice(0, insertPos) + `${textToAppend}\n` + originalText.slice(insertPos);
+          } else {
+            newText = originalText.trimEnd() + `\n\n${heading}\n\n${textToAppend}\n`;
+          }
+        } else {
+          const prefix = ensureNewline && originalText.length > 0 && !originalText.endsWith('\n') ? '\n\n' : '\n';
+          newText = originalText.trimEnd() + prefix + textToAppend + '\n';
+        }
+
+        const baseHash = buf ? storage.sha256(buf) : undefined;
+        const outBuf = Buffer.from(newText, 'utf8');
+        const writeRes = await storage.writeFileAsync(id, cleanPath, outBuf, { mtime: Date.now(), baseHash });
+        return { result: writeRes, buffer: outBuf };
+      });
+
+      if (!result.written && result.serverWin) {
+        return textResult(`Conflict detected (server_win) on "${cleanPath}". Server version was preserved.`);
+      }
+      if (!result.written && result.conflict) {
+        fnsHub.broadcastFileChange(id, result.conflict, { currentHash: result.conflictHash || storage.sha256(buffer) }, user.id, null);
+        return textResult(`Conflict detected on "${cleanPath}". Appended version saved as "${result.conflict}".`);
+      }
 
       fnsHub.broadcastFileChange(id, cleanPath, result, user.id);
       return textResult(`Successfully appended content to "${cleanPath}". New size: ${buffer.length} bytes. Synced to all clients.`);
@@ -560,31 +584,45 @@ function buildMcpServer(user, defaultVaultId) {
     async ({ vaultId, path: notePath, content, withTimestamp = false }) => {
       const id = resolveWritableVaultId(vaultId);
       const cleanPath = normalizeVaultPath(notePath);
-      const buf = storage.readFile(id, cleanPath);
-      const originalText = buf ? buf.toString('utf8') : '';
-
-      let textToPrepend = content;
-      if (withTimestamp) {
-        const nowStr = new Date().toLocaleString('zh-CN', { hour12: false });
-        textToPrepend = `> **[${nowStr}]** ${content}\n\n`;
-      } else if (!textToPrepend.endsWith('\n')) {
-        textToPrepend += '\n\n';
+      if (syncRules.isPathIgnored(id, cleanPath)) {
+        throw new Error(`Path "${cleanPath}" is blocked by vault synchronization ignore rules.`);
       }
 
-      let newText = '';
-      const fmMatch = originalText.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
-      if (fmMatch) {
-        const fm = fmMatch[0];
-        const rest = originalText.slice(fm.length);
-        newText = fm + textToPrepend + rest;
-      } else {
-        newText = textToPrepend + originalText;
-      }
+      const { result, buffer } = await storage.withFileLock(id, cleanPath, async () => {
+        const buf = storage.readFile(id, cleanPath);
+        const originalText = buf ? buf.toString('utf8') : '';
 
-      const manifest = storage.getManifest(id) || {};
-      const baseHash = manifest[cleanPath]?.hash;
-      const buffer = Buffer.from(newText, 'utf8');
-      const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash });
+        let textToPrepend = content;
+        if (withTimestamp) {
+          const nowStr = new Date().toLocaleString('zh-CN', { hour12: false });
+          textToPrepend = `> **[${nowStr}]** ${content}\n\n`;
+        } else if (!textToPrepend.endsWith('\n')) {
+          textToPrepend += '\n\n';
+        }
+
+        let newText = '';
+        const fmMatch = originalText.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
+        if (fmMatch) {
+          const fm = fmMatch[0];
+          const rest = originalText.slice(fm.length);
+          newText = fm + textToPrepend + rest;
+        } else {
+          newText = textToPrepend + originalText;
+        }
+
+        const baseHash = buf ? storage.sha256(buf) : undefined;
+        const outBuf = Buffer.from(newText, 'utf8');
+        const writeRes = await storage.writeFileAsync(id, cleanPath, outBuf, { mtime: Date.now(), baseHash });
+        return { result: writeRes, buffer: outBuf };
+      });
+
+      if (!result.written && result.serverWin) {
+        return textResult(`Conflict detected (server_win) on "${cleanPath}". Server version was preserved.`);
+      }
+      if (!result.written && result.conflict) {
+        fnsHub.broadcastFileChange(id, result.conflict, { currentHash: result.conflictHash || storage.sha256(buffer) }, user.id, null);
+        return textResult(`Conflict detected on "${cleanPath}". Prepended version saved as "${result.conflict}".`);
+      }
 
       fnsHub.broadcastFileChange(id, cleanPath, result, user.id);
       return textResult(`Successfully prepended content to "${cleanPath}". Synced to all clients.`);
@@ -604,25 +642,39 @@ function buildMcpServer(user, defaultVaultId) {
     async ({ vaultId, path: notePath, search, replace, replaceAll = false }) => {
       const id = resolveWritableVaultId(vaultId);
       const cleanPath = normalizeVaultPath(notePath);
-      const buf = storage.readFile(id, cleanPath);
-      if (buf === null) throw new Error(`Note "${cleanPath}" not found.`);
-
-      const text = buf.toString('utf8');
-      if (!text.includes(search)) {
-        throw new Error(`Target search text was not found in "${cleanPath}".`);
+      if (syncRules.isPathIgnored(id, cleanPath)) {
+        throw new Error(`Path "${cleanPath}" is blocked by vault synchronization ignore rules.`);
       }
 
-      let newText = '';
-      if (replaceAll) {
-        newText = text.split(search).join(replace);
-      } else {
-        newText = text.replace(search, replace);
-      }
+      const { result, buffer } = await storage.withFileLock(id, cleanPath, async () => {
+        const buf = storage.readFile(id, cleanPath);
+        if (buf === null) throw new Error(`Note "${cleanPath}" not found.`);
 
-      const manifest = storage.getManifest(id) || {};
-      const baseHash = manifest[cleanPath]?.hash;
-      const buffer = Buffer.from(newText, 'utf8');
-      const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash });
+        const text = buf.toString('utf8');
+        if (!text.includes(search)) {
+          throw new Error(`Target search text was not found in "${cleanPath}".`);
+        }
+
+        let newText = '';
+        if (replaceAll) {
+          newText = text.split(search).join(replace);
+        } else {
+          newText = text.replace(search, replace);
+        }
+
+        const baseHash = storage.sha256(buf);
+        const outBuf = Buffer.from(newText, 'utf8');
+        const writeRes = await storage.writeFileAsync(id, cleanPath, outBuf, { mtime: Date.now(), baseHash });
+        return { result: writeRes, buffer: outBuf };
+      });
+
+      if (!result.written && result.serverWin) {
+        return textResult(`Conflict detected (server_win) on "${cleanPath}". Server version was preserved.`);
+      }
+      if (!result.written && result.conflict) {
+        fnsHub.broadcastFileChange(id, result.conflict, { currentHash: result.conflictHash || storage.sha256(buffer) }, user.id, null);
+        return textResult(`Conflict detected on "${cleanPath}". Patched version saved as "${result.conflict}".`);
+      }
 
       fnsHub.broadcastFileChange(id, cleanPath, result, user.id);
       return textResult(`Successfully patched "${cleanPath}". Replacement applied and synced.`);
@@ -642,6 +694,9 @@ function buildMcpServer(user, defaultVaultId) {
     async ({ vaultId, path: filePath, contentBase64, sourceUrl, overwrite = true }) => {
       const id = resolveWritableVaultId(vaultId);
       const cleanPath = normalizeVaultPath(filePath);
+      if (syncRules.isPathIgnored(id, cleanPath)) {
+        throw new Error(`Path "${cleanPath}" is blocked by vault synchronization ignore rules.`);
+      }
       const manifest = storage.getManifest(id) || {};
 
       if (manifest[cleanPath] && !overwrite) {
@@ -662,7 +717,9 @@ function buildMcpServer(user, defaultVaultId) {
         throw new Error('Either contentBase64 or sourceUrl must be provided to upload an attachment.');
       }
 
-      const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now() });
+      const result = await storage.withFileLock(id, cleanPath, async () => {
+        return storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now() });
+      });
       fnsHub.broadcastFileChange(id, cleanPath, result, user.id);
 
       const fileName = cleanPath.split('/').pop() || cleanPath;
@@ -758,9 +815,14 @@ function buildMcpServer(user, defaultVaultId) {
         // 走到这一步才是真的要创建文件——这里才要求写权限，只读协作者查看一篇
         // 已经存在的日记不受影响，只有"需要新建"这个动作才会被拦下来。
         resolveWritableVaultId(vaultId);
+        if (syncRules.isPathIgnored(id, cleanPath)) {
+          throw new Error(`Path "${cleanPath}" is blocked by vault synchronization ignore rules.`);
+        }
         const initialContent = `# ${targetDate}\n\n## 📝 记录\n\n`;
         const buffer = Buffer.from(initialContent, 'utf8');
-        const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now() });
+        const result = await storage.withFileLock(id, cleanPath, async () => {
+          return storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now() });
+        });
         fnsHub.broadcastFileChange(id, cleanPath, result, user.id);
         return jsonResult({
           created: true,
@@ -814,32 +876,47 @@ function buildMcpServer(user, defaultVaultId) {
 
       const rawNotePath = targetFolder ? `${targetFolder}/${targetDate}.md` : `${targetDate}.md`;
       const cleanPath = normalizeVaultPath(rawNotePath);
-      const buf = storage.readFile(id, cleanPath);
-      let originalText = buf ? buf.toString('utf8') : `# ${targetDate}\n\n`;
-
-      let entry = content;
-      if (withTimestamp) {
-        const timeStr = new Date().toLocaleTimeString('zh-CN', { hour12: false });
-        entry = `- [${timeStr}] ${content}`;
+      if (syncRules.isPathIgnored(id, cleanPath)) {
+        throw new Error(`Path "${cleanPath}" is blocked by vault synchronization ignore rules.`);
       }
 
-      let newText = '';
-      if (heading) {
-        const headingRegex = new RegExp(`(^|\\n)(${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\n)`, 'i');
-        const match = originalText.match(headingRegex);
-        if (match) {
-          const insertPos = match.index + match[0].length;
-          newText = originalText.slice(0, insertPos) + `${entry}\n` + originalText.slice(insertPos);
-        } else {
-          newText = originalText.trimEnd() + `\n\n${heading}\n\n${entry}\n`;
+      const { result, buffer } = await storage.withFileLock(id, cleanPath, async () => {
+        const buf = storage.readFile(id, cleanPath);
+        let originalText = buf ? buf.toString('utf8') : `# ${targetDate}\n\n`;
+
+        let entry = content;
+        if (withTimestamp) {
+          const timeStr = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+          entry = `- [${timeStr}] ${content}`;
         }
-      } else {
-        newText = originalText.trimEnd() + `\n\n${entry}\n`;
-      }
 
-      const baseHash = manifest[cleanPath]?.hash;
-      const buffer = Buffer.from(newText, 'utf8');
-      const result = await storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash });
+        let newText = '';
+        if (heading) {
+          const headingRegex = new RegExp(`(^|\\n)(${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\n)`, 'i');
+          const match = originalText.match(headingRegex);
+          if (match) {
+            const insertPos = match.index + match[0].length;
+            newText = originalText.slice(0, insertPos) + `${entry}\n` + originalText.slice(insertPos);
+          } else {
+            newText = originalText.trimEnd() + `\n\n${heading}\n\n${entry}\n`;
+          }
+        } else {
+          newText = originalText.trimEnd() + `\n\n${entry}\n`;
+        }
+
+        const baseHash = buf ? storage.sha256(buf) : undefined;
+        const outBuf = Buffer.from(newText, 'utf8');
+        const writeRes = await storage.writeFileAsync(id, cleanPath, outBuf, { mtime: Date.now(), baseHash });
+        return { result: writeRes, buffer: outBuf };
+      });
+
+      if (!result.written && result.serverWin) {
+        return textResult(`Conflict detected (server_win) on "${cleanPath}". Server version was preserved.`);
+      }
+      if (!result.written && result.conflict) {
+        fnsHub.broadcastFileChange(id, result.conflict, { currentHash: result.conflictHash || storage.sha256(buffer) }, user.id, null);
+        return textResult(`Conflict detected on "${cleanPath}". Appended version saved as "${result.conflict}".`);
+      }
 
       fnsHub.broadcastFileChange(id, cleanPath, result, user.id);
       return textResult(`Appended to Daily Note "${cleanPath}". Synced to Obsidian.`);
@@ -1001,22 +1078,20 @@ function buildMcpServer(user, defaultVaultId) {
       const id = resolveWritableVaultId(vaultId);
       const cleanOld = normalizeVaultPath(oldPath);
       const cleanNew = normalizeVaultPath(newPath);
-      const buf = storage.readFile(id, cleanOld);
-      if (buf === null) throw new Error(`Source note "${cleanOld}" does not exist.`);
-
-      const manifest = storage.getManifest(id) || {};
-      if (manifest[cleanNew] && !overwrite) {
-        throw new Error(`Destination "${cleanNew}" already exists. Set overwrite: true to replace.`);
+      if (syncRules.isPathIgnored(id, cleanNew)) {
+        throw new Error(`Destination path "${cleanNew}" is blocked by vault synchronization ignore rules.`);
       }
 
-      // Write to new path
-      const result = await storage.writeFileAsync(id, cleanNew, buf, { mtime: Date.now() });
-      // Delete old path
-      await storage.deleteFileAsync(id, cleanOld);
+      const moveRes = await storage.withDualFileLock(id, cleanOld, cleanNew, async () => {
+        return storage.moveVaultFileAsync(id, cleanOld, cleanNew, { overwrite });
+      });
+      if (!moveRes.ok) {
+        throw new Error(moveRes.error || `Failed to move "${cleanOld}" to "${cleanNew}".`);
+      }
 
       // Broadcast both operations
       fnsHub.broadcastFileDelete(id, cleanOld, user.id);
-      fnsHub.broadcastFileChange(id, cleanNew, result, user.id);
+      fnsHub.broadcastFileChange(id, cleanNew, { currentHash: moveRes.hash }, user.id);
 
       return textResult(`Successfully moved "${cleanOld}" to "${cleanNew}". Synced to all clients.`);
     }
@@ -1032,7 +1107,9 @@ function buildMcpServer(user, defaultVaultId) {
     async ({ vaultId, path: notePath }) => {
       const id = resolveWritableVaultId(vaultId);
       const cleanPath = normalizeVaultPath(notePath);
-      const ok = await storage.deleteFileAsync(id, cleanPath);
+      const ok = await storage.withFileLock(id, cleanPath, async () => {
+        return storage.deleteFileAsync(id, cleanPath);
+      });
       if (ok) {
         fnsHub.broadcastFileDelete(id, cleanPath, user.id);
         webhooks.trigger('file.deleted', {

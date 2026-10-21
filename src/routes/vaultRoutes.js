@@ -5,6 +5,7 @@ const vaultMembers = require('../vaultMembers');
 const users = require('../users');
 const storage = require('../storage');
 const deltaSync = require('../deltaSync');
+const syncRules = require('../syncRules');
 const { asyncHandler } = require('../utils/asyncHandler');
 const { requireReadAccess, requireOwnerAccess } = require('../permissions');
 
@@ -36,7 +37,13 @@ router.get('/:vaultId/manifest', asyncHandler(async (req, res) => {
   if (!requireReadAccess(req, res)) return;
   const manifest = await storage.getManifestAsync(vaultId);
   const cursor = deltaSync.getLatestCursor(vaultId);
-  res.json({ manifest, cursor, latestCursor: cursor });
+  const rules = syncRules.getRules(vaultId);
+  res.json({
+    manifest,
+    cursor,
+    latestCursor: cursor,
+    ignorePatterns: rules && Array.isArray(rules.ignorePatterns) ? rules.ignorePatterns : [],
+  });
 }));
 
 // Incremental Delta Sync: return only changes since the given cursor
@@ -46,6 +53,8 @@ router.get('/:vaultId/changes', asyncHandler(async (req, res) => {
   const since = parseInt(req.query.since || '0', 10);
   const limit = parseInt(req.query.limit || '500', 10);
   const compact = req.query.compact === 'true' || req.query.compact === '1';
+  const rules = syncRules.getRules(vaultId);
+  const ignorePatterns = rules && Array.isArray(rules.ignorePatterns) ? rules.ignorePatterns : [];
   
   const result = await deltaSync.getChanges(vaultId, since, limit, { compact });
   if (result.fullSyncRequired) {
@@ -56,11 +65,13 @@ router.get('/:vaultId/changes', asyncHandler(async (req, res) => {
       latestCursor: result.cursor,
       manifest,
       reason: result.reason,
+      ignorePatterns,
     });
   }
   res.json({
     full: false,
     ...result,
+    ignorePatterns,
   });
 }));
 

@@ -31,18 +31,21 @@ router.get('/:vaultId/history/:versionId', (req, res) => {
 });
 
 // POST /api/vaults/:vaultId/history/:versionId/restore -> makes this version the current content
-router.post('/:vaultId/history/:versionId/restore', (req, res) => {
+router.post('/:vaultId/history/:versionId/restore', asyncHandler(async (req, res) => {
   if (!requireWriteAccess(req, res)) return;
   const { vaultId, versionId } = req.params;
   const result = storage.readHistoryVersion(vaultId, versionId);
   if (!result) return res.status(404).json({ error: 'Version not found' });
 
-  const writeResult = storage.writeFile(vaultId, result.entry.path, result.buffer, { mtime: Date.now() });
+  const writeResult = await storage.withFileLock(vaultId, result.entry.path, async () => {
+    return storage.writeFileAsync(vaultId, result.entry.path, result.buffer, { mtime: Date.now() });
+  });
   if (writeResult.written) {
-    req.app.get('fnsHub').broadcastFileChange(vaultId, result.entry.path, writeResult, req.user.id, true);
+    req.app.get('fnsHub').broadcastFileChange(vaultId, result.entry.path, writeResult, req.user.id, null);
   }
-  res.json({ path: result.entry.path, ...writeResult });
-});
+  const { changePromise, ...cleanWriteResult } = writeResult;
+  res.json({ path: result.entry.path, ...cleanWriteResult });
+}));
 
 // ---------------------------------- trash ---------------------------------------
 
@@ -72,7 +75,7 @@ router.post(
       const manifest = await storage.getManifestAsync(vaultId);
       const meta = manifest ? manifest[restoredPath] : null;
       if (meta) {
-        hub.broadcastFileChange(vaultId, restoredPath, { currentHash: meta.hash }, req.user.id, true);
+        hub.broadcastFileChange(vaultId, restoredPath, { currentHash: meta.hash }, req.user.id, null);
       }
     }
     res.json({ restored: restoredPath });
@@ -87,7 +90,7 @@ router.post(
     const result = await storage.restoreAllTrash(vaultId);
     const hub = req.app.get('fnsHub');
     if (hub && result.restoredPaths.length > 0) {
-      hub.broadcastBatchFileChange(vaultId, result.restoredPaths, req.user.id, true);
+      hub.broadcastBatchFileChange(vaultId, result.restoredPaths, req.user.id, null);
     }
     res.json(result);
   })
@@ -105,7 +108,7 @@ router.post(
     const result = await storage.restoreBatchTrash(vaultId, ids);
     const hub = req.app.get('fnsHub');
     if (hub && result.restoredPaths.length > 0) {
-      hub.broadcastBatchFileChange(vaultId, result.restoredPaths, req.user.id, true);
+      hub.broadcastBatchFileChange(vaultId, result.restoredPaths, req.user.id, null);
     }
     res.json(result);
   })
@@ -184,7 +187,21 @@ router.get('/:vaultId/rules', (req, res) => {
 
 router.put('/:vaultId/rules', (req, res) => {
   if (!requireWriteAccess(req, res)) return;
-  const updated = syncRules.saveRules(req.params.vaultId, req.body || {});
+  const vaultId = req.params.vaultId;
+  const updated = syncRules.saveRules(vaultId, req.body || {});
+  const hub = req.app.get('fnsHub');
+  if (hub && hub.rooms) {
+    const room = hub.rooms.get(vaultId);
+    if (room && room.size > 0) {
+      const json = JSON.stringify({
+        type: 'rules_updated',
+        ignorePatterns: Array.isArray(updated.ignorePatterns) ? updated.ignorePatterns : [],
+      });
+      for (const client of room) {
+        hub._sendRaw(client.ws, json);
+      }
+    }
+  }
   res.json({ rules: updated });
 });
 

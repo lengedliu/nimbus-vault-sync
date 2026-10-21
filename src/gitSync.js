@@ -470,6 +470,10 @@ async function pull(vaultId) {
     return { ok: false, error: '未配置远端 Git 仓库地址' };
   }
 
+  const storage = require('./storage');
+  const deltaSync = require('./deltaSync');
+  const beforeManifest = { ...((await storage.getManifestAsync(vaultId)) || {}) };
+
   await updateRemoteUrl(vaultId, config);
   const branch = config.branch || 'main';
 
@@ -478,18 +482,56 @@ async function pull(vaultId) {
     return { ok: false, error: maskSecrets(pullRes.stderr || pullRes.stdout) };
   }
 
-  // 远端拉取成功后，刷新 Manifest 缓存、倒排索引并向所有在线客户端广播变更
+  // 远端拉取成功后，比对前后 Manifest 差集，刷新缓存、写入 deltaSync 增量日志、更新倒排索引并广播变更
   try {
-    const storage = require('./storage');
     storage.invalidateManifestCache(vaultId);
-    const newManifest = await storage.getManifestAsync(vaultId, true);
+    const newManifest = (await storage.getManifestAsync(vaultId, true)) || {};
+    const allPaths = new Set([...Object.keys(beforeManifest), ...Object.keys(newManifest)]);
+    const deltaChanges = [];
+    const wsChanges = [];
+
+    for (const relPath of allPaths) {
+      const prev = beforeManifest[relPath];
+      const next = newManifest[relPath];
+      if (prev && !next) {
+        storage.invalidateContentCacheEntry(vaultId, relPath);
+        deltaChanges.push({
+          path: relPath,
+          action: 'DELETE',
+          size: 0,
+          mtime: Date.now(),
+        });
+        wsChanges.push({ action: 'delete', path: relPath });
+      } else if (next && (!prev || prev.hash !== next.hash)) {
+        storage.invalidateContentCacheEntry(vaultId, relPath);
+        deltaChanges.push({
+          path: relPath,
+          action: 'UPSERT',
+          size: next.size,
+          mtime: next.mtime,
+          hash: next.hash,
+        });
+        wsChanges.push({
+          action: prev ? 'update' : 'create',
+          path: relPath,
+          size: next.size,
+          mtime: next.mtime,
+          hash: next.hash,
+        });
+      }
+    }
+
+    if (deltaChanges.length > 0) {
+      await deltaSync.recordBatchChanges(vaultId, deltaChanges).catch(() => {});
+    }
+
     const ftsEngine = require('./ftsEngine');
     if (ftsEngine && typeof ftsEngine.rebuildVaultIndex === 'function') {
       ftsEngine.rebuildVaultIndex(vaultId).catch(() => {});
     }
     const wsHub = require('./wsHub');
-    if (wsHub && typeof wsHub.broadcastBatchFileChange === 'function') {
-      wsHub.broadcastBatchFileChange(vaultId, Object.keys(newManifest), null, null);
+    if (wsHub && wsChanges.length > 0 && typeof wsHub.broadcastBatchChanges === 'function') {
+      wsHub.broadcastBatchChanges(vaultId, wsChanges, null, null);
     }
   } catch (err) {
     console.error(`[GitSync] 远端拉取后刷新缓存/广播失败: ${vaultId}`, err);
@@ -566,6 +608,42 @@ function notifyChange(vaultId) {
   debounceTimers.set(vaultId, timer);
 }
 
+let gitSchedulerTimer = null;
+const lastAutoSyncMap = new Map();
+
+function startGitSyncScheduler(checkIntervalMs = 60 * 1000) {
+  if (gitSchedulerTimer) return gitSchedulerTimer;
+  gitSchedulerTimer = setInterval(async () => {
+    try {
+      const vaultsStore = require('./vaults');
+      const allVaults = vaultsStore.getRawVaults ? vaultsStore.getRawVaults() : [];
+      const now = Date.now();
+      for (const v of allVaults) {
+        const cfg = loadConfig(v.id);
+        const intervalMin = Number(cfg.autoSyncIntervalMinutes) || 0;
+        if (!cfg.enabled || !cfg.remoteUrl || intervalMin <= 0) continue;
+        const intervalMs = Math.max(1, intervalMin) * 60 * 1000;
+        const lastRun = lastAutoSyncMap.get(v.id) || 0;
+        if (now - lastRun >= intervalMs) {
+          lastAutoSyncMap.set(v.id, now);
+          withVaultLock(v.id, async () => {
+            try {
+              await pull(v.id);
+              await commitAndPush(v.id);
+            } catch (err) {
+              console.warn(`[GitSync] Scheduled sync error for vault ${v.id}:`, err.message);
+            }
+          }).catch(() => {});
+        }
+      }
+    } catch (err) {
+      console.warn('[GitSync] Scheduler error:', err.message);
+    }
+  }, checkIntervalMs);
+  if (gitSchedulerTimer.unref) gitSchedulerTimer.unref();
+  return gitSchedulerTimer;
+}
+
 module.exports = {
   loadConfig,
   saveConfig,
@@ -577,4 +655,5 @@ module.exports = {
   pull: (vaultId) => withVaultLock(vaultId, () => pull(vaultId)),
   getLogs,
   notifyChange,
+  startGitSyncScheduler,
 };

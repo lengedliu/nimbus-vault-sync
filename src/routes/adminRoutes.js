@@ -299,6 +299,10 @@ router.post('/database/switch', asyncHandler(async (req, res) => {
     await syncRulesStore.loadFromDb();
     await settingsManager.loadFromDb();
     await syncLogger.loadFromDb();
+    const devicesStore = require('../devices');
+    if (devicesStore.loadFromDb) {
+      await devicesStore.loadFromDb();
+    }
     if (deltaSync.clearCache) {
       deltaSync.clearCache();
     }
