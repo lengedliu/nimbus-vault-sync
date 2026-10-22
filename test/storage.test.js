@@ -32,6 +32,25 @@ test('writeFile: 相同内容重复写入不应报冲突', () => {
   assert.equal(second.currentHash, first.currentHash);
 });
 
+test('writeFileFromPath: 内容一致但带 mtime 时应真正更新 manifest（回归：再用 st 未定义）', async () => {
+  const content = Buffer.from('identical content but new timestamp');
+  storage.writeFile(VAULT_ID, 'mtime-touch.md', content);
+
+  const tempPath = storage.createUploadTempPath(VAULT_ID);
+  fs.writeFileSync(tempPath, content);
+  const hash = crypto.createHash('sha256').update(content).digest('hex');
+  const futureMtime = Date.now() + 60 * 60 * 1000;
+
+  const result = await storage.writeFileFromPath(VAULT_ID, 'mtime-touch.md', tempPath, hash, { mtime: futureMtime });
+  assert.equal(result.written, true);
+  assert.equal(result.identical, true);
+
+  // 旧实现引用未定义的 st，ReferenceError 被空 catch 吞掉，manifest mtime 永远不更新
+  const meta = storage.getManifestEntry(VAULT_ID, 'mtime-touch.md');
+  assert.ok(Math.abs(meta.mtime - futureMtime) < 5000, `manifest mtime 应随声明 mtime 更新, got ${meta.mtime}`);
+  assert.equal(meta.size, content.length);
+});
+
 test('writeFile: baseHash 落后于服务器实际内容时应生成冲突副本，不覆盖原文件', () => {
   const original = storage.writeFile(VAULT_ID, 'conflict.md', Buffer.from('version A'));
   // 模拟另一台设备已经把内容改成了 version B

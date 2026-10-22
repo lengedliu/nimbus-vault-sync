@@ -440,6 +440,8 @@ class FnsHub {
             size: meta.size,
             mtime: meta.mtime,
             hash: meta.hash,
+            // 🛡️ 附带当前游标：客户端应用成功后可小步推进，免得每次重连重放
+            cursor: deltaSync.getLatestCursor(vaultId),
           });
         }
 
@@ -477,6 +479,7 @@ class FnsHub {
             // 🛡️ mtime 用服务端清单权威值；客户端自报的 msg.mtime 不可信，仅作元数据缺失时的兜底
             mtime: (meta && meta.mtime) || msg.mtime || Date.now(),
             hash: storage.sha256(buf),
+            cursor: deltaSync.getLatestCursor(vaultId),
           });
         }
 
@@ -499,6 +502,7 @@ class FnsHub {
           // 🛡️ 同上：服务端清单权威 mtime 优先
           mtime: (meta && meta.mtime) || msg.mtime || Date.now(),
           hash: storage.sha256(buf),
+          cursor: deltaSync.getLatestCursor(vaultId),
         });
       }
 
@@ -591,6 +595,18 @@ class FnsHub {
             conflictPath: result.conflict,
             currentHash: result.currentHash,
             conflictHash: result.conflictHash,
+          });
+          // 🛡️ 冲突终态 ack：客户端的 sendWsMessageAndWait 只认 ack。
+          // 旧实现这里只发 'conflict' 通知，推送方固定白等 15s 超时并进补推队列，
+          // 重连 flush 重推时可能重复制造冲突副本。这里补一个“不带 hash 的 ack”
+          // 立即终结等待（不带 hash 是为了不打进通用 ack 分支把“云端主路径内容”
+          // 错写成本地基线——本地文件此时仍是推送前的旧内容）。
+          this._send(client.ws, {
+            type: 'ack',
+            action: 'push',
+            path: msg.path,
+            conflict: result.conflict,
+            cursor: deltaSync.getLatestCursor(vaultId),
           });
           // Let other clients know a conflict copy was created.
           this.broadcastFileChange(vaultId, result.conflict, { currentHash: result.conflictHash }, client.userId, client.ws);

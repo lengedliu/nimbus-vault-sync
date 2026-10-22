@@ -1364,7 +1364,10 @@ function writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, { mtime
       if (mtime) {
         touchMtime(full, mtime);
         try {
-
+          // 🛡️ 修复：touch 之后重新 stat 取真实 size/mtime。
+          // 旧代码引用了未定义的 st，每次都 ReferenceError 且被空 catch 吞掉，
+          // manifest 的 mtime/ctime 长期陈旧，下载响应的 X-File-Mtime 随之失真。
+          const st = fs.statSync(full);
           updateManifestEntry(vaultId, normRel, { size: st.size, mtime: st.mtimeMs, ctime: st.birthtimeMs || st.ctimeMs || st.mtimeMs, hash: incomingHash });
         } catch {}
       }
@@ -1499,11 +1502,12 @@ async function deleteFileAsync(vaultId, relPath) {
   });
   updateManifestEntry(vaultId, normRel, null);
   invalidateContentCacheEntry(vaultId, normRel);
-  try {
-    await deltaSync.recordChange(vaultId, { path: normRel, action: 'DELETE', size: 0, mtime: Date.now() });
-  } catch (err) {
-    console.error('[Storage] deleteFileAsync recordChange error:', err.message);
-  }
+  // 🛡️ durable 语义与写路径对齐：DELETE 变更记录持久化失败必须向上抛出
+  // （HTTP DELETE 回 5xx / WS 无 ack），由客户端挂起重试。旧实现吞掉错误仍
+  // 返回 true，其他设备在 delta 通道上将永远收不到这条删除。
+  // 文件本身删除已成功（回收站 + manifest 清理），重试幂等收敛由
+  // wsHub 的 `completed = ok || !manifestEntry` 保证：文件已不在时仍回 ack deleted:true。
+  await deltaSync.recordChange(vaultId, { path: normRel, action: 'DELETE', size: 0, mtime: Date.now() });
   try {
     ftsEngine.onFileDelete(vaultId, normRel);
   } catch {}
