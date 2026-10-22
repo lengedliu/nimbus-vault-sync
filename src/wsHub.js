@@ -592,6 +592,18 @@ class FnsHub {
             currentHash: result.currentHash,
             conflictHash: result.conflictHash,
           });
+          // 🛡️ 冲突终态 ack：客户端的 sendWsMessageAndWait 只认 ack。
+          // 旧实现这里只发 'conflict' 通知，推送方固定白等 15s 超时并进补推队列，
+          // 重连 flush 重推时可能重复制造冲突副本。这里补一个“不带 hash 的 ack”
+          // 立即终结等待（不带 hash 是为了不打进通用 ack 分支把“云端主路径内容”
+          // 错写成本地基线——本地文件此时仍是推送前的旧内容）。
+          this._send(client.ws, {
+            type: 'ack',
+            action: 'push',
+            path: msg.path,
+            conflict: result.conflict,
+            cursor: deltaSync.getLatestCursor(vaultId),
+          });
           // Let other clients know a conflict copy was created.
           this.broadcastFileChange(vaultId, result.conflict, { currentHash: result.conflictHash }, client.userId, client.ws);
 

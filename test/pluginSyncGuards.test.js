@@ -364,6 +364,39 @@ function makeVaultStub(plugin, buffers) {
   return { created, modified, buffers, fileFor };
 }
 
+test('插件：WS push 冲突 ack 为终态，不伪造基线也不进补推队列', async () => {
+  const plugin = makePlugin();
+  const initialContent = 'old cloud content';
+  const bytes = new TextEncoder().encode(initialContent);
+  const buffers = { 'p.md': bytes.buffer.slice(0) };
+  makeVaultStub(plugin, buffers);
+
+  // 冲突场景：本地内容与基线一致（已同步），事后基线仍不变且本地文件不再被动 —— 即不做任何登记
+  plugin.updateBaselineEntry('vault-test', 'p.md', { hash: 'base-hash', mtime: 1, size: bytes.byteLength });
+  let pushedMsg = null;
+  plugin.sendWsMessageAndWait = async (payload) => {
+    pushedMsg = payload;
+    // 模拟真实 sendWsMessageAndWait：注册 pending ack，随后由服务端消息终结等待
+    if (!plugin.pendingSyncAcks) plugin.pendingSyncAcks = new Map();
+    return new Promise((resolve) => {
+      plugin.pendingSyncAcks.set(`${payload.type}:${payload.path}`, { resolve });
+      // 模拟服务端返回冲突终态 ack（不带 hash，带 conflict 路径）
+      setTimeout(() => {
+        plugin.handleServerMessage({ type: 'ack', action: 'push', path: payload.path, conflict: 'p.conflict-offline-1.md', cursor: 9 }).catch(() => {});
+      }, 0);
+    });
+  };
+
+  const ok = await plugin.pushLocalFile(Object.assign(new obsidianStub.TFile(), { path: 'p.md', extension: 'md', stat: { mtime: 1, size: bytes.byteLength } }));
+  assert.equal(ok, true, '冲突终态 ack 应让 pushLocalFile 正常完成');
+  assert.equal(pushedMsg.type, 'push');
+
+  // 不伪造基线：云端主路径内容（旧实现若把 hash 写回会造成伪对齐）未被登记
+  assert.equal(plugin.getBaselineEntry('vault-test', 'p.md').hash, 'base-hash');
+  // 不进补推队列
+  assert.equal(plugin.pendingLocalQueueWhileBarrier.size, 0);
+});
+
 test('插件：屏障期重命名/目录删除记录补发而非丢弃', async (t) => {
   await t.test('屏障期 rename 进入挂起队列并在收尾补发', async () => {
     const plugin = makePlugin();

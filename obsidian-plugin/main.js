@@ -942,7 +942,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         if (msg.path && this.pendingSyncAcks) {
           const ok = msg.action === 'delete'
             ? msg.deleted !== false
-            : (msg.ignored ? true : !!msg.hash); // ignored 是服务端黑名单的终态确认，不算失败
+            : (msg.ignored || msg.conflict ? true : !!msg.hash); // ignored 是服务端黑名单的终态确认，不算失败；conflict 同为终态（副本已落云端）
           this.pendingSyncAcks.get(`${msg.action || 'push'}:${msg.path}`)?.resolve(ok, msg);
         }
         if (msg.hash) {
@@ -2061,6 +2061,12 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           ignored: true
         });
         console.warn(`[Nimbus] 服务端同步规则已忽略该文件，已标记为本地保留:`, file.path);
+      }
+      if (result && result.conflict) {
+        // 🛡️ 服务端已把本端内容存为云端冲突副本，'conflict' 通知的自动拉取会完成本地收敛。
+        // 这里绝不能把本地文件登记为“云端主路径内容”（会伪造基线），
+        // 也不进补推队列——否则重连后 flush 重推会重复制造冲突副本（冲突重影）。
+        return true;
       }
       if (!result) {
         // 🛡️ WS 未连接 / 未获 ack：把路径放入重连后补推队列，避免离线编辑被静默丢弃
