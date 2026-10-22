@@ -50,7 +50,9 @@ router.post('/:vaultId/history/:versionId/restore', asyncHandler(async (req, res
   if (writeResult.written) {
     req.app.get('fnsHub').broadcastFileChange(vaultId, result.entry.path, writeResult, req.user.id, true);
   }
-  res.json({ path: result.entry.path, ...writeResult });
+  // changePromise 是内部持久化句柄，不能序列化给客户端（会变成 {}）
+  const { changePromise, ...cleanWriteResult } = writeResult;
+  res.json({ path: result.entry.path, ...cleanWriteResult });
 }));
 
 // ---------------------------------- trash ---------------------------------------
@@ -193,7 +195,22 @@ router.get('/:vaultId/rules', (req, res) => {
 
 router.put('/:vaultId/rules', asyncHandler(async (req, res) => {
   if (!requireWriteAccess(req, res)) return;
-  const updated = await syncRules.saveRules(req.params.vaultId, req.body || {});
+  const vaultId = req.params.vaultId;
+  const updated = await syncRules.saveRules(vaultId, req.body || {});
+  // 规则变更实时下发：此前只在客户端重连/定时同步时才生效
+  const hub = req.app.get('fnsHub');
+  if (hub && hub.rooms) {
+    const room = hub.rooms.get(vaultId);
+    if (room && room.size > 0) {
+      const json = JSON.stringify({
+        type: 'rules_updated',
+        ignorePatterns: Array.isArray(updated.ignorePatterns) ? updated.ignorePatterns : [],
+      });
+      for (const client of room) {
+        hub._sendRaw(client.ws, json);
+      }
+    }
+  }
   res.json({ rules: updated });
 }));
 

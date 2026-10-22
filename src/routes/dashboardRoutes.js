@@ -94,10 +94,13 @@ router.get('/overview', asyncHandler(async (req, res) => {
     }
   }
 
-  // 最近同步动态日志
+  // 最近同步动态日志（非管理员仅返回其有权访问的 Vault 动态，防止跨租户信息泄露）
   let recentLogs = [];
   try {
-    const result = syncLogger.getLogs ? syncLogger.getLogs({ limit: 15 }) : null;
+    const accessibleVaultIds = isAdmin ? null : userVaults.map((v) => v.id);
+    const result = syncLogger.getLogs
+      ? syncLogger.getLogs({ vaultIds: accessibleVaultIds, limit: 15 })
+      : null;
     recentLogs = (result && Array.isArray(result.logs)) ? result.logs : [];
   } catch {
     recentLogs = [];
@@ -212,13 +215,15 @@ router.get('/kanban/:vaultId/scan-tasks', asyncHandler(async (req, res) => {
   if (!requireReadAccess(req, res)) return;
 
   const manifest = await storage.getManifestAsync(vaultId);
-  const mdPaths = Object.keys(manifest).filter((p) => p.toLowerCase().endsWith('.md'));
+  const mdPaths = Object.keys(manifest)
+    .filter((p) => p.toLowerCase().endsWith('.md'))
+    .sort((a, b) => (manifest[b]?.mtime || 0) - (manifest[a]?.mtime || 0));
 
   const tasks = [];
   const taskRegex = /^[ \t]*- \[( |x|X)\][ \t]+(.*)$/gm;
 
-  // 扫描前 100 篇 markdown 笔记以保证极速响应
-  const targetPaths = mdPaths.slice(0, 100);
+  // 按最近修改时间优先扫描前 500 篇 markdown 笔记
+  const targetPaths = mdPaths.slice(0, 500);
 
   // 复用 storage.js 里搜索/统计功能共享的那份内容缓存（getTextContent），
   // 命中缓存就不用重新读盘；并且每处理一批文件就让出一次事件循环
@@ -416,7 +421,7 @@ router.get('/review/:vaultId/date', asyncHandler(async (req, res) => {
     return res.status(400).json({ ok: false, error: '日期格式无效，应为 YYYY-MM-DD' });
   }
 
-  const manifest = storage.getManifest(vaultId);
+  const manifest = await storage.getManifestAsync(vaultId);
   const mdPaths = Object.keys(manifest).filter((p) => p.toLowerCase().endsWith('.md'));
 
   const matchedNotes = [];

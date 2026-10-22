@@ -158,11 +158,13 @@ class FnsHub {
       const permission = vaults.getUserPermission(user.id, vaultId, isAdmin);
       const deviceId = payload?.deviceId || payload?.tid || query.deviceId || 'device-' + user.id.slice(0, 6);
       const deviceName = payload?.deviceName || payload?.label || query.deviceName || 'Obsidian Client';
+      const clientId = query.clientId ? String(query.clientId) : null;
       const rawCursor = query.cursor || query.since;
       const clientCursor = typeof rawCursor !== 'undefined' ? parseInt(rawCursor, 10) : null;
+      const noManifest = query.noManifest === '1' || query.noManifest === 'true' || deviceId === 'Web-Dashboard';
 
       this.wss.handleUpgrade(req, socket, head, (ws) => {
-        this._onConnection(ws, user, vaultId, { deviceId, deviceName, token, tokenPayload: payload, clientCursor }, permission)
+        this._onConnection(ws, user, vaultId, { deviceId, deviceName, clientId, token, tokenPayload: payload, clientCursor, noManifest }, permission)
           .catch((err) => {
             console.error('[WS] Failed to initialize client connection:', err);
             ws.close(1011, 'connection initialization failed');
@@ -309,6 +311,7 @@ class FnsHub {
   async _onConnection(ws, user, vaultId, deviceMeta, permission = 'read-write', options = {}) {
     const deviceId = typeof deviceMeta === 'object' && deviceMeta ? deviceMeta.deviceId : 'device-' + user.id.slice(0, 6);
     const deviceName = typeof deviceMeta === 'object' && deviceMeta ? deviceMeta.deviceName : (deviceMeta || 'Obsidian Client');
+    const clientId = typeof deviceMeta === 'object' && deviceMeta && deviceMeta.clientId ? String(deviceMeta.clientId) : null;
     const token = typeof deviceMeta === 'object' && deviceMeta ? deviceMeta.token : null;
     const tokenPayload = typeof deviceMeta === 'object' && deviceMeta ? deviceMeta.tokenPayload : null;
 
@@ -318,6 +321,7 @@ class FnsHub {
       username: user.username,
       deviceId,
       deviceName,
+      clientId,
       token,
       tokenPayload,
       permission,
@@ -356,17 +360,22 @@ class FnsHub {
     // 握手包判定规则：
     // 1. 客户端游标正常且服务端大于客户端游标：走秒级增量追更 (/changes)，无需下发庞大的 manifest
     // 2. 客户端与服务端游标完全一致（且>0）：已完全对齐，无需下发 manifest
-    // 3. 其他所有情况（新客户端 clientCursor<=0、服务端游标异常/重置为0、或客户端游标超前）：下发 manifest 触发全量双向对比
+    // 3. 轻量事件监听客户端（如 Web-Dashboard 携带 noManifest=1）：仅接收实时通知，无需下发 manifest
+    // 4. 其他情况（新客户端 clientCursor<=0、服务端游标异常/重置为0、或客户端游标超前）：异步获取 manifest（优先复用内存缓存，不阻塞事件循环）
+    const noManifest = Boolean((typeof deviceMeta === 'object' && deviceMeta && deviceMeta.noManifest) || (options && options.noManifest));
     const canDeltaSync = clientCursor > 0 && serverCursor > clientCursor;
     const isAligned = clientCursor > 0 && serverCursor === clientCursor;
-    const needManifest = !canDeltaSync && !isAligned;
-    const manifest = needManifest ? storage.getManifest(vaultId, true) : null;
+    const needManifest = !noManifest && !canDeltaSync && !isAligned;
+    const manifest = needManifest ? await storage.getManifestAsync(vaultId) : null;
+    if (ws.readyState !== ws.OPEN) return;
 
+    const rules = syncRules.getRules(vaultId);
     this._send(ws, {
       type: 'init',
       manifest,
       cursor: serverCursor,
       permission,
+      ignorePatterns: rules && Array.isArray(rules.ignorePatterns) ? rules.ignorePatterns : [],
     });
 
     ws.on('message', (raw) => {
@@ -401,10 +410,12 @@ class FnsHub {
 
       if (msg.type === 'get_manifest') {
         const manifest = await storage.getManifestAsync(vaultId);
+        const rules = syncRules.getRules(vaultId);
         return this._send(client.ws, {
           type: 'manifest',
           manifest,
           cursor: deltaSync.getLatestCursor(vaultId),
+          ignorePatterns: rules && Array.isArray(rules.ignorePatterns) ? rules.ignorePatterns : [],
         });
       }
 
@@ -510,7 +521,15 @@ class FnsHub {
           return this._send(client.ws, { type: 'ack', path: msg.path, ignored: true });
         }
 
-        const buffer = Buffer.from(msg.content, 'base64');
+        const buffer = Buffer.from(msg.content || '', 'base64');
+        try {
+          const settingsStore = require('./settings');
+          const maxMb = Number(settingsStore.getSettings()?.maxUploadSizeMb) || 500;
+          if (buffer.length > maxMb * 1024 * 1024) {
+            return this._send(client.ws, { type: 'error', message: `文件超过单次上传上限（${maxMb}MB）`, path: msg.path });
+          }
+        } catch {}
+
         let result;
         try {
           result = await storage.withFileLock(vaultId, msg.path, async () => {
@@ -525,6 +544,30 @@ class FnsHub {
           // 增量终端将永远看不到这次变更，必须拒绝 ack 成功让客户端重试
           console.error('[WsHub] 文件写入持久化失败:', vaultId, msg.path, (err && err.message) || err);
           return this._send(client.ws, { type: 'error', message: '服务端变更记录持久化失败，请重试', path: msg.path });
+        }
+
+        if (!result.written && result.serverWin) {
+          this._logActivity(vaultId, { type: 'conflict', path: msg.path, serverWin: true, userId: client.userId });
+          syncLogger.recordLog({
+            vaultId,
+            userId: client.userId,
+            username: client.username,
+            deviceName: client.deviceName,
+            action: 'conflict',
+            path: msg.path,
+            size: buffer.length,
+            hash: result.currentHash,
+            status: 'conflict',
+            detail: '并发冲突 (策略: 保留云端最新版本)，已拒绝旧基线覆盖并通知客户端拉取云端版本',
+          });
+
+          this._send(client.ws, {
+            type: 'conflict',
+            path: msg.path,
+            serverWin: true,
+            currentHash: result.currentHash,
+          });
+          return;
         }
 
         if (!result.written && result.conflict) {
@@ -580,7 +623,14 @@ class FnsHub {
           detail: '客户端推送更新',
         });
 
-        this._send(client.ws, { type: 'ack', path: msg.path, hash: result.currentHash });
+        this._send(client.ws, {
+          type: 'ack',
+          path: msg.path,
+          hash: result.currentHash,
+          mtime: msg.mtime || Date.now(),
+          size: buffer.length,
+          cursor: deltaSync.getLatestCursor(vaultId),
+        });
         this.broadcastFileChange(vaultId, msg.path, result, client.userId, client.ws);
         return;
       }
@@ -623,8 +673,81 @@ class FnsHub {
           detail: ok ? '移入回收站' : '文件不存在',
         });
 
+        this._send(client.ws, {
+          type: 'ack',
+          action: 'delete',
+          path: msg.path,
+          cursor: deltaSync.getLatestCursor(vaultId),
+        });
         this.broadcastFileDelete(vaultId, msg.path, client.userId, client.ws);
         return this._send(client.ws, { type: 'ack', action: 'delete', path: msg.path, deleted: completed });
+      }
+
+      if (msg.type === 'rename' || msg.type === 'move') {
+        const oldPath = String(msg.oldPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+        const newPath = String(msg.newPath || msg.path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+        if (!oldPath || !newPath) {
+          return this._send(client.ws, { type: 'error', message: 'oldPath and newPath required' });
+        }
+        if (client.permission === 'read-only') {
+          return this._send(client.ws, { type: 'error', message: '只读权限，禁止重命名文件', path: newPath });
+        }
+
+        if (syncRules.isPathIgnored(vaultId, newPath)) {
+          await storage.withFileLock(vaultId, oldPath, async () => {
+            return storage.deleteFileAsync(vaultId, oldPath);
+          });
+          this.broadcastFileDelete(vaultId, oldPath, client.userId, client.ws);
+          return this._send(client.ws, {
+            type: 'ack',
+            action: 'rename',
+            oldPath,
+            path: newPath,
+            ignored: true,
+            cursor: deltaSync.getLatestCursor(vaultId),
+          });
+        }
+
+        const moveRes = await storage.withDualFileLock(vaultId, oldPath, newPath, async () => {
+          return storage.moveVaultFileAsync(vaultId, oldPath, newPath, { overwrite: true });
+        });
+
+        if (!moveRes.ok) {
+          // 原文件在服务端尚不存在（如本地刚创建尚未完成上传即被重命名），通知客户端回退为常规 push
+          return this._send(client.ws, {
+            type: 'rename_fallback',
+            oldPath,
+            path: newPath,
+          });
+        }
+
+        this._logActivity(vaultId, { type: 'change', path: `${oldPath} -> ${newPath}`, userId: client.userId });
+        syncLogger.recordLog({
+          vaultId,
+          userId: client.userId,
+          username: client.username,
+          deviceName: client.deviceName,
+          action: 'update',
+          path: newPath,
+          size: moveRes.size || 0,
+          hash: moveRes.hash,
+          status: 'success',
+          detail: `重命名/移动文件: ${oldPath} -> ${newPath}`,
+        });
+
+        this._send(client.ws, {
+          type: 'ack',
+          action: 'rename',
+          oldPath,
+          path: newPath,
+          hash: moveRes.hash,
+          mtime: moveRes.mtime,
+          size: moveRes.size,
+          cursor: deltaSync.getLatestCursor(vaultId),
+        });
+        this.broadcastFileDelete(vaultId, oldPath, client.userId, client.ws);
+        this.broadcastFileChange(vaultId, newPath, { currentHash: moveRes.hash }, client.userId, client.ws);
+        return;
       }
 
       this._send(client.ws, { type: 'error', message: `unknown message type: ${msg.type}` });
@@ -673,6 +796,21 @@ class FnsHub {
     }
   }
 
+  _isClientExcluded(client, excludeWs) {
+    if (!excludeWs || !client) return false;
+    if (client.ws === excludeWs) return true;
+    if (typeof excludeWs === 'string') {
+      if (client.clientId && client.clientId === excludeWs) {
+        return true;
+      }
+      // 仅当客户端未携带独立会话 clientId 且 deviceId 不是通用占位名称时，才按 deviceId 匹配
+      if (!client.clientId && client.deviceId === excludeWs && excludeWs !== 'Obsidian Device') {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /** Broadcast a batch of changes directly (e.g. from batch delete, batch move, or bulk sync) */
   broadcastBatchChanges(vaultId, changes, fromUserId, excludeWs = null) {
     if (!Array.isArray(changes) || changes.length === 0) return;
@@ -700,7 +838,7 @@ class FnsHub {
 
     const json = JSON.stringify(payload);
     for (const client of room) {
-      if (excludeWs && client.ws === excludeWs) continue;
+      if (this._isClientExcluded(client, excludeWs)) continue;
       this._sendRaw(client.ws, json);
     }
   }
@@ -722,11 +860,9 @@ class FnsHub {
     };
     const json = JSON.stringify(payload);
     for (const client of room) {
-      if (excludeWs && client.ws === excludeWs) continue;
+      if (this._isClientExcluded(client, excludeWs)) continue;
       this._sendRaw(client.ws, json);
     }
-
-    this._scheduleDebouncedBatchNotification(vaultId, { action: 'update', path: relPath, ...meta }, fromUserId, excludeWs);
   }
 
   /** Push a changed file to every connected client for this vault (except the sender WebSocket if provided). */
@@ -754,10 +890,9 @@ class FnsHub {
       };
       const json = JSON.stringify(payload);
       for (const client of room) {
-        if (excludeWs && client.ws === excludeWs) continue;
+        if (this._isClientExcluded(client, excludeWs)) continue;
         this._sendRaw(client.ws, json);
       }
-      this._scheduleDebouncedBatchNotification(vaultId, { action: 'update', path: relPath, size: fileSize, mtime: meta?.mtime, hash: result?.currentHash }, fromUserId, excludeWs);
       return;
     }
 
@@ -775,12 +910,11 @@ class FnsHub {
         pullRequired: true,
       };
       const json = JSON.stringify(payload);
-      const isExcluded = (c) => excludeWs && (c.ws === excludeWs || c.userId === excludeWs || (typeof excludeWs === 'string' && c.deviceId === excludeWs));
+      const isExcluded = (c) => this._isClientExcluded(c, excludeWs);
       for (const client of room) {
         if (isExcluded(client)) continue;
         this._sendRaw(client.ws, json);
       }
-      this._scheduleDebouncedBatchNotification(vaultId, { action: 'update', path: relPath, size: buf.length, mtime: meta?.mtime || Date.now(), hash: result?.currentHash }, fromUserId, excludeWs);
       return;
     }
 
@@ -795,12 +929,11 @@ class FnsHub {
     };
     // 只序列化一次，广播给房间里所有客户端复用同一份字符串
     const json = JSON.stringify(payload);
-    const isExcluded = (c) => excludeWs && (c.ws === excludeWs || c.userId === excludeWs || (typeof excludeWs === 'string' && c.deviceId === excludeWs));
+    const isExcluded = (c) => this._isClientExcluded(c, excludeWs);
     for (const client of room) {
       if (isExcluded(client)) continue; // don't echo back to the pushing socket or device
       this._sendRaw(client.ws, json);
     }
-    this._scheduleDebouncedBatchNotification(vaultId, { action: 'update', path: relPath, size: buf.length, mtime: meta?.mtime || Date.now(), hash: result?.currentHash }, fromUserId, excludeWs);
   }
 
   /** Push batch file changes to all connected clients for this vault efficiently. */
@@ -827,9 +960,8 @@ class FnsHub {
       pullRequired: true,
     };
     const json = JSON.stringify(payload);
-    const isExcluded = (c) => excludeWs && (c.ws === excludeWs || c.userId === excludeWs || (typeof excludeWs === 'string' && c.deviceId === excludeWs));
     for (const client of room) {
-      if (isExcluded(client)) continue;
+      if (this._isClientExcluded(client, excludeWs)) continue;
       this._sendRaw(client.ws, json);
     }
   }
@@ -845,12 +977,11 @@ class FnsHub {
       path: relPath,
       cursor: deltaSync.getLatestCursor(vaultId),
     });
-    const isExcluded = (c) => excludeWs && (c.ws === excludeWs || c.userId === excludeWs || (typeof excludeWs === 'string' && c.deviceId === excludeWs));
+    const isExcluded = (c) => this._isClientExcluded(c, excludeWs);
     for (const client of room) {
       if (isExcluded(client)) continue; // don't echo back to the deleting socket or device
       this._sendRaw(client.ws, json);
     }
-    this._scheduleDebouncedBatchNotification(vaultId, { action: 'delete', path: relPath }, fromUserId, excludeWs);
   }
 
   /** Internal helper: Debounce and coalesce rapid single events into a batch notification */
@@ -895,14 +1026,14 @@ class FnsHub {
         const payload = {
           type: 'batch_file_change',
           vaultId,
+          cursor: deltaSync.getLatestCursor(vaultId),
           count: changesList.length,
           timestamp: Date.now(),
           changes: changesList,
         };
         const json = JSON.stringify(payload);
-        const isExcluded = (c) => batch.excludeWs && (c.ws === batch.excludeWs || c.userId === batch.excludeWs || (typeof batch.excludeWs === 'string' && c.deviceId === batch.excludeWs));
         for (const client of room) {
-          if (isExcluded(client)) continue;
+          if (this._isClientExcluded(client, batch.excludeWs)) continue;
           this._sendRaw(client.ws, json);
         }
       }

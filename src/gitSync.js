@@ -596,6 +596,42 @@ function notifyChange(vaultId) {
   debounceTimers.set(vaultId, timer);
 }
 
+let gitSchedulerTimer = null;
+const lastAutoSyncMap = new Map();
+
+function startGitSyncScheduler(checkIntervalMs = 60 * 1000) {
+  if (gitSchedulerTimer) return gitSchedulerTimer;
+  gitSchedulerTimer = setInterval(async () => {
+    try {
+      const vaultsStore = require('./vaults');
+      const allVaults = vaultsStore.getRawVaults ? vaultsStore.getRawVaults() : [];
+      const now = Date.now();
+      for (const v of allVaults) {
+        const cfg = loadConfig(v.id);
+        const intervalMin = Number(cfg.autoSyncIntervalMinutes) || 0;
+        if (!cfg.enabled || !cfg.remoteUrl || intervalMin <= 0) continue;
+        const intervalMs = Math.max(1, intervalMin) * 60 * 1000;
+        const lastRun = lastAutoSyncMap.get(v.id) || 0;
+        if (now - lastRun >= intervalMs) {
+          lastAutoSyncMap.set(v.id, now);
+          withVaultLock(v.id, async () => {
+            try {
+              await pull(v.id);
+              await commitAndPush(v.id);
+            } catch (err) {
+              console.warn(`[GitSync] Scheduled sync error for vault ${v.id}:`, err.message);
+            }
+          }).catch(() => {});
+        }
+      }
+    } catch (err) {
+      console.warn('[GitSync] Scheduler error:', err.message);
+    }
+  }, checkIntervalMs);
+  if (gitSchedulerTimer.unref) gitSchedulerTimer.unref();
+  return gitSchedulerTimer;
+}
+
 module.exports = {
   loadConfig,
   saveConfig,
@@ -607,4 +643,5 @@ module.exports = {
   pull: (vaultId) => withVaultLock(vaultId, () => pull(vaultId)),
   getLogs,
   notifyChange,
+  startGitSyncScheduler,
 };

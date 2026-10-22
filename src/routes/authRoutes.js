@@ -22,7 +22,7 @@ setInterval(() => {
 }, 60000).unref();
 
 function rateLimitLogin(req, res, next) {
-  const ip = req.ip || req.socket.remoteAddress || '127.0.0.1';
+  const ip = req.ip || req.socket?.remoteAddress || '127.0.0.1';
   const now = Date.now();
   const windowMs = 60 * 1000; // 1 minute
   const maxAttempts = 15; // 15 attempts per minute per IP
@@ -30,8 +30,8 @@ function rateLimitLogin(req, res, next) {
   const record = loginAttempts.get(ip);
   if (!record || now - record.firstAttempt > windowMs) {
     if (loginAttempts.size >= MAX_LOGIN_TRACKED_IPS) {
-      const oldestIp = loginAttempts.keys().next().value;
-      if (oldestIp !== undefined) loginAttempts.delete(oldestIp);
+      const oldestKey = loginAttempts.keys().next().value;
+      if (oldestKey !== undefined) loginAttempts.delete(oldestKey);
     }
     loginAttempts.set(ip, { count: 1, firstAttempt: now });
     return next();

@@ -4,6 +4,7 @@ const { pipeline, Transform } = require('stream');
 const crypto = require('crypto');
 const { requireAuth } = require('../auth');
 const storage = require('../storage');
+const deltaSync = require('../deltaSync');
 const syncLogger = require('../syncLogger');
 const syncRules = require('../syncRules');
 const webhooks = require('../webhooks');
@@ -22,9 +23,19 @@ function safeDecodeHeader(val, fallback = '') {
   }
 }
 
-// 单次上传大小上限（字节），可用 MAX_UPLOAD_MB 环境变量覆盖。
+// 单次上传大小上限（字节）：优先读取系统设置 maxUploadSizeMb，其次用 MAX_UPLOAD_MB 环境变量兜底。
 // 流式写入之后，这个上限只是"防止无限占用磁盘"的安全阀，不再等价于"这么大都要先进内存"。
-const MAX_UPLOAD_BYTES = parseInt(process.env.MAX_UPLOAD_MB || '500', 10) * 1024 * 1024;
+function getMaxUploadBytes() {
+  try {
+    const settingsStore = require('../settings');
+    const mb = Number(settingsStore.getSettings()?.maxUploadSizeMb);
+    if (Number.isFinite(mb) && mb >= 1) {
+      return Math.round(mb * 1024 * 1024);
+    }
+  } catch {}
+  return parseInt(process.env.MAX_UPLOAD_MB || '500', 10) * 1024 * 1024;
+}
+const MAX_UPLOAD_BYTES = getMaxUploadBytes();
 const MAX_CONCURRENT_UPLOADS = Math.max(1, parseInt(process.env.MAX_CONCURRENT_UPLOADS || '4', 10) || 4);
 let activeUploads = 0;
 
@@ -58,8 +69,12 @@ router.get('/:vaultId/files/*', (req, res) => {
     detail: '读取笔记文件',
   });
 
+  const entryMeta = storage.getManifestEntry(vaultId, relPath);
   res.set('Content-Type', 'application/octet-stream');
   res.set('Content-Length', String(fileInfo.size));
+  if (entryMeta && entryMeta.hash) res.set('X-File-Hash', String(entryMeta.hash));
+  if (entryMeta && entryMeta.mtime) res.set('X-File-Mtime', String(entryMeta.mtime));
+  res.set('Access-Control-Expose-Headers', 'X-File-Hash, X-File-Mtime');
   fileInfo.stream.on('error', (err) => {
     console.error('[FileRoutes] read stream error:', err.message);
     if (!res.headersSent) res.status(500).end();
@@ -106,8 +121,9 @@ router.put('/:vaultId/files/*', (req, res) => {
     });
   }
 
-  if (declaredLength && declaredLength > MAX_UPLOAD_BYTES) {
-    return res.status(413).json({ error: `文件超过单次上传上限（${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB）` });
+  const maxUploadBytes = getMaxUploadBytes();
+  if (declaredLength && declaredLength > maxUploadBytes) {
+    return res.status(413).json({ error: `文件超过单次上传上限（${Math.round(maxUploadBytes / 1024 / 1024)}MB）` });
   }
   if (activeUploads >= MAX_CONCURRENT_UPLOADS) {
     return res.status(429).json({ error: '当前上传任务较多，请稍后重试' });
@@ -134,9 +150,9 @@ router.put('/:vaultId/files/*', (req, res) => {
   const hashingPass = new Transform({
     transform(chunk, enc, cb) {
       totalBytes += chunk.length;
-      if (totalBytes > MAX_UPLOAD_BYTES) {
+      if (totalBytes > maxUploadBytes) {
         aborted = true;
-        return cb(new Error(`文件超过单次上传上限（${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB）`));
+        return cb(new Error(`文件超过单次上传上限（${Math.round(maxUploadBytes / 1024 / 1024)}MB）`));
       }
       hash.update(chunk);
       cb(null, chunk);
@@ -211,9 +227,11 @@ router.put('/:vaultId/files/*', (req, res) => {
         });
       }
 
+      const { changePromise, ...cleanResult } = result;
       res.json({
-        ...result,
+        ...cleanResult,
         hash: result.currentHash,
+        cursor: deltaSync.getLatestCursor(vaultId),
       });
       activeUploads--;
     } catch (e) {
@@ -276,7 +294,7 @@ router.delete('/:vaultId/files/*', asyncHandler(async (req, res) => {
     detail: ok ? '移入回收站 (软删除)' : '文件不存在或删除失败',
   });
 
-  res.json({ deleted: ok });
+  res.json({ deleted: ok, cursor: deltaSync.getLatestCursor(vaultId) });
 }));
 
 // POST batch delete files into trash
@@ -334,7 +352,7 @@ router.post('/:vaultId/batch/delete', express.json(), asyncHandler(async (req, r
     detail: `批量移入回收站: ${successCount} 个文件成功`,
   });
 
-  res.json({ success: true, count: successCount, results });
+  res.json({ success: true, count: successCount, results, cursor: deltaSync.getLatestCursor(vaultId) });
 }));
 
 // POST batch move files to target folder
@@ -367,8 +385,8 @@ router.post('/:vaultId/batch/move', express.json(), asyncHandler(async (req, res
       continue;
     }
 
-    const moveRes = await storage.withFileLock(vaultId, relPath, async () => {
-      // 🛡️ 批量移动也纳入文件锁：与并发 PUT/DELETE 对同一文件的写路径互斥
+    const moveRes = await storage.withDualFileLock(vaultId, relPath, newRelPath, async () => {
+      // 🛡️ 批量移动也纳入双路径文件锁：与并发 PUT/DELETE 对同一文件的写路径互斥
       return storage.moveVaultFileAsync(vaultId, relPath, newRelPath);
     });
     if (moveRes.ok) {
@@ -396,7 +414,7 @@ router.post('/:vaultId/batch/move', express.json(), asyncHandler(async (req, res
     detail: `批量移动至目录「/${targetDir}」: ${successCount} 个文件成功`,
   });
 
-  res.json({ success: true, count: successCount, results });
+  res.json({ success: true, count: successCount, results, cursor: deltaSync.getLatestCursor(vaultId) });
 }));
 
 // GET tags overview for vault

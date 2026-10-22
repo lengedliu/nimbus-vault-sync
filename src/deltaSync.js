@@ -441,11 +441,12 @@ class DeltaSyncService {
     // 4. 检查内存环形缓冲区 (Memory Ring) 是否连续覆盖了 since 之后的所有变更
     if (st.ring.length > 0 && since >= st.ring[0].cursor - 1) {
       const matched = st.ring.filter((c) => c.cursor > since);
-      const sliced = matched.slice(0, maxLimit);
-      const hasMore = matched.length > maxLimit;
-      const nextCursor = sliced.length > 0 ? sliced[sliced.length - 1].cursor : st.latestCursor;
+      const sourceItems = shouldCompact ? this._compactChanges(matched) : matched;
+      const sliced = sourceItems.slice(0, maxLimit);
+      const hasMore = sourceItems.length > maxLimit;
+      const nextCursor = !hasMore ? st.latestCursor : (sliced.length > 0 ? sliced[sliced.length - 1].cursor : st.latestCursor);
 
-      const itemsToProcess = shouldCompact ? this._compactChanges(sliced) : sliced;
+      const itemsToProcess = sliced;
       const updates = [];
       const deletes = [];
 
@@ -469,7 +470,7 @@ class DeltaSyncService {
         latestCursor: st.latestCursor,
         hasMore,
         changesCount: itemsToProcess.length,
-        rawChangesCount: sliced.length,
+        rawChangesCount: matched.length,
         updates,
         deletes,
       };
@@ -479,13 +480,14 @@ class DeltaSyncService {
     // 5.1 SQL 引擎持久化查询 (SQLite, PostgreSQL, MySQL)
     if (dbManager.type !== 'json') {
       try {
+        const queryLimit = shouldCompact ? Math.max(maxLimit + 1, MAX_CHANGES_RETENTION) : maxLimit + 1;
         const rows = await dbManager.queryAll(
           `SELECT \`cursor\`, path, action, size, mtime, hash, created_at as createdAt
            FROM vault_changes
            WHERE vault_id = ? AND \`cursor\` > ?
            ORDER BY \`cursor\` ASC
            LIMIT ?`,
-          [vaultId, since, maxLimit + 1]
+          [vaultId, since, queryLimit]
         );
 
         const normalizedRows = rows.map((r) => ({
@@ -500,11 +502,13 @@ class DeltaSyncService {
 
         // 仅当查到记录且最旧一条游标紧随 since (无历史断层 gap) 时才允许增量返回
         if (normalizedRows.length > 0 && normalizedRows[0].cursor <= since + 1) {
-          const hasMore = normalizedRows.length > maxLimit;
-          const sliced = normalizedRows.slice(0, maxLimit);
-          const nextCursor = sliced[sliced.length - 1].cursor;
+          const rawExhausted = normalizedRows.length < queryLimit;
+          const sourceItems = shouldCompact ? this._compactChanges(normalizedRows) : normalizedRows;
+          const hasMore = sourceItems.length > maxLimit || (!rawExhausted && !shouldCompact);
+          const sliced = sourceItems.slice(0, maxLimit);
+          const nextCursor = (!hasMore && rawExhausted) ? st.latestCursor : sliced[sliced.length - 1].cursor;
 
-          const itemsToProcess = shouldCompact ? this._compactChanges(sliced) : sliced;
+          const itemsToProcess = sliced;
           const updates = [];
           const deletes = [];
           for (const item of itemsToProcess) {
@@ -527,7 +531,7 @@ class DeltaSyncService {
             latestCursor: st.latestCursor,
             hasMore,
             changesCount: itemsToProcess.length,
-            rawChangesCount: sliced.length,
+            rawChangesCount: normalizedRows.length,
             updates,
             deletes,
           };
@@ -543,11 +547,12 @@ class DeltaSyncService {
         if (Array.isArray(data.changes) && data.changes.length > 0) {
           const matched = data.changes.filter((c) => c.cursor > since);
           if (matched.length > 0 && matched[0].cursor <= since + 1) {
-            const hasMore = matched.length > maxLimit;
-            const sliced = matched.slice(0, maxLimit);
-            const nextCursor = sliced[sliced.length - 1].cursor;
+            const sourceItems = shouldCompact ? this._compactChanges(matched) : matched;
+            const hasMore = sourceItems.length > maxLimit;
+            const sliced = sourceItems.slice(0, maxLimit);
+            const nextCursor = !hasMore ? st.latestCursor : sliced[sliced.length - 1].cursor;
 
-            const itemsToProcess = shouldCompact ? this._compactChanges(sliced) : sliced;
+            const itemsToProcess = sliced;
             const updates = [];
             const deletes = [];
             for (const item of itemsToProcess) {
@@ -570,7 +575,7 @@ class DeltaSyncService {
               latestCursor: st.latestCursor,
               hasMore,
               changesCount: itemsToProcess.length,
-              rawChangesCount: sliced.length,
+              rawChangesCount: matched.length,
               updates,
               deletes,
             };

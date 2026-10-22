@@ -8,6 +8,8 @@ const fs = require('fs');
 const path = require('path');
 
 const { PORT, DATA_DIR, VAULTS_DIR, TLS_CERT_PATH, TLS_KEY_PATH, TRUST_PROXY, JWT_SECRET, JWT_SECRET_SOURCE, VERSION } = require('./src/config');
+const cloudBackup = require('./src/cloudBackup');
+const gitSync = require('./src/gitSync');
 const authRoutes = require('./src/routes/authRoutes');
 const vaultRoutes = require('./src/routes/vaultRoutes');
 const fileRoutes = require('./src/routes/fileRoutes');
@@ -69,6 +71,19 @@ const startupPromise = (async () => {
   if (adminUser) {
     await vaultsStore.ensureDefaultVaults(adminUser.id);
   }
+
+  // 启动后台自动备份、Git 周期同步与过期回收站清理调度
+  cloudBackup.startCloudBackupScheduler();
+  gitSync.startGitSyncScheduler();
+  const trashTimer = setInterval(() => {
+    try {
+      const allVaults = vaultsStore.getRawVaults ? vaultsStore.getRawVaults() : [];
+      for (const v of allVaults) {
+        storage.purgeExpiredTrash(v.id).catch(() => {});
+      }
+    } catch {}
+  }, 6 * 60 * 60 * 1000);
+  if (trashTimer.unref) trashTimer.unref();
 })();
 
 const app = express();

@@ -68,7 +68,9 @@ router.post('/vaults/:vaultId/shares', requireAuth, asyncHandler(async (req, res
 router.delete('/vaults/:vaultId/shares/:shareId', requireAuth, asyncHandler(async (req, res) => {
   const { vaultId, shareId } = req.params;
   if (!requireOwnerOr404(req, res)) return;
-  const ok = await shares.remove(shareId, req.user.id);
+  const target = shares.listForVault(vaultId).find((s) => s.id === shareId);
+  if (!target) return res.json({ deleted: false });
+  const ok = await shares.remove(shareId, null);
   res.json({ deleted: ok });
 }));
 
@@ -76,8 +78,7 @@ router.delete('/vaults/:vaultId/shares/:shareId', requireAuth, asyncHandler(asyn
 
 // Lightweight in-memory rate limiter for public share password brute-force protection
 const sharePasswordAttempts = new Map(); // `${ip}:${shareId}` -> { count, firstAttempt }
-const SHARE_ATTEMPT_WINDOW_MS = 60 * 1000;
-const MAX_TRACKED_SHARE_ATTEMPTS = 10000;
+const MAX_SHARE_TRACKED_KEYS = 2000;
 
 router.get('/public/shares/:shareId', asyncHandler(async (req, res) => {
   const { shareId } = req.params;
@@ -86,23 +87,18 @@ router.get('/public/shares/:shareId', asyncHandler(async (req, res) => {
 
   const password = req.query.password || req.headers['x-share-password'];
   if (share.hasPassword) {
-    const ip = req.ip || req.socket.remoteAddress || '127.0.0.1';
+    const ip = req.ip || req.socket?.remoteAddress || '127.0.0.1';
     const rateKey = `${ip}:${shareId}`;
     const now = Date.now();
     const windowMs = 60 * 1000;
     const maxAttempts = 15;
 
-    if (!sharePasswordAttempts.has(rateKey) && sharePasswordAttempts.size >= MAX_TRACKED_SHARE_ATTEMPTS) {
-      for (const [key, record] of sharePasswordAttempts) {
-        if (now - record.firstAttempt > SHARE_ATTEMPT_WINDOW_MS) sharePasswordAttempts.delete(key);
-      }
-      if (sharePasswordAttempts.size >= MAX_TRACKED_SHARE_ATTEMPTS) {
-        return res.status(503).json({ error: '请求繁忙，请稍后重试' });
-      }
-    }
-
     const record = sharePasswordAttempts.get(rateKey);
     if (!record || now - record.firstAttempt > windowMs) {
+      if (sharePasswordAttempts.size >= MAX_SHARE_TRACKED_KEYS) {
+        const oldestKey = sharePasswordAttempts.keys().next().value;
+        if (oldestKey !== undefined) sharePasswordAttempts.delete(oldestKey);
+      }
       sharePasswordAttempts.set(rateKey, { count: 1, firstAttempt: now });
     } else {
       if (record.count >= maxAttempts) {

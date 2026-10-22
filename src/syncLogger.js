@@ -157,8 +157,13 @@ function addToCache(entry) {
 /**
  * Query sync logs for a specific vault or globally
  */
-function getLogs({ vaultId = null, action = null, status = null, search = null, limit = 50, offset = 0 } = {}) {
+function getLogs({ vaultId = null, vaultIds = null, action = null, status = null, search = null, limit = 50, offset = 0 } = {}) {
   let list = vaultId ? (logsCache.get(vaultId) || []) : globalLogs;
+
+  if (!vaultId && Array.isArray(vaultIds)) {
+    const allowedSet = new Set(vaultIds);
+    list = list.filter((l) => allowedSet.has(l.vaultId));
+  }
 
   if (action && action !== 'all') {
     list = list.filter((l) => l.action === action);

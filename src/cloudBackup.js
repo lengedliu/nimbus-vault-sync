@@ -13,74 +13,99 @@ const { resolvePublicAddresses, createPinnedLookup } = require('./utils/ssrfGuar
 
 const cloudConfigDb = new JsonDb(path.join(DATA_DIR, 'cloud-backup-config.json'), { vaults: {} });
 
+const DEFAULT_CLOUD_CONFIG = {
+  enabled: false,
+  provider: 's3', // 's3' | 'webdav'
+  autoBackup: false,
+  backupIntervalHours: 24,
+  retentionCount: 10,
+  s3: {
+    endpoint: '', // e.g. https://s3.us-east-1.amazonaws.com or https://oss-cn-hangzhou.aliyuncs.com
+    region: 'us-east-1',
+    bucket: '',
+    accessKeyId: '',
+    secretAccessKey: '',
+    pathPrefix: 'nimbus-backups',
+  },
+  webdav: {
+    url: '', // e.g. https://dav.jianguoyun.com/dav/ or https://nas.local:5006/dav/
+    username: '',
+    password: '',
+    pathPrefix: '/nimbus-backups',
+  },
+  lastBackupAt: null,
+  lastBackupStatus: null, // { success: boolean, message: string, time: string }
+};
+
 function getVaultCloudConfig(vaultId) {
   const db = cloudConfigDb.read();
-  const config = (db.vaults && db.vaults[vaultId]) || {
-    enabled: false,
-    provider: 's3', // 's3' | 'webdav'
-    autoBackup: false,
-    backupIntervalHours: 24,
-    retentionCount: 10,
-    s3: {
-      endpoint: '', // e.g. https://s3.us-east-1.amazonaws.com or https://oss-cn-hangzhou.aliyuncs.com
-      region: 'us-east-1',
-      bucket: '',
-      accessKeyId: '',
-      secretAccessKey: '',
-      pathPrefix: 'nimbus-backups',
-    },
-    webdav: {
-      url: '', // e.g. https://dav.jianguoyun.com/dav/ or https://nas.local:5006/dav/
-      username: '',
-      password: '',
-      pathPrefix: '/nimbus-backups',
-    },
-    lastBackupAt: null,
-    lastBackupStatus: null, // { success: boolean, message: string, time: string }
-  };
-  const saved = db.vaults && db.vaults[vaultId];
-  if (saved) {
-    const hasLegacySecret = [saved.s3 && saved.s3.secretAccessKey, saved.webdav && saved.webdav.password]
-      .some((value) => typeof value === 'string' && value && !value.startsWith('enc:v1:'));
-    if (hasLegacySecret) {
-      cloudConfigDb.update((data) => {
-        const current = data.vaults && data.vaults[vaultId];
-        if (!current) return data;
-        if (current.s3 && current.s3.secretAccessKey && !current.s3.secretAccessKey.startsWith('enc:v1:')) {
-          current.s3.secretAccessKey = encryptField(current.s3.secretAccessKey);
-        }
-        if (current.webdav && current.webdav.password && !current.webdav.password.startsWith('enc:v1:')) {
-          current.webdav.password = encryptField(current.webdav.password);
-        }
-        return data;
-      });
-    }
+  const raw = (db.vaults && db.vaults[vaultId]) || null;
+  if (!raw) {
+    return JSON.parse(JSON.stringify(DEFAULT_CLOUD_CONFIG));
+  }
+  const hasLegacySecret = [raw.s3 && raw.s3.secretAccessKey, raw.webdav && raw.webdav.password]
+    .some((value) => typeof value === 'string' && value && !value.startsWith('enc:v1:'));
+  if (hasLegacySecret) {
+    cloudConfigDb.update((data) => {
+      const current = data.vaults && data.vaults[vaultId];
+      if (!current) return data;
+      if (current.s3 && current.s3.secretAccessKey && !current.s3.secretAccessKey.startsWith('enc:v1:')) {
+        current.s3.secretAccessKey = encryptField(current.s3.secretAccessKey);
+      }
+      if (current.webdav && current.webdav.password && !current.webdav.password.startsWith('enc:v1:')) {
+        current.webdav.password = encryptField(current.webdav.password);
+      }
+      return data;
+    });
   }
   return {
-    ...config,
-    s3: { ...(config.s3 || {}), secretAccessKey: decryptField(config.s3 && config.s3.secretAccessKey) },
-    webdav: { ...(config.webdav || {}), password: decryptField(config.webdav && config.webdav.password) },
+    ...DEFAULT_CLOUD_CONFIG,
+    ...raw,
+    s3: {
+      ...DEFAULT_CLOUD_CONFIG.s3,
+      ...(raw.s3 || {}),
+      secretAccessKey: decryptField(raw.s3 && raw.s3.secretAccessKey),
+    },
+    webdav: {
+      ...DEFAULT_CLOUD_CONFIG.webdav,
+      ...(raw.webdav || {}),
+      password: decryptField(raw.webdav && raw.webdav.password),
+    },
   };
 }
 
 function saveVaultCloudConfig(vaultId, config) {
   const current = getVaultCloudConfig(vaultId);
-  const plain = {
+  const incomingS3 = config.s3 || {};
+  const incomingWebdav = config.webdav || {};
+
+  // 管理端回传掩码值时保留已保存的真实密钥，避免把 "********" 当作新密钥加密落库
+  const s3Secret =
+    incomingS3.secretAccessKey === '********' || incomingS3.secretAccessKey === undefined
+      ? current.s3.secretAccessKey
+      : incomingS3.secretAccessKey;
+  const webdavPass =
+    incomingWebdav.password === '********' || incomingWebdav.password === undefined
+      ? current.webdav.password
+      : incomingWebdav.password;
+
+  const merged = {
+    ...current,
     ...config,
-    s3: { ...(config.s3 || {}), secretAccessKey: (config.s3 && config.s3.secretAccessKey) || current.s3.secretAccessKey || '' },
-    webdav: { ...(config.webdav || {}), password: (config.webdav && config.webdav.password) || current.webdav.password || '' },
+    s3: { ...current.s3, ...incomingS3, secretAccessKey: s3Secret || '' },
+    webdav: { ...current.webdav, ...incomingWebdav, password: webdavPass || '' },
   };
   const persisted = {
-    ...plain,
-    s3: { ...plain.s3, secretAccessKey: encryptField(plain.s3.secretAccessKey) },
-    webdav: { ...plain.webdav, password: encryptField(plain.webdav.password) },
+    ...merged,
+    s3: { ...merged.s3, secretAccessKey: encryptField(merged.s3.secretAccessKey) },
+    webdav: { ...merged.webdav, password: encryptField(merged.webdav.password) },
   };
   cloudConfigDb.update((data) => {
     if (!data.vaults) data.vaults = {};
     data.vaults[vaultId] = persisted;
     return data;
   });
-  return plain;
+  return merged;
 }
 
 async function validateCloudTarget(rawUrl) {
@@ -90,7 +115,7 @@ async function validateCloudTarget(rawUrl) {
     throw new Error('云备份目标仅支持不含内嵌账号信息的 HTTP(S) URL');
   }
   const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
-  const addresses = process.env.ALLOW_PRIVATE_CLOUD_BACKUP_TARGETS === 'true'
+  const addresses = (process.env.ALLOW_PRIVATE_CLOUD_BACKUP_TARGETS === 'true' || process.env.ALLOW_PRIVATE_CLOUD_BACKUP === 'true')
     ? await dns.lookup(hostname, { all: true })
     : await resolvePublicAddresses(hostname);
   if (!addresses.length) throw new Error('云备份目标域名没有可用地址');
@@ -384,10 +409,38 @@ async function runVaultCloudBackup(vaultId, label = '多云容灾备份') {
   }
 }
 
+let cloudBackupScheduleTimer = null;
+
+function startCloudBackupScheduler() {
+  if (cloudBackupScheduleTimer) clearInterval(cloudBackupScheduleTimer);
+  cloudBackupScheduleTimer = setInterval(async () => {
+    try {
+      const db = cloudConfigDb.read();
+      const vaultsMap = db.vaults || {};
+      const now = Date.now();
+      for (const vaultId of Object.keys(vaultsMap)) {
+        const cfg = getVaultCloudConfig(vaultId);
+        if (!cfg.enabled || !cfg.autoBackup) continue;
+        const intervalHours = Math.max(1, Number(cfg.backupIntervalHours) || 24);
+        const lastMs = cfg.lastBackupAt ? new Date(cfg.lastBackupAt).getTime() : 0;
+        if (!lastMs || now - lastMs >= intervalHours * 3600 * 1000) {
+          await runVaultCloudBackup(vaultId, '定时自动多云容灾备份').catch((e) =>
+            console.warn(`[CloudBackup] Scheduled backup failed for ${vaultId}:`, e.message)
+          );
+        }
+      }
+    } catch (e) {
+      console.warn('[CloudBackup] Scheduler loop error:', e.message);
+    }
+  }, 15 * 60 * 1000);
+  if (cloudBackupScheduleTimer.unref) cloudBackupScheduleTimer.unref();
+}
+
 module.exports = {
   getVaultCloudConfig,
   saveVaultCloudConfig,
   testS3Config,
   testWebDAVConfig,
   runVaultCloudBackup,
+  startCloudBackupScheduler,
 };

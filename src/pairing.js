@@ -17,12 +17,14 @@ function generateCode() {
   return crypto.randomBytes(16).toString('hex').toLowerCase(); // 128-bit one-time code
 }
 
-function createPairSession(payload) {
+function createPairSession(payload, { maxReads = 5 } = {}) {
   const code = generateCode();
   const expiresAt = Date.now() + 15 * 60 * 1000; // 15 mins
   pairSessions.set(code, {
     payload,
     expiresAt,
+    reads: 0,
+    maxReads,
   });
   return { code, expiresAt };
 }
@@ -36,7 +38,10 @@ function getPairSession(code) {
     pairSessions.delete(clean);
     return null;
   }
-  pairSessions.delete(clean);
+  session.reads = (session.reads || 0) + 1;
+  if (session.maxReads && session.reads >= session.maxReads) {
+    pairSessions.delete(clean);
+  }
   return session.payload;
 }
 

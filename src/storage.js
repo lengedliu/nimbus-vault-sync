@@ -33,6 +33,36 @@ const MAX_HISTORY_VERSIONS_PER_PATH = 20;
 const MAX_VAULT_TOTAL_HISTORY = 500;
 const MAX_HISTORY_AGE_MS = 90 * 24 * 60 * 60 * 1000; // 90 days retention
 
+function getEffectiveHistoryPolicy() {
+  try {
+    const settings = require('./settings');
+    const maxPerPath = Number(settings.get('versionRetentionCount'));
+    const maxDays = Number(settings.get('versionRetentionDays'));
+    return {
+      maxPerPath: maxPerPath > 0 ? maxPerPath : MAX_HISTORY_VERSIONS_PER_PATH,
+      maxAgeMs: maxDays > 0 ? maxDays * 24 * 60 * 60 * 1000 : MAX_HISTORY_AGE_MS,
+      maxTotal: MAX_VAULT_TOTAL_HISTORY,
+    };
+  } catch {
+    return {
+      maxPerPath: MAX_HISTORY_VERSIONS_PER_PATH,
+      maxAgeMs: MAX_HISTORY_AGE_MS,
+      maxTotal: MAX_VAULT_TOTAL_HISTORY,
+    };
+  }
+}
+
+function getEffectiveConflictStrategy() {
+  try {
+    const settings = require('./settings');
+    const strategy = settings.get('conflictStrategy');
+    if (strategy === 'overwrite_latest' || strategy === 'server_win' || strategy === 'conflict_copy') {
+      return strategy;
+    }
+  } catch {}
+  return 'conflict_copy';
+}
+
 const NOISE_FILE_REGEXES = [
   /^\.DS_Store$/i,
   /^\._/i,
@@ -82,6 +112,16 @@ async function waitForVaultLocks(vaultId) {
       if (fileLocks.get(key) === tail) fileLocks.delete(key);
     }
   }
+}
+
+async function withDualFileLock(vaultId, pathA, pathB, fn) {
+  const normA = String(pathA || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const normB = String(pathB || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!normA || normA === normB) {
+    return withFileLock(vaultId, normA || normB, fn);
+  }
+  const [first, second] = normA < normB ? [normA, normB] : [normB, normA];
+  return withFileLock(vaultId, first, () => withFileLock(vaultId, second, fn));
 }
 
 function clearVaultLocks(vaultId) {
@@ -282,14 +322,22 @@ function updateManifestEntry(vaultId, relPath, meta) {
   bumpManifestGeneration(vaultId); // 🛡️ 通知在途的 getManifestAsync 重建：期间有写入，快照已过期
   let cachedMem = inMemoryManifestCache.get(vaultId);
   if (!cachedMem) {
-    const manifest = getManifest(vaultId);
+    getManifest(vaultId);
     cachedMem = inMemoryManifestCache.get(vaultId);
   }
   if (cachedMem && cachedMem.manifest) {
     if (meta === null) {
       delete cachedMem.manifest[normRel];
     } else {
-      cachedMem.manifest[normRel] = meta;
+      const mtimeVal = meta.mtime !== undefined ? meta.mtime : meta.mtimeMs;
+      const ctimeVal = meta.ctime !== undefined ? meta.ctime : (meta.ctimeMs !== undefined ? meta.ctimeMs : mtimeVal);
+      cachedMem.manifest[normRel] = {
+        ...meta,
+        mtime: mtimeVal,
+        mtimeMs: meta.mtimeMs !== undefined ? meta.mtimeMs : mtimeVal,
+        ctime: ctimeVal,
+        ctimeMs: meta.ctimeMs !== undefined ? meta.ctimeMs : ctimeVal,
+      };
     }
     // 🛡️ 磁盘扫描缓存的条目契约是 { size, mtimeMs, ctimeMs, hash }；
     // 绝不能把 manifest 形状（{ size, mtime, ctime }）整个覆盖进缓存文件——
@@ -437,8 +485,9 @@ async function getManifestAsync(vaultId, forceRefresh = false) {
           try {
             const stat = await fs.promises.stat(full);
             const cached = cache[rel];
+            const cachedMtime = cached ? (cached.mtimeMs !== undefined ? cached.mtimeMs : cached.mtime) : undefined;
             let hash;
-            if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs && cached.hash) {
+            if (cached && cached.size === stat.size && cachedMtime === stat.mtimeMs && cached.hash) {
               hash = cached.hash;
             } else if (stat.size > 512 * 1024) {
               hash = await sha256FileAsync(full);
@@ -447,8 +496,8 @@ async function getManifestAsync(vaultId, forceRefresh = false) {
               hash = sha256(buf);
             }
             const ctime = (stat.birthtimeMs && stat.birthtimeMs > 0) ? stat.birthtimeMs : (stat.ctimeMs || stat.mtimeMs);
-            nextCache[rel] = { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: ctime, hash };
-            manifest[rel] = { size: stat.size, mtime: stat.mtimeMs, ctime, hash };
+            nextCache[rel] = { size: stat.size, mtime: stat.mtimeMs, mtimeMs: stat.mtimeMs, ctime, ctimeMs: ctime, hash };
+            manifest[rel] = { size: stat.size, mtime: stat.mtimeMs, mtimeMs: stat.mtimeMs, ctime, ctimeMs: ctime, hash };
           } catch {
             // File could be deleted or locked concurrently
           }
@@ -488,15 +537,16 @@ function getManifest(vaultId, forceRefresh = false) {
     try {
       const stat = fs.statSync(full);
       const cached = cache[rel];
+      const cachedMtime = cached ? (cached.mtimeMs !== undefined ? cached.mtimeMs : cached.mtime) : undefined;
       let hash;
-      if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+      if (cached && cached.size === stat.size && cachedMtime === stat.mtimeMs && cached.hash) {
         hash = cached.hash;
       } else {
         hash = sha256(fs.readFileSync(full));
       }
       const ctime = (stat.birthtimeMs && stat.birthtimeMs > 0) ? stat.birthtimeMs : (stat.ctimeMs || stat.mtimeMs);
-      nextCache[rel] = { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: ctime, hash };
-      manifest[rel] = { size: stat.size, mtime: stat.mtimeMs, ctime, hash };
+      nextCache[rel] = { size: stat.size, mtime: stat.mtimeMs, mtimeMs: stat.mtimeMs, ctime, ctimeMs: ctime, hash };
+      manifest[rel] = { size: stat.size, mtime: stat.mtimeMs, mtimeMs: stat.mtimeMs, ctime, ctimeMs: ctime, hash };
     } catch {
       // File could be deleted or locked concurrently
     }
@@ -789,6 +839,7 @@ function snapshotBeforeOverwrite(vaultId, relPath, oldBuffer) {
   const id = randomId();
   fs.writeFileSync(path.join(historyDir(vaultId), id), oldBuffer);
 
+  const policy = getEffectiveHistoryPolicy();
   const idxPath = historyIndexPath(vaultId);
   mutateIndex(idxPath, (entries) => {
     entries.push({ id, path: relPath, size: oldBuffer.length, savedAt: Date.now() });
@@ -796,8 +847,8 @@ function snapshotBeforeOverwrite(vaultId, relPath, oldBuffer) {
     // Cap history per path so it can't grow unbounded.
     const forThisPath = entries.filter((e) => e.path === relPath).sort((a, b) => a.savedAt - b.savedAt);
     let remaining = entries;
-    if (forThisPath.length > MAX_HISTORY_VERSIONS_PER_PATH) {
-      const toDrop = forThisPath.slice(0, forThisPath.length - MAX_HISTORY_VERSIONS_PER_PATH);
+    if (forThisPath.length > policy.maxPerPath) {
+      const toDrop = forThisPath.slice(0, forThisPath.length - policy.maxPerPath);
       const dropIds = new Set(toDrop.map((e) => e.id));
       for (const e of toDrop) {
         const f = path.join(historyDir(vaultId), e.id);
@@ -808,11 +859,21 @@ function snapshotBeforeOverwrite(vaultId, relPath, oldBuffer) {
 
     // Global vault history cap & age expiration
     const now = Date.now();
-    const cutoff = now - MAX_HISTORY_AGE_MS;
-    if (remaining.length > MAX_VAULT_TOTAL_HISTORY) {
+    const cutoff = now - policy.maxAgeMs;
+    const expired = remaining.filter((e) => e.savedAt < cutoff && e.id !== id);
+    if (expired.length > 0) {
+      const expIds = new Set(expired.map((e) => e.id));
+      for (const e of expired) {
+        const f = path.join(historyDir(vaultId), e.id);
+        fs.promises.unlink(f).catch(() => {});
+      }
+      remaining = remaining.filter((e) => !expIds.has(e.id));
+    }
+
+    if (remaining.length > policy.maxTotal) {
       // Sort oldest first and drop excess
       remaining.sort((a, b) => a.savedAt - b.savedAt);
-      const excess = remaining.slice(0, remaining.length - MAX_VAULT_TOTAL_HISTORY);
+      const excess = remaining.slice(0, remaining.length - policy.maxTotal);
       const dropIds = new Set(excess.map((e) => e.id));
       for (const e of excess) {
         const f = path.join(historyDir(vaultId), e.id);
@@ -828,11 +889,14 @@ function snapshotBeforeOverwrite(vaultId, relPath, oldBuffer) {
 /**
  * Prune obsolete history versions based on retention policy
  */
-function pruneVaultHistory(vaultId, { maxAgeMs = MAX_HISTORY_AGE_MS, maxTotal = MAX_VAULT_TOTAL_HISTORY } = {}) {
+function pruneVaultHistory(vaultId, { maxAgeMs, maxTotal } = {}) {
+  const policy = getEffectiveHistoryPolicy();
+  const effectiveMaxAgeMs = maxAgeMs !== undefined ? maxAgeMs : policy.maxAgeMs;
+  const effectiveMaxTotal = maxTotal !== undefined ? maxTotal : policy.maxTotal;
   const idxPath = historyIndexPath(vaultId);
   return mutateIndex(idxPath, (entries) => {
     const now = Date.now();
-    const cutoff = now - maxAgeMs;
+    const cutoff = now - effectiveMaxAgeMs;
     const kept = [];
     const dropped = [];
 
@@ -844,9 +908,9 @@ function pruneVaultHistory(vaultId, { maxAgeMs = MAX_HISTORY_AGE_MS, maxTotal = 
       }
     }
 
-    if (kept.length > maxTotal) {
+    if (kept.length > effectiveMaxTotal) {
       kept.sort((a, b) => a.savedAt - b.savedAt);
-      const excess = kept.splice(0, kept.length - maxTotal);
+      const excess = kept.splice(0, kept.length - effectiveMaxTotal);
       dropped.push(...excess);
     }
 
@@ -869,21 +933,48 @@ function snapshotBeforeOverwriteFromFile(vaultId, relPath, existingFullPath, exi
   const id = randomId();
   fs.copyFileSync(existingFullPath, path.join(historyDir(vaultId), id));
 
+  const policy = getEffectiveHistoryPolicy();
   const idxPath = historyIndexPath(vaultId);
   mutateIndex(idxPath, (entries) => {
     entries.push({ id, path: relPath, size: existingSize, savedAt: Date.now() });
 
     const forThisPath = entries.filter((e) => e.path === relPath).sort((a, b) => a.savedAt - b.savedAt);
-    if (forThisPath.length > MAX_HISTORY_VERSIONS_PER_PATH) {
-      const toDrop = forThisPath.slice(0, forThisPath.length - MAX_HISTORY_VERSIONS_PER_PATH);
+    let remaining = entries;
+    if (forThisPath.length > policy.maxPerPath) {
+      const toDrop = forThisPath.slice(0, forThisPath.length - policy.maxPerPath);
       const dropIds = new Set(toDrop.map((e) => e.id));
       for (const e of toDrop) {
         const f = path.join(historyDir(vaultId), e.id);
         fs.promises.unlink(f).catch(() => {});
       }
-      return entries.filter((e) => !dropIds.has(e.id));
+      remaining = remaining.filter((e) => !dropIds.has(e.id));
     }
-    return entries;
+
+    // Global vault history cap & age expiration
+    const now = Date.now();
+    const cutoff = now - policy.maxAgeMs;
+    const expired = remaining.filter((e) => e.savedAt < cutoff && e.id !== id);
+    if (expired.length > 0) {
+      const expIds = new Set(expired.map((e) => e.id));
+      for (const e of expired) {
+        const f = path.join(historyDir(vaultId), e.id);
+        fs.promises.unlink(f).catch(() => {});
+      }
+      remaining = remaining.filter((e) => !expIds.has(e.id));
+    }
+
+    if (remaining.length > policy.maxTotal) {
+      remaining.sort((a, b) => a.savedAt - b.savedAt);
+      const excess = remaining.slice(0, remaining.length - policy.maxTotal);
+      const dropIds = new Set(excess.map((e) => e.id));
+      for (const e of excess) {
+        const f = path.join(historyDir(vaultId), e.id);
+        fs.promises.unlink(f).catch(() => {});
+      }
+      remaining = remaining.filter((e) => !dropIds.has(e.id));
+    }
+
+    return remaining;
   });
 }
 
@@ -981,11 +1072,13 @@ async function restoreBatchTrash(vaultId, trashIds) {
           await fs.promises.writeFile(destFull, buffer);
           try { await fs.promises.unlink(trashFull); } catch {}
 
+          const destStat = await fs.promises.stat(destFull);
+          const mtimeVal = destStat.mtimeMs || now;
           successfullyRestoredIds.add(entry.id);
           restoredPaths.push(targetRelPath);
 
           const hash = sha256(buffer);
-          const meta = { size: buffer.length, mtime: now, ctime: now, hash };
+          const meta = { size: buffer.length, mtime: mtimeVal, mtimeMs: mtimeVal, ctime: mtimeVal, ctimeMs: mtimeVal, hash };
           manifest[targetRelPath] = meta;
           updateManifestEntry(vaultId, targetRelPath, meta);
           invalidateContentCacheEntry(vaultId, targetRelPath);
@@ -994,7 +1087,7 @@ async function restoreBatchTrash(vaultId, trashIds) {
             path: targetRelPath,
             action: 'UPSERT',
             size: buffer.length,
-            mtime: now,
+            mtime: mtimeVal,
             hash,
           });
 
@@ -1152,33 +1245,53 @@ function writeFile(vaultId, relPath, buffer, { mtime, baseHash } = {}) {
 
     if (existingHash === incomingHash) {
       // No real change — just acknowledge, no history entry needed.
-      if (mtime) touchMtime(full, mtime);
+      if (mtime) {
+        touchMtime(full, mtime);
+      }
+      // 内容未变也要把真实 mtime 刷进清单：否则客户端续传/去重时看到的是旧 mtime
+      try {
+        const st = fs.statSync(full);
+        const mtimeVal = st.mtimeMs || mtime || Date.now();
+        const ctimeVal = (st.birthtimeMs && st.birthtimeMs > 0) ? st.birthtimeMs : (st.ctimeMs || mtimeVal);
+        updateManifestEntry(vaultId, normRel, { size: buffer.length, mtime: mtimeVal, ctime: ctimeVal, hash: incomingHash });
+      } catch {}
       return { written: true, conflict: null, currentHash: incomingHash, size: buffer.length, mtime: mtime || fs.statSync(full).mtimeMs };
     }
 
     if (baseHash && existingHash !== baseHash) {
-      // Someone else changed the file since this client last synced it — real conflict.
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const ext = path.extname(normRel);
-      const base = normRel.slice(0, normRel.length - ext.length);
-      const conflictRel = `${base}.conflict-${stamp}${ext}`;
-      const conflictFull = safeJoin(root, conflictRel);
-      fs.writeFileSync(conflictFull, buffer);
+      const strategy = getEffectiveConflictStrategy();
+      if (strategy === 'server_win') {
+        return { written: false, conflict: null, serverWin: true, currentHash: existingHash };
+      }
+      if (strategy !== 'overwrite_latest') {
+        // Default 'conflict_copy': Someone else changed the file since this client last synced it — real conflict.
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const ext = path.extname(normRel);
+        const base = normRel.slice(0, normRel.length - ext.length);
+        const conflictRel = `${base}.conflict-${stamp}${ext}`;
+        const conflictFull = safeJoin(root, conflictRel);
+        fs.mkdirSync(path.dirname(conflictFull), { recursive: true });
+        fs.writeFileSync(conflictFull, buffer);
+        if (mtime) touchMtime(conflictFull, mtime);
 
-      const hash = sha256(buffer);
-      const mtimeVal = mtime || Date.now();
-      updateManifestEntry(vaultId, conflictRel, { size: buffer.length, mtime: mtimeVal, ctime: mtimeVal, hash });
-      invalidateContentCacheEntry(vaultId, conflictRel);
-      const changePromise = trackRecordChange(vaultId, conflictRel, deltaSync.recordChange(vaultId, { path: conflictRel, action: 'UPSERT', size: buffer.length, mtime: mtimeVal, hash }));
-      try {
-        ftsEngine.onFileWrite(vaultId, conflictRel, buffer.toString('utf8'), { size: buffer.length, mtime: mtimeVal, hash });
-      } catch {}
-      try {
-        gitSync.notifyChange(vaultId);
-      } catch {}
+        const conflictStat = fs.statSync(conflictFull);
+        const hash = sha256(buffer);
+        const mtimeVal = conflictStat.mtimeMs || mtime || Date.now();
+        const ctimeVal = (conflictStat.birthtimeMs && conflictStat.birthtimeMs > 0) ? conflictStat.birthtimeMs : (conflictStat.ctimeMs || mtimeVal);
+        updateManifestEntry(vaultId, conflictRel, { size: buffer.length, mtime: mtimeVal, ctime: ctimeVal, hash });
+        invalidateContentCacheEntry(vaultId, conflictRel);
+        const changePromise = trackRecordChange(vaultId, conflictRel, deltaSync.recordChange(vaultId, { path: conflictRel, action: 'UPSERT', size: buffer.length, mtime: mtimeVal, hash }));
+        try {
+          ftsEngine.onFileWrite(vaultId, conflictRel, buffer.toString('utf8'), { size: buffer.length, mtime: mtimeVal, hash });
+        } catch {}
+        try {
+          gitSync.notifyChange(vaultId);
+        } catch {}
 
-      // Don't touch the existing (server) version in this case.
-      return { written: false, conflict: conflictRel, currentHash: existingHash, conflictHash: hash, conflictSize: buffer.length, conflictMtime: mtimeVal, changePromise };
+        // Don't touch the existing (server) version in this case.
+        return { written: false, conflict: conflictRel, currentHash: existingHash, conflictHash: hash, conflictSize: buffer.length, conflictMtime: mtimeVal, changePromise };
+      }
+      // If strategy === 'overwrite_latest', fall through to snapshotBeforeOverwrite & overwrite
     }
 
     snapshotBeforeOverwrite(vaultId, normRel, existingBuf);
@@ -1186,9 +1299,11 @@ function writeFile(vaultId, relPath, buffer, { mtime, baseHash } = {}) {
 
   fs.writeFileSync(full, buffer);
   if (mtime) touchMtime(full, mtime);
+  const finalStat = fs.statSync(full);
   const hash = sha256(buffer);
-  const mtimeVal = mtime || Date.now();
-  updateManifestEntry(vaultId, normRel, { size: buffer.length, mtime: mtimeVal, ctime: mtimeVal, hash });
+  const mtimeVal = finalStat.mtimeMs || mtime || Date.now();
+  const ctimeVal = (finalStat.birthtimeMs && finalStat.birthtimeMs > 0) ? finalStat.birthtimeMs : (finalStat.ctimeMs || mtimeVal);
+  updateManifestEntry(vaultId, normRel, { size: buffer.length, mtime: mtimeVal, ctime: ctimeVal, hash });
   invalidateContentCacheEntry(vaultId, normRel);
   const changePromise = trackRecordChange(vaultId, normRel, deltaSync.recordChange(vaultId, { path: normRel, action: 'UPSERT', size: buffer.length, mtime: mtimeVal, hash }));
   try {
@@ -1246,35 +1361,50 @@ function writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, { mtime
     if (existingHash && existingHash === incomingHash) {
       // 内容没有实际变化，丢弃临时文件，只在需要时touch一下 mtime。
       try { fs.unlinkSync(tempFilePath); } catch {}
-      if (mtime) touchMtime(full, mtime);
+      if (mtime) {
+        touchMtime(full, mtime);
+        try {
+
+          updateManifestEntry(vaultId, normRel, { size: st.size, mtime: st.mtimeMs, ctime: st.birthtimeMs || st.ctimeMs || st.mtimeMs, hash: incomingHash });
+        } catch {}
+      }
       return { written: true, conflict: null, currentHash: incomingHash, identical: true };
     }
 
     if (baseHash && existingHash && existingHash !== baseHash) {
-      // 服务器上的版本在这期间被别的设备改过——生成冲突副本，不动现有文件。
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const ext = path.extname(normRel);
-      const base = normRel.slice(0, normRel.length - ext.length);
-      const conflictRel = `${base}.conflict-${stamp}${ext}`;
-      const conflictFull = safeJoin(root, conflictRel);
-      moveFile(tempFilePath, conflictFull);
+      const strategy = getEffectiveConflictStrategy();
+      if (strategy === 'server_win') {
+        try { fs.unlinkSync(tempFilePath); } catch {}
+        return { written: false, conflict: null, serverWin: true, currentHash: existingHash };
+      }
+      if (strategy !== 'overwrite_latest') {
+        // 服务器上的版本在这期间被别的设备改过——生成冲突副本，不动现有文件。
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const ext = path.extname(normRel);
+        const base = normRel.slice(0, normRel.length - ext.length);
+        const conflictRel = `${base}.conflict-${stamp}${ext}`;
+        const conflictFull = safeJoin(root, conflictRel);
+        moveFile(tempFilePath, conflictFull);
+        if (mtime) touchMtime(conflictFull, mtime);
 
-      const stat = fs.statSync(conflictFull);
-      const mtimeVal = mtime || Date.now();
-      updateManifestEntry(vaultId, conflictRel, { size: stat.size, mtime: mtimeVal, ctime: mtimeVal, hash: incomingHash });
-      invalidateContentCacheEntry(vaultId, conflictRel);
-      const changePromise = trackRecordChange(vaultId, conflictRel, deltaSync.recordChange(vaultId, { path: conflictRel, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash: incomingHash }));
-      try {
-        if (stat.size <= 2 * 1024 * 1024) {
-          const buf = fs.readFileSync(conflictFull);
-          ftsEngine.onFileWrite(vaultId, conflictRel, buf.toString('utf8'), { size: stat.size, mtime: mtimeVal, hash: incomingHash });
-        }
-      } catch {}
-      try {
-        gitSync.notifyChange(vaultId);
-      } catch {}
+        const stat = fs.statSync(conflictFull);
+        const mtimeVal = stat.mtimeMs || mtime || Date.now();
+        const ctimeVal = (stat.birthtimeMs && stat.birthtimeMs > 0) ? stat.birthtimeMs : (stat.ctimeMs || mtimeVal);
+        updateManifestEntry(vaultId, conflictRel, { size: stat.size, mtime: mtimeVal, ctime: ctimeVal, hash: incomingHash });
+        invalidateContentCacheEntry(vaultId, conflictRel);
+        const changePromise = trackRecordChange(vaultId, conflictRel, deltaSync.recordChange(vaultId, { path: conflictRel, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash: incomingHash }));
+        try {
+          if (stat.size <= 2 * 1024 * 1024) {
+            const buf = fs.readFileSync(conflictFull);
+            ftsEngine.onFileWrite(vaultId, conflictRel, buf.toString('utf8'), { size: stat.size, mtime: mtimeVal, hash: incomingHash });
+          }
+        } catch {}
+        try {
+          gitSync.notifyChange(vaultId);
+        } catch {}
 
-      return { written: false, conflict: conflictRel, currentHash: existingHash, conflictHash: incomingHash, conflictSize: stat.size, conflictMtime: mtimeVal, changePromise };
+        return { written: false, conflict: conflictRel, currentHash: existingHash, conflictHash: incomingHash, conflictSize: stat.size, conflictMtime: mtimeVal, changePromise };
+      }
     }
 
     // 真实覆盖：把旧文件直接拷贝进 history/（不读进内存），再用临时文件替换它。
@@ -1284,8 +1414,9 @@ function writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, { mtime
   moveFile(tempFilePath, full);
   if (mtime) touchMtime(full, mtime);
   const stat = fs.statSync(full);
-  const mtimeVal = mtime || Date.now();
-  updateManifestEntry(vaultId, normRel, { size: stat.size, mtime: mtimeVal, ctime: mtimeVal, hash: incomingHash });
+  const mtimeVal = stat.mtimeMs || mtime || Date.now();
+  const ctimeVal = (stat.birthtimeMs && stat.birthtimeMs > 0) ? stat.birthtimeMs : (stat.ctimeMs || mtimeVal);
+  updateManifestEntry(vaultId, normRel, { size: stat.size, mtime: mtimeVal, ctime: ctimeVal, hash: incomingHash });
   invalidateContentCacheEntry(vaultId, normRel);
   const changePromise = trackRecordChange(vaultId, normRel, deltaSync.recordChange(vaultId, { path: normRel, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash: incomingHash }));
   try {
@@ -1568,6 +1699,26 @@ function exportVaultZip(vaultId, outputStream) {
   return archive.finalize();
 }
 
+/** Create a ZIP snapshot file on disk for a vault's files/ folder (used by cloudBackup). */
+async function createVaultZipSnapshot(vaultId, destZipPath) {
+  fs.mkdirSync(path.dirname(destZipPath), { recursive: true });
+  const output = fs.createWriteStream(destZipPath);
+  const archive = createArchiver('zip', { zlib: { level: 6 } });
+
+  return new Promise((resolve, reject) => {
+    output.on('close', () => resolve({ path: destZipPath, size: archive.pointer() }));
+    output.on('error', reject);
+    archive.on('error', reject);
+    archive.pipe(output);
+
+    const root = vaultFilesRoot(vaultId);
+    if (fs.existsSync(root)) {
+      archive.directory(root, false);
+    }
+    archive.finalize();
+  });
+}
+
 /** Stream a ZIP archive of selected files in vault's files/ folder. */
 function exportFilesZip(vaultId, relPaths, outputStream) {
   const archive = createArchiver('zip', { zlib: { level: 6 } });
@@ -1585,25 +1736,39 @@ function exportFilesZip(vaultId, relPaths, outputStream) {
 }
 
 /** Move or rename a file within a vault */
-function moveVaultFile(vaultId, oldRelPath, newRelPath) {
+function moveVaultFile(vaultId, oldRelPath, newRelPath, options = {}) {
+  const overwrite = Boolean(options && options.overwrite);
+  const normOld = String(oldRelPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const normNew = String(newRelPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
   const root = vaultFilesRoot(vaultId);
-  const oldFull = safeJoin(root, oldRelPath);
-  const newFull = safeJoin(root, newRelPath);
+  const oldFull = safeJoin(root, normOld);
+  const newFull = safeJoin(root, normNew);
   if (!fs.existsSync(oldFull)) return { ok: false, error: '原文件不存在' };
-  if (fs.existsSync(newFull) && oldFull !== newFull) return { ok: false, error: '目标路径已存在同名文件' };
-  
+  if (fs.existsSync(newFull) && oldFull !== newFull) {
+    if (!overwrite) {
+      return { ok: false, error: '目标路径已存在同名文件' };
+    }
+    try {
+      const existingStat = fs.statSync(newFull);
+      snapshotBeforeOverwriteFromFile(vaultId, normNew, newFull, existingStat.size);
+    } catch {}
+  }
+
+  // Reuse existing manifest hash & cached text content before rename to avoid redundant disk reads
+  const oldMeta = getManifestEntry(vaultId, normOld);
+  const vContentCache = contentCache.get(vaultId);
+  const cachedTextObj = vContentCache ? vContentCache.get(normOld) : null;
+
   fs.mkdirSync(path.dirname(newFull), { recursive: true });
-  fs.renameSync(oldFull, newFull);
-  
+  moveFile(oldFull, newFull);
+
   // 更新历史版本索引中的路径，确保重命名后历史版本链路不丢失
   const idxPath = historyIndexPath(vaultId);
   try {
     mutateIndex(idxPath, (entries) => {
-      let changed = false;
       for (const entry of entries) {
-        if (entry.path === oldRelPath) {
-          entry.path = newRelPath;
-          changed = true;
+        if (entry.path === normOld) {
+          entry.path = normNew;
         }
       }
       return entries;
@@ -1612,40 +1777,60 @@ function moveVaultFile(vaultId, oldRelPath, newRelPath) {
     console.warn('[Storage] 重命名历史版本索引关联失败:', e.message);
   }
 
-  updateManifestEntry(vaultId, oldRelPath, null);
-  invalidateContentCacheEntry(vaultId, oldRelPath);
-  const moveChangePromises = [];
-  moveChangePromises.push(trackRecordChange(vaultId, oldRelPath, deltaSync.recordChange(vaultId, { path: oldRelPath, action: 'DELETE', size: 0, mtime: Date.now() })));
+  updateManifestEntry(vaultId, normOld, null);
+  invalidateContentCacheEntry(vaultId, normOld);
+  const pDel = trackRecordChange(vaultId, normOld, deltaSync.recordChange(vaultId, { path: normOld, action: 'DELETE', size: 0, mtime: Date.now() }));
   try {
-    ftsEngine.onFileDelete(vaultId, oldRelPath);
+    ftsEngine.onFileDelete(vaultId, normOld);
   } catch {}
-  
+
   const stat = fs.statSync(newFull);
-  const hash = sha256(fs.readFileSync(newFull));
+  let fileBuf = null;
+  let hash = oldMeta && oldMeta.size === stat.size && oldMeta.hash ? oldMeta.hash : null;
+  if (!hash) {
+    fileBuf = fs.readFileSync(newFull);
+    hash = sha256(fileBuf);
+  }
   const mtimeVal = stat.mtimeMs || Date.now();
-  const ctimeVal = stat.birthtimeMs || stat.ctimeMs || mtimeVal;
-  updateManifestEntry(vaultId, newRelPath, { size: stat.size, mtime: mtimeVal, ctime: ctimeVal, hash });
-  invalidateContentCacheEntry(vaultId, newRelPath);
-  moveChangePromises.push(trackRecordChange(vaultId, newRelPath, deltaSync.recordChange(vaultId, { path: newRelPath, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash })));
+  const ctimeVal = oldMeta?.ctime || stat.birthtimeMs || stat.ctimeMs || mtimeVal;
+  updateManifestEntry(vaultId, normNew, { size: stat.size, mtime: mtimeVal, ctime: ctimeVal, hash });
+  invalidateContentCacheEntry(vaultId, normNew);
+  const pUpsert = trackRecordChange(vaultId, normNew, deltaSync.recordChange(vaultId, { path: normNew, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash }));
+  const changePromise = Promise.all([pDel, pUpsert]);
   try {
-    if (stat.size <= 2 * 1024 * 1024) {
-      const buf = fs.readFileSync(newFull);
-      ftsEngine.onFileWrite(vaultId, newRelPath, buf.toString('utf8'), { size: stat.size, mtime: mtimeVal, hash });
+    if (SEARCHABLE_EXT_RE.test(normNew) && stat.size <= 2 * 1024 * 1024) {
+      const text = cachedTextObj && cachedTextObj.size === stat.size
+        ? cachedTextObj.content
+        : (fileBuf || fs.readFileSync(newFull)).toString('utf8');
+      ftsEngine.onFileWrite(vaultId, normNew, text, { size: stat.size, mtime: mtimeVal, hash });
     }
   } catch {}
-  
+
   try { gitSync.notifyChange(vaultId); } catch {}
-  return { ok: true, changePromise: Promise.all(moveChangePromises) };
+  return { ok: true, hash, mtime: mtimeVal, size: stat.size, changePromise };
 }
 
-/** 异步版本的 moveVaultFile：等待两条变更记录（DELETE 旧路径 + UPSERT 新路径）持久化完成 */
-async function moveVaultFileAsync(vaultId, oldRelPath, newRelPath) {
-  const result = moveVaultFile(vaultId, oldRelPath, newRelPath);
-  if (result.ok && result.changePromise) {
-    await result.changePromise;
+/** 异步版本：等待两条变更记录（DELETE 旧路径 + UPSERT 新路径）持久化完成；失败抛给调用方 */
+async function moveVaultFileAsync(vaultId, oldRelPath, newRelPath, options = {}) {
+  const res = moveVaultFile(vaultId, oldRelPath, newRelPath, options);
+  if (res && res.changePromise) {
+    await res.changePromise;
   }
-  if (result && result.changePromise !== undefined) delete result.changePromise;
-  return result;
+  if (res && res.changePromise !== undefined) delete res.changePromise;
+  return res;
+}
+
+/**
+ * Automatically purge expired items in trash older than maxDays
+ */
+async function purgeExpiredTrash(vaultId, maxDays = 30) {
+  const days = Number(maxDays) > 0 ? Number(maxDays) : 30;
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  const idxPath = trashIndexPath(vaultId);
+  const entries = loadIndex(idxPath);
+  const expiredIds = entries.filter((e) => (e.deletedAt || 0) < cutoff).map((e) => e.id);
+  if (expiredIds.length === 0) return { purgedCount: 0 };
+  return await purgeBatchTrash(vaultId, expiredIds);
 }
 
 /**
@@ -1734,10 +1919,12 @@ module.exports = {
   purgeTrash,
   purgeBatchTrash,
   purgeAllTrash,
+  purgeExpiredTrash,
   searchVault,
   getVaultTags,
   getVaultStats,
   exportVaultZip,
+  createVaultZipSnapshot,
   exportFilesZip,
   moveVaultFile,
   moveVaultFileAsync,
@@ -1750,6 +1937,7 @@ module.exports = {
   pruneVaultHistory,
   withFileLock,
   waitForVaultLocks,
+  withDualFileLock,
   clearVaultCache,
   deleteVaultDirectory,
 };

@@ -158,11 +158,16 @@ export function renderObsidianMarkdown(markdown, vaultId) {
 export async function saveFile(vaultId, path, content, baseHash) {
   const headers = { 'Content-Type': 'text/plain', 'X-Mtime': String(Date.now()) };
   if (baseHash) headers['X-Base-Hash'] = baseHash;
-  return await api(`/api/vaults/${vaultId}/files/${encodeURIComponentPath(path)}`, {
+  const res = await api(`/api/vaults/${vaultId}/files/${encodeURIComponentPath(path)}`, {
     method: 'PUT',
     headers,
     body: content,
   });
+  try {
+    return await res.json();
+  } catch {
+    return { written: true };
+  }
 }
 
 /**
@@ -315,8 +320,11 @@ export async function openFile(vaultId, path, callbacks = {}) {
 
   try {
     const res = await api(`/api/vaults/${vaultId}/files/${encodeURIComponentPath(path)}`);
+    const headerHash = (res && res.headers && typeof res.headers.get === 'function')
+      ? (res.headers.get('X-File-Hash') || res.headers.get('x-file-hash'))
+      : undefined;
     const text = await res.text();
-    const baseHash = (state.manifest && state.manifest[path]) ? state.manifest[path].hash : undefined;
+    let baseHash = (state.manifest && state.manifest[path]) ? state.manifest[path].hash : (headerHash || undefined);
 
     mainPanel.innerHTML = '';
     const layout = document.createElement('div');
@@ -424,7 +432,19 @@ export async function openFile(vaultId, path, callbacks = {}) {
 
       header.querySelector('#ed-save-btn').onclick = async () => {
         try {
-          await saveFile(vaultId, path, textarea.value, baseHash);
+          const saveRes = await saveFile(vaultId, path, textarea.value, baseHash);
+          if (saveRes && saveRes.serverWin) {
+            toast('⚠️ 检测到并发冲突（策略：保留云端最新版本），您的修改未能覆盖云端，请先复制备份内容后刷新', 'error');
+            return;
+          }
+          if (saveRes && saveRes.conflict) {
+            toast(`⚠️ 检测到并发冲突！您的修改已另存为冲突分支副本: ${saveRes.conflict}`, 'error');
+            onBack();
+            return;
+          }
+          if (saveRes && (saveRes.currentHash || saveRes.hash)) {
+            baseHash = saveRes.currentHash || saveRes.hash;
+          }
           toast('HTML 笔记已保存并已广播同步');
           onBack();
         } catch (e) {
@@ -523,7 +543,19 @@ export async function openFile(vaultId, path, callbacks = {}) {
 
     header.querySelector('#ed-save-btn').onclick = async () => {
       try {
-        await saveFile(vaultId, path, textarea.value, baseHash);
+        const saveRes = await saveFile(vaultId, path, textarea.value, baseHash);
+        if (saveRes && saveRes.serverWin) {
+          toast('⚠️ 检测到并发冲突（策略：保留云端最新版本），您的修改未能覆盖云端，请先复制备份内容后刷新', 'error');
+          return;
+        }
+        if (saveRes && saveRes.conflict) {
+          toast(`⚠️ 检测到并发冲突！您的修改已另存为冲突分支副本: ${saveRes.conflict}`, 'error');
+          onBack();
+          return;
+        }
+        if (saveRes && (saveRes.currentHash || saveRes.hash)) {
+          baseHash = saveRes.currentHash || saveRes.hash;
+        }
         toast('保存成功并已广播同步');
         onBack();
       } catch (e) {

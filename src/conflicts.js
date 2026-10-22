@@ -3,7 +3,6 @@ const path = require('path');
 const storage = require('./storage');
 const vaults = require('./vaults');
 const webhooks = require('./webhooks');
-const deltaSync = require('./deltaSync');
 
 /**
  * Identify all conflict files in a vault.
@@ -40,6 +39,8 @@ function getBasePathFromConflict(conflictRelPath) {
 function listConflicts(vaultId) {
   const root = vaults.vaultFilesRoot(vaultId);
   const conflictPaths = findConflictsInDir(root, root);
+  const manifest = storage.getManifest(vaultId);
+
   return conflictPaths.map((conflictPath) => {
     const fullConflict = storage.safeJoin(root, conflictPath);
     const conflictStat = fs.existsSync(fullConflict) ? fs.statSync(fullConflict) : null;
@@ -70,24 +71,20 @@ function getConflictDiff(vaultId, conflictPath) {
 
   if (!fs.existsSync(fullConflict)) throw new Error('冲突文件不存在');
 
-  const isText = /\.(md|txt|json|js|ts|css|html|yaml|yml|csv|canvas)$/i.test(conflictPath);
-  const conflictStat = fs.statSync(fullConflict);
-  const baseStat = fs.existsSync(fullBase) ? fs.statSync(fullBase) : null;
-  const maxDiffBytes = 2 * 1024 * 1024;
+  const conflictBuf = fs.readFileSync(fullConflict);
+  const baseBuf = fs.existsSync(fullBase) ? fs.readFileSync(fullBase) : Buffer.from('');
 
-  if (!isText || conflictStat.size > maxDiffBytes || (baseStat && baseStat.size > maxDiffBytes)) {
+  const isText = /\.(md|txt|json|js|ts|css|html|yaml|yml|csv|canvas)$/i.test(conflictPath);
+
+  if (!isText) {
     return {
       isText: false,
       conflictPath,
       basePath,
-      conflictSize: conflictStat.size,
-      baseSize: baseStat?.size || 0,
-      reason: isText ? '文件过大，暂不生成文本差异预览' : undefined,
+      conflictSize: conflictBuf.length,
+      baseSize: baseBuf.length,
     };
   }
-
-  const conflictBuf = fs.readFileSync(fullConflict);
-  const baseBuf = baseStat ? fs.readFileSync(fullBase) : Buffer.from('');
 
   const baseText = baseBuf.toString('utf8');
   const conflictText = conflictBuf.toString('utf8');
@@ -117,11 +114,17 @@ async function resolveConflict(vaultId, { conflictPath, resolution, customConten
 
   if (!fs.existsSync(fullConflict)) throw new Error('冲突文件已被移除或不存在');
 
-  // 🛡️ 以下写/删统一使用 async 版本：变更记录与游标持久化完成后，才进入失效缓存与广播阶段
   let resolvedBuffer = null;
 
   if (resolution === 'keep-current') {
-    // Keep server current version -> safely delete conflict copy with deltaSync & trash tracking
+    // 若原始文件已不存在（例如曾被误删），keep-current 应先将冲突副本恢复为原始文件，防止两份文件全丢
+    if (!fs.existsSync(fullBase)) {
+      const buf = fs.readFileSync(fullConflict);
+      resolvedBuffer = buf;
+      await storage.withFileLock(vaultId, basePath, async () => {
+        await storage.writeFileAsync(vaultId, basePath, buf, { mtime: Date.now() });
+      });
+    }
     await storage.withFileLock(vaultId, conflictPath, async () => {
       await storage.deleteFileAsync(vaultId, conflictPath);
     });
@@ -160,15 +163,10 @@ async function resolveConflict(vaultId, { conflictPath, resolution, customConten
     throw new Error('未知的冲突解决策略 (可选: keep-current, keep-conflict, merge-both, custom)');
   }
 
-  // Invalidate in-memory manifest cache after conflict cleanup
-  await deltaSync.waitForPendingWrites(vaultId);
-  storage.invalidateManifestCache(vaultId);
-
-  // Broadcast resolved changes to all connected clients
+  // Broadcast resolved changes to all connected clients using O(1) manifest entry lookup
   if (fnsHub) {
-    if (resolution !== 'keep-current') {
-      const manifest = await storage.getManifestAsync(vaultId);
-      const meta = manifest ? manifest[basePath] : null;
+    if (resolution !== 'keep-current' || resolvedBuffer) {
+      const meta = storage.getManifestEntry(vaultId, basePath);
       if (meta) {
         fnsHub.broadcastFileChange(vaultId, basePath, { currentHash: meta.hash }, userId);
       }
