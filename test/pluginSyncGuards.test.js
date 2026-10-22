@@ -335,3 +335,94 @@ test('插件：队列辅助方法保证离线变更不丢失', async () => {
   assert.deepEqual(Array.from(plugin.pendingLocalQueueWhileBarrier), ['a.md']);
   assert.deepEqual(Array.from(plugin.pendingLocalDeletes), ['b.md']);
 });
+
+// ---------------------------------------------------------------------------
+// 覆盖防护 (applyRemoteBinaryChange)：远端版本覆盖本地文件前，
+// 本地若有未推送的离线修改，必须先落 .conflict-offline-* 备份，防止静默丢改动。
+// ---------------------------------------------------------------------------
+function makeVaultStub(plugin, buffers) {
+  const created = {};
+  const modified = {};
+  const fileFor = (p) => {
+    const f = new obsidianStub.TFile();
+    f.path = p;
+    f.extension = p.split('/').pop().split('.').pop();
+    f.stat = { mtime: 1, size: buffers[p] ? buffers[p].byteLength : 0 };
+    return f;
+  };
+  plugin.app.vault = {
+    configDir: '.obsidian',
+    getFiles: () => Object.keys(buffers).filter((p) => !p.includes('conflict-offline')).map(fileFor),
+    getAbstractFileByPath: (p) => (p && buffers[p] !== undefined ? fileFor(p) : null),
+    readBinary: async (f) => buffers[f.path] || new ArrayBuffer(0),
+    createBinary: async (p, buf) => { buffers[p] = buf; },
+    modifyBinary: async (f, buf) => { buffers[f.path] = buf; },
+    delete: async () => {},
+    writeBinary: async (p, buf) => { buffers[p] = buf; },
+  };
+  return { created, modified, buffers, fileFor };
+}
+
+test('插件：远端覆盖防护在本地存在未推送修改时先备份', async (t) => {
+  const enc = new TextEncoder();
+  const sha = (bytes) => require('node:crypto').createHash('sha256').update(Buffer.from(bytes)).digest('hex');
+  const remoteBytes = enc.encode('cloud version');
+  const localBytes = enc.encode('offline edit');
+  const putOpts = (hash) => ({ ok: true, status: 200, arrayBuffer: async () => remoteBytes.buffer.slice(remoteBytes.byteOffset, remoteBytes.byteOffset + remoteBytes.byteLength) });
+
+  await t.test('本地有离线修改：先备份副本再覆盖，且备份经推送参与同步', async () => {
+    const plugin = makePlugin();
+    const buffers = { 'p.md': localBytes.buffer.slice(0) };
+    makeVaultStub(plugin, buffers);
+    // 基线是“上次已同步版本”，与本地当前内容不一致 → 判定存在未推送修改
+    plugin.updateBaselineEntry('vault-test', 'p.md', { hash: sha(enc.encode('base version')), mtime: 1, size: 3 });
+    const pushed = [];
+    plugin.sendWsMessageAndWait = async (payload) => {
+      pushed.push({ type: payload.type, path: payload.path });
+      return { type: 'ack', action: 'push', path: payload.path, hash: 'x' };
+    };
+
+    const ok = await withFetch(() => Promise.resolve(putOpts()), () => plugin.pullRemoteFileViaHttp('p.md', 1, sha(remoteBytes)));
+    assert.equal(ok, true);
+    const backupPaths = Object.keys(buffers).filter((p) => p.includes('.conflict-offline-'));
+    assert.equal(backupPaths.length, 1);
+    assert.deepEqual(pushed, [{ type: 'push', path: backupPaths[0] }]);
+    assert.equal(Buffer.from(buffers['p.md']).toString(), 'cloud version');
+    assert.equal(plugin.getBaselineEntry('vault-test', 'p.md').hash, sha(remoteBytes));
+  });
+
+  await t.test('本地与基线一致：直接覆盖，不产生副本', async () => {
+    const plugin = makePlugin();
+    const buffers = { 'p.md': enc.encode('base version').buffer.slice(0) };
+    makeVaultStub(plugin, buffers);
+    plugin.updateBaselineEntry('vault-test', 'p.md', { hash: sha(enc.encode('base version')), mtime: 1, size: 3 });
+    plugin.sendWsMessageAndWait = async () => { throw new Error('不应产生备份推送'); };
+
+    const ok = await withFetch(() => Promise.resolve(putOpts()), () => plugin.pullRemoteFileViaHttp('p.md', 1, sha(remoteBytes)));
+    assert.equal(ok, true);
+    assert.equal(Object.keys(buffers).some((p) => p.includes('.conflict-offline-')), false);
+    assert.equal(Buffer.from(buffers['p.md']).toString(), 'cloud version');
+  });
+
+  await t.test('3-Way 已备份（backupDone）：不再生成重复副本', async () => {
+    const plugin = makePlugin();
+    const buffers = { 'p.md': localBytes.buffer.slice(0) };
+    makeVaultStub(plugin, buffers);
+    plugin.sendWsMessageAndWait = async () => false;
+
+    const ok = await plugin.applyRemoteBinaryChange('p.md', remoteBytes.buffer.slice(remoteBytes.byteOffset, remoteBytes.byteOffset + remoteBytes.byteLength), 1, sha(remoteBytes), { backupDone: true });
+    assert.equal(ok, true);
+    assert.equal(Object.keys(buffers).some((p) => p.includes('.conflict-offline-')), false);
+  });
+
+  await t.test('内容与其声明哈希不符：拒绝应用，不写盘也不建副本', async () => {
+    const plugin = makePlugin();
+    const buffers = { 'p.md': enc.encode('base version').buffer.slice(0) };
+    const { modified } = makeVaultStub(plugin, buffers);
+
+    const ok = await withFetch(() => Promise.resolve(putOpts()), () => plugin.pullRemoteFileViaHttp('p.md', 1, 'deadbeef'));
+    assert.equal(ok, false);
+    assert.equal(Object.keys(modified).length, 0);
+    assert.equal(Object.keys(buffers).some((p) => p.includes('.conflict-offline-')), false);
+  });
+});

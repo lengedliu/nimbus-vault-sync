@@ -899,12 +899,16 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
       case 'conflict':
         new Notice(`⚠️ 检测到并发冲突！已自动创建云端分支副本: ${msg.conflictPath}`);
-        // 1. 自动拉取云端新创建的分支副本保存至本地
+        // 1. 自动拉取云端新创建的分支副本保存至本地（本端离线编辑的内容终于有了可靠落点）
         if (msg.conflictPath) {
           this.sendWsMessage({ type: 'pull', path: msg.conflictPath });
         }
         // 2. 自动拉取云端主文件当前胜出版本同步至本地
         if (msg.path) {
+          // 🛡️ 冲突自恢复流：本地内容已经原样存在于上面的分支副本中，
+          // 主路径的覆盖拉取不应再为同一内容生成另一个本地副本（一次性期待集）
+          if (!this._conflictRestorePaths) this._conflictRestorePaths = new Set();
+          this._conflictRestorePaths.add(msg.path);
           this.sendWsMessage({ type: 'pull', path: msg.path });
         }
         break;
@@ -1341,6 +1345,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       let hasCriticalFailure = false;
 
       // 0. 为离线并发冲突生成本地版本备份
+      const conflictBackupPaths = new Set(toLocalConflictBackup.map((item) => item.path));
       for (const item of toLocalConflictBackup) {
         await this.backupLocalConflictFile(item.file, item.path);
       }
@@ -1364,7 +1369,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         const batch = toPull.slice(i, i + PULL_CONCURRENCY);
         const results = await Promise.all(batch.map(async (item) => {
           if (this.isIgnoredLocalPath(item.path)) return true;
-          const ok = await this.pullRemoteFileViaHttp(item.path, item.meta?.mtime, item.meta?.hash);
+          const ok = await this.pullRemoteFileViaHttp(item.path, item.meta?.mtime, item.meta?.hash, { backupDone: conflictBackupPaths.has(item.path) });
           if (ok === false) {
             if (this.isCriticalSyncFile(item.path)) {
               hasCriticalFailure = true;
@@ -1581,9 +1586,18 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     return this.applyRemoteBinaryChange(filePath, buffer, mtime, hash);
   }
 
-  async applyRemoteBinaryChange(filePath, buffer, mtime, hash) {
+  async applyRemoteBinaryChange(filePath, buffer, mtime, hash, options = {}) {
     const cleanPath = String(filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
     if (!cleanPath || !buffer) return false;
+    // 🛡️ 先校验再写盘：buffer 就在手上。任何与声明哈希不符的内容（代理错误页、
+    // 传输损坏）在触碰磁盘之前就被拒绝。旧实现先落盘后校验，坏内容会在
+    // “校验失败但写入已完成”的路径上残留，还会被后续「本地 ≠ 基线」的判定
+    // 当成用户修改推回云端，反向污染云端。
+    const actualHash = await computeSha256(buffer);
+    if (hash && actualHash && String(hash) !== actualHash) {
+      console.error(`[Nimbus] 拉取内容与其声明哈希不一致，拒绝写入: ${cleanPath} expected=${hash} actual=${actualHash}`);
+      return false;
+    }
     if (!this.applyingRemotePaths) this.applyingRemotePaths = new Set();
     // 先拿路径锁，再标记「远端写入中」：
     // 否则等待锁期间设置 applyingRemotePaths 会让持有锁的本地推送被误判为“远端回声”而静默丢弃
@@ -1598,6 +1612,37 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       const adapterExists = this.app.vault.adapter ? await this.app.vault.adapter.exists(cleanPath) : false;
 
       if (existing instanceof TFile) {
+        // 🛡️ 覆盖防护：远端更新即将覆盖本地文件。若本地内容相对“上次已同步基线”
+        // 存在未推送的修改（离线编辑 / 推送仍在途），绝不能静默覆盖——
+        // 先把本地版本备份为 .conflict-offline-* 副本（与 applyRemoteDelete 的
+        // protectModified 语义一致），备份失败则拒绝本次覆盖；否则本地离线编辑
+        // 会被增量/实时远端版本悄悄抹掉且基线随后更新为远端 hash，任何兜底都救不回。
+        // 已显式做过备份的调用方（3-Way toLocalConflictBackup）与冲突自恢复拉取
+        // 传 backupDone / 一次性期待集，避免为同一内容生成重复副本。
+        const backupDone = options.backupDone === true ||
+          (this._conflictRestorePaths instanceof Set && this._conflictRestorePaths.delete(cleanPath));
+        if (!backupDone) {
+          const baseMeta = this.getBaselineEntry(this.settings.vaultId, cleanPath);
+          const lastKnown = (baseMeta && baseMeta.hash) || this.fileHashes.get(cleanPath) || null;
+          const localHash = await this.computeFileHash(existing);
+          if (!localHash) {
+            console.warn('[Nimbus] 远端写盘防护：无法读取本地内容计算哈希，已暂停该覆盖指令:', cleanPath);
+            return false;
+          }
+          if (!lastKnown || lastKnown !== localHash) {
+            const conflictPath = await this.backupLocalConflictFile(existing, cleanPath);
+            if (!conflictPath) {
+              console.warn('[Nimbus] 远端写盘防护：本地修改备份失败，已暂停该覆盖指令以防数据丢失:', cleanPath);
+              return false;
+            }
+            // 备份副本的创建事件会被 isApplyingRemoteChange 屏蔽，这里直接推送它参与同步
+            // （与 applyRemoteDelete 的删除防护同一语义；屏障期重复入队无害，hash 拦截会跳过）
+            const backupFile = this.app.vault.getAbstractFileByPath(conflictPath);
+            if (backupFile instanceof TFile) {
+              await this.pushLocalFile(backupFile);
+            }
+          }
+        }
         await this.app.vault.modifyBinary(existing, buffer);
       } else if (adapterExists) {
         // 文件已在磁盘上存在（例如 .obsidian/ 隐藏配置或未被抽象索引的文件）
@@ -1646,14 +1691,8 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         }
       }
 
-      // 🛡️ 字节级完整性校验：始终对“实际落盘内容”计算 sha256。
-      // 若服务端声明了 hash 而内容不匹配（代理/防盗门错误页、传输损坏），
-      // 绝不能把错误内容写入文件并盖上“云端最新 hash”的基线（那会产生伪对齐）。
-      const actualHash = await computeSha256(buffer);
-      if (hash && actualHash && String(hash) !== actualHash) {
-        console.error(`[Nimbus] 拉取内容与其声明哈希不一致，拒绝写入: ${cleanPath} expected=${hash} actual=${actualHash}`);
-        return false;
-      }
+      // 字节级哈希校验已在写盘之前完成（见函数入口），actualHash 即实际写入内容；
+      // 仅在极端环境拿不到哈希（null）时回退到服务端声明的 hash。
       const calculatedHash = actualHash || hash;
       if (calculatedHash) {
         this.fileHashes.set(cleanPath, calculatedHash);
@@ -1675,7 +1714,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     }
   }
 
-  async pullRemoteFileViaHttp(filePath, mtime, expectedHash) {
+  async pullRemoteFileViaHttp(filePath, mtime, expectedHash, options = {}) {
     const cleanPath = String(filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
     const cleanToken = this.getCleanToken();
     if (!cleanPath || !this.settings.vaultId || !cleanToken) return false;
@@ -1693,7 +1732,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         return false;
       }
       const arrayBuffer = await res.arrayBuffer();
-      const written = await this.applyRemoteBinaryChange(cleanPath, arrayBuffer, mtime, expectedHash);
+      const written = await this.applyRemoteBinaryChange(cleanPath, arrayBuffer, mtime, expectedHash, options);
       return written !== false;
     } catch (err) {
       console.error('[Nimbus] HTTP 流式拉取远程文件失败:', cleanPath, err);
