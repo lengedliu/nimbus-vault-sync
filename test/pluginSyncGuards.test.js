@@ -52,6 +52,7 @@ function makePlugin({ wsReady = true } = {}) {
   plugin.remoteIgnorePatterns = [];
   plugin.applyingRemotePaths = new Set();
   plugin.pendingLocalDeletes = new Set();
+  plugin.pendingLocalRenames = new Map();
   plugin.pendingLocalQueueWhileBarrier = new Set();
   plugin.scheduleSaveBaselineCache = () => {};
   plugin.scheduleSaveSettings = () => {};
@@ -362,6 +363,72 @@ function makeVaultStub(plugin, buffers) {
   };
   return { created, modified, buffers, fileFor };
 }
+
+test('插件：屏障期重命名/目录删除记录补发而非丢弃', async (t) => {
+  await t.test('屏障期 rename 进入挂起队列并在收尾补发', async () => {
+    const plugin = makePlugin();
+    plugin.syncBarrierActive = true;
+    plugin.isVaultReady = true;
+    const file = new obsidianStub.TFile();
+    file.path = 'new-name.md';
+    file.extension = 'md';
+    file.stat = { mtime: 1, size: 5 };
+
+    plugin.app.vault.getAbstractFileByPath = (p) => (p === 'new-name.md' ? file : null);
+    plugin.onLocalFileRename(file, 'old-name.md');
+    assert.equal(plugin.pendingLocalRenames.get('old-name.md'), 'new-name.md');
+
+    // 收尾补发：走 renameRemoteFile（打桩记录）
+    const calls = [];
+    plugin.renameRemoteFile = async (oldP, target) => {
+      calls.push([oldP, target.path]);
+      return true;
+    };
+    await plugin.flushPendingLocalRenames();
+    assert.deepEqual(calls, [['old-name.md', 'new-name.md']]);
+    assert.equal(plugin.pendingLocalRenames.size, 0);
+  });
+
+  await t.test('目标再次消失/旧路径仍在：过期记录跳过', async () => {
+    const plugin = makePlugin();
+    plugin.queuePendingLocalRename('a.md', 'b.md');
+    const calls = [];
+    plugin.renameRemoteFile = async (...args) => { calls.push(args); return true; };
+
+    // 目标 b.md 不存在 → 过期
+    await plugin.flushPendingLocalRenames();
+    assert.deepEqual(calls, []);
+    // 旧路径又回来了（重新创建 a.md，b.md 也在）→ 过期
+    plugin.queuePendingLocalRename('a.md', 'b.md');
+    const fA = new obsidianStub.TFile(); fA.path = 'a.md'; fA.extension = 'md';
+    const fB = new obsidianStub.TFile(); fB.path = 'b.md'; fB.extension = 'md';
+    plugin.app.vault.getAbstractFileByPath = (p) => (p === 'a.md' ? fA : (p === 'b.md' ? fB : null));
+    await plugin.flushPendingLocalRenames();
+    assert.deepEqual(calls, []);
+    assert.equal(plugin.pendingLocalRenames.size, 0);
+  });
+
+  await t.test('屏障期目录删除逐个挂起，超大目录触发熔断', async () => {
+    const plugin = makePlugin();
+    plugin.syncBarrierActive = true;
+    plugin.isVaultReady = true;
+    for (let i = 0; i < 5; i++) plugin.fileHashes.set(`dir/f${i}.md`, `h${i}`);
+    const folder = new obsidianStub.TFolder();
+    folder.path = 'dir';
+
+    plugin.onLocalFileDelete(folder);
+    assert.deepEqual(Array.from(plugin.pendingLocalDeletes), ['dir/f0.md', 'dir/f1.md', 'dir/f2.md', 'dir/f3.md', 'dir/f4.md']);
+
+    // 超阈值：>10 且 >= 总哈希 40%
+    const bigVault = makePlugin();
+    bigVault.syncBarrierActive = true;
+    for (let i = 0; i < 20; i++) bigVault.fileHashes.set(`big/f${i}.md`, `h${i}`);
+    const bigFolder = new obsidianStub.TFolder();
+    bigFolder.path = 'big';
+    bigVault.onLocalFileDelete(bigFolder);
+    assert.equal(bigVault.pendingLocalDeletes.size, 0);
+  });
+});
 
 test('插件：远端覆盖防护在本地存在未推送修改时先备份', async (t) => {
   const enc = new TextEncoder();

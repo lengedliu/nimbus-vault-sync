@@ -55,6 +55,8 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     this.isVaultReady = false;
     this.syncBarrierActive = true; // 🛡️ 启动期下行优先屏障保护 (Pull-First Sync Barrier)
     this.pendingLocalQueueWhileBarrier = new Set();
+    // 屏障期/远端应用期间发生的本地重命名：oldPath -> newPath，屏障收尾后补发
+    this.pendingLocalRenames = new Map();
     this.fileHashes = new Map();
     // 服务端 syncRules.ignorePatterns 镜像：由 init / rules_updated 下发，参与 isIgnoredLocalPath 判定
     this.remoteIgnorePatterns = [];
@@ -720,6 +722,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       this.fileHashes = new Map();
       if (this.pendingLocalQueueWhileBarrier) this.pendingLocalQueueWhileBarrier.clear();
       if (this.pendingLocalDeletes) this.pendingLocalDeletes.clear();
+      if (this.pendingLocalRenames) this.pendingLocalRenames.clear();
       const nextBaseline = this.getVaultBaseline(this.settings.vaultId);
       for (const [path, meta] of Object.entries(nextBaseline)) {
         if (meta && meta.hash) this.fileHashes.set(path, meta.hash);
@@ -1443,7 +1446,8 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   async flushPendingLocalChangesAfterBarrier() {
     this.syncBarrierActive = false;
     if (!this.pendingLocalQueueWhileBarrier || this.pendingLocalQueueWhileBarrier.size === 0) {
-      // 没有待推队列时也要清理挂起删除
+      // 没有待推队列时也要清理挂起重命名与挂起删除
+      await this.flushPendingLocalRenames();
       await this.flushPendingLocalDeletes();
       return;
     }
@@ -1464,6 +1468,8 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         }
       }
     }
+    // 🛡️ 屏障期重命名记录在补推之后补发（renameRemoteFile 内部失败会自动回退 delete + push）
+    await this.flushPendingLocalRenames();
     await this.flushPendingLocalDeletes();
   }
 
@@ -1471,6 +1477,30 @@ module.exports = class NimbusSyncPlugin extends Plugin {
    * 补发“删除指令未确认/屏障期产生”的挂起删除：
    * 逐条等待云端 ack；确认成功后清基线；仍失败则继续挂起，等待下一次屏障完成。
    */
+  /**
+   * 补发屏障期/远端应用期间被记录的本地重命名：
+   * 逐条确认云端 ack；过期记录（目标又改了名/不存在）跳过，交给 3-Way 对账兜底。
+   */
+  async flushPendingLocalRenames() {
+    if (!this.pendingLocalRenames || this.pendingLocalRenames.size === 0) return;
+    const entries = Array.from(this.pendingLocalRenames.entries());
+    this.pendingLocalRenames.clear();
+    for (const [oldPath, newPath] of entries) {
+      // 目标已再次消失/被删除：旧的改名记录过期，交由下次 3-Way 对账兜底
+      if (this.isIgnoredLocalPath(oldPath) && this.isIgnoredLocalPath(newPath)) continue;
+      const target = this.app.vault.getAbstractFileByPath(newPath);
+      const oldStill = this.app.vault.getAbstractFileByPath(oldPath);
+      if (!(target instanceof TFile) || (oldStill instanceof TFile)) {
+        console.warn('[Nimbus] 屏障期重命名记录已过期，跳过并交由 3-Way 对账:', oldPath, '->', newPath);
+        continue;
+      }
+      const renamed = await this.renameRemoteFile(oldPath, target);
+      if (!renamed) {
+        console.warn('[Nimbus] 屏障期重命名补发未获确认，交由下次对账兜底:', oldPath, '->', newPath);
+      }
+    }
+  }
+
   async flushPendingLocalDeletes() {
     if (!this.pendingLocalDeletes || this.pendingLocalDeletes.size === 0) return;
     const deletes = Array.from(this.pendingLocalDeletes);
@@ -1839,6 +1869,20 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       // 🛡️ 屏障期删除不能丢弃（旧实现直接 return）：记入挂起删除，屏障结束后补发
       if (this.syncBarrierActive && file instanceof TFile && !this.isIgnoredLocalPath(file.path)) {
         this.queuePendingLocalDelete(file.path);
+      } else if (this.syncBarrierActive && file instanceof TFolder) {
+        // 🛡️ 屏障期删除整个目录同样不能丢弃：目录已从本地消失，用 fileHashes
+        // 推导目录下已知同步文件并逐个挂起补发；超大目录沿用文件夹级熔断阈值。
+        const prefix = file.path ? `${file.path}/` : '';
+        const matched = Array.from(this.fileHashes.keys())
+          .filter((p) => p.startsWith(prefix) && !this.isIgnoredLocalPath(p));
+        if (matched.length > 10 && matched.length >= Math.max(1, this.fileHashes.size * 0.4)) {
+          console.warn(`[Nimbus 安全熔断] 屏障期拦截异常文件夹批量删除: ${file.path}, 涉及文件: ${matched.length}`);
+          new Notice(`⚠️ [Nimbus 安全熔断] 屏障期检测到删除文件夹包含 ${matched.length} 篇笔记（超安全阈值），未同步云端删除，稍后将对账确认！`, 8000);
+          return;
+        }
+        for (const knownPath of matched) {
+          this.queuePendingLocalDelete(knownPath);
+        }
       }
       return;
     }
@@ -1885,7 +1929,16 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   }
 
   async onLocalFileRename(file, oldPath) {
-    if (!this.isVaultReady || this.isApplyingRemoteChange || this.syncBarrierActive) return;
+    if (!this.isVaultReady || this.isApplyingRemoteChange || this.syncBarrierActive) {
+      // 🛡️ 屏障期/远端应用期的重命名不能丢弃（旧实现直接 return）：改名后的文件
+      // 既不在 pendingLocalQueue、也不在 pendingLocalDeletes 里，只能等下一次
+      // 全量 3-Way 才会被人发现（若日常一直是 delta-only 连接则可能长期不上传）。
+      // 记录 (旧→新) 待屏障收尾补发；同一 oldPath 的链式改名取最后一次。
+      if ((this.syncBarrierActive || this.isApplyingRemoteChange) && file instanceof TFile) {
+        this.queuePendingLocalRename(oldPath, file.path);
+      }
+      return;
+    }
     if (file instanceof TFile) {
       if (this.isPathApplyingRemote(file.path) || this.isPathApplyingRemote(oldPath)) return;
       if (this.isIgnoredLocalPath(file.path) && this.isIgnoredLocalPath(oldPath)) return;
@@ -2066,6 +2119,18 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     if (!filePath) return;
     if (!this.pendingLocalDeletes) this.pendingLocalDeletes = new Set();
     this.pendingLocalDeletes.add(filePath);
+  }
+
+  /**
+   * 记录屏障期/远端应用期间发生的本地重命名（旧实现直接丢弃）：
+   * 同一 oldPath 的多次改名取最后一次，屏障收尾由 flushPendingLocalRenames 补发。
+   */
+  queuePendingLocalRename(oldPath, newPath) {
+    if (!this.pendingLocalRenames) this.pendingLocalRenames = new Map();
+    const cleanOld = String(oldPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const cleanNew = String(newPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!cleanOld || !cleanNew || cleanOld === cleanNew) return;
+    this.pendingLocalRenames.set(cleanOld, cleanNew);
   }
 
   /**
