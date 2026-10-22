@@ -139,9 +139,10 @@ class DeltaSyncService {
       return this.getLatestCursor(vaultId);
     }
 
-    if (!this.vaultState.has(vaultId)) {
-      await this.initVault(vaultId);
-    }
+    // 🛡️ 状态初始化放进队列任务内执行（任务体自带安全重建）：
+    // 旧实现在入队前 await initVault，令 _enqueueWrite 延后发生——此时
+    // waitForPendingWrites/clearCache 等排空屏障会因“队列还不存在”而提前返回，
+    // durable 屏障失效。现在 _enqueueWrite 同步执行，队列条目立即可见。
     return this._enqueueWrite(vaultId, async () => {
       // 🛡️ 状态可能在排队期间被并发清理（级联删除/缓存清理），此时安全重建而不是抛 undefined 错误
       let st = this.vaultState.get(vaultId);
@@ -175,9 +176,7 @@ class DeltaSyncService {
 
   async recordBatchChanges(vaultId, items) {
     if (!Array.isArray(items) || items.length === 0) return [];
-    if (!this.vaultState.has(vaultId)) {
-      await this.initVault(vaultId);
-    }
+    // 🛡️ 与 recordChange 同因：初始化放进队列任务内，屏障类调用可立即看到队列
     return this._enqueueWrite(vaultId, async () => {
       // 🛡️ 与 recordChange 相同：排队期间状态可能被重建，安全兜底
       let st = this.vaultState.get(vaultId);

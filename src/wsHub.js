@@ -440,6 +440,8 @@ class FnsHub {
             size: meta.size,
             mtime: meta.mtime,
             hash: meta.hash,
+            // 🛡️ 附带当前游标：客户端应用成功后可小步推进，免得每次重连重放
+            cursor: deltaSync.getLatestCursor(vaultId),
           });
         }
 
@@ -477,6 +479,7 @@ class FnsHub {
             // 🛡️ mtime 用服务端清单权威值；客户端自报的 msg.mtime 不可信，仅作元数据缺失时的兜底
             mtime: (meta && meta.mtime) || msg.mtime || Date.now(),
             hash: storage.sha256(buf),
+            cursor: deltaSync.getLatestCursor(vaultId),
           });
         }
 
@@ -499,6 +502,7 @@ class FnsHub {
           // 🛡️ 同上：服务端清单权威 mtime 优先
           mtime: (meta && meta.mtime) || msg.mtime || Date.now(),
           hash: storage.sha256(buf),
+          cursor: deltaSync.getLatestCursor(vaultId),
         });
       }
 
