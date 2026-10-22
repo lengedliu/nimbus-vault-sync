@@ -13,7 +13,7 @@ test('Conflicts resolution and snapshot edge cases', async (t) => {
   const root = vaults.vaultFilesRoot(vaultId);
   fs.mkdirSync(root, { recursive: true });
 
-  await t.test('writeFileFromPath: 在 manifest 未命中但物理文件已存在时，必须进行冲突检查与历史快照', () => {
+  await t.test('writeFileFromPath: 在 manifest 未命中但物理文件已存在时，必须进行冲突检查与历史快照', async () => {
     const relPath = 'cold-start.md';
     const originalContent = Buffer.from('Original Server Content');
     const full = path.join(root, relPath);
@@ -30,7 +30,7 @@ test('Conflicts resolution and snapshot edge cases', async (t) => {
     fs.writeFileSync(tempPath, newContent);
     const newHash = crypto.createHash('sha256').update(newContent).digest('hex');
 
-    const resultConflict = storage.writeFileFromPath(vaultId, relPath, tempPath, newHash, {
+    const resultConflict = await storage.writeFileFromPath(vaultId, relPath, tempPath, newHash, {
       baseHash: 'outdated-hash-000',
     });
 
@@ -44,7 +44,7 @@ test('Conflicts resolution and snapshot edge cases', async (t) => {
     fs.writeFileSync(tempPath2, validContent);
     const validHash = crypto.createHash('sha256').update(validContent).digest('hex');
 
-    const resultOverwrite = storage.writeFileFromPath(vaultId, relPath, tempPath2, validHash, {
+    const resultOverwrite = await storage.writeFileFromPath(vaultId, relPath, tempPath2, validHash, {
       baseHash: originalHash,
     });
 

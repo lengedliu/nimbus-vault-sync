@@ -1,13 +1,15 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const http = require('node:http');
+const https = require('node:https');
 const dns = require('node:dns').promises;
 const { VAULTS_DIR, DATA_DIR } = require('./config');
 const { getById: getVaultById } = require('./vaults');
 const storage = require('./storage');
 const JsonDb = require('./jsonDb');
 const { encryptField, decryptField } = require('./utils/crypto');
-const { isPrivateOrReservedIp } = require('./utils/ssrfGuard');
+const { resolvePublicAddresses, createPinnedLookup } = require('./utils/ssrfGuard');
 
 const cloudConfigDb = new JsonDb(path.join(DATA_DIR, 'cloud-backup-config.json'), { vaults: {} });
 
@@ -41,18 +43,33 @@ function getVaultCloudConfig(vaultId) {
   if (!raw) {
     return JSON.parse(JSON.stringify(DEFAULT_CLOUD_CONFIG));
   }
+  const hasLegacySecret = [raw.s3 && raw.s3.secretAccessKey, raw.webdav && raw.webdav.password]
+    .some((value) => typeof value === 'string' && value && !value.startsWith('enc:v1:'));
+  if (hasLegacySecret) {
+    cloudConfigDb.update((data) => {
+      const current = data.vaults && data.vaults[vaultId];
+      if (!current) return data;
+      if (current.s3 && current.s3.secretAccessKey && !current.s3.secretAccessKey.startsWith('enc:v1:')) {
+        current.s3.secretAccessKey = encryptField(current.s3.secretAccessKey);
+      }
+      if (current.webdav && current.webdav.password && !current.webdav.password.startsWith('enc:v1:')) {
+        current.webdav.password = encryptField(current.webdav.password);
+      }
+      return data;
+    });
+  }
   return {
     ...DEFAULT_CLOUD_CONFIG,
     ...raw,
     s3: {
       ...DEFAULT_CLOUD_CONFIG.s3,
       ...(raw.s3 || {}),
-      secretAccessKey: decryptField(raw.s3?.secretAccessKey || ''),
+      secretAccessKey: decryptField(raw.s3 && raw.s3.secretAccessKey),
     },
     webdav: {
       ...DEFAULT_CLOUD_CONFIG.webdav,
       ...(raw.webdav || {}),
-      password: decryptField(raw.webdav?.password || ''),
+      password: decryptField(raw.webdav && raw.webdav.password),
     },
   };
 }
@@ -62,11 +79,11 @@ function saveVaultCloudConfig(vaultId, config) {
   const incomingS3 = config.s3 || {};
   const incomingWebdav = config.webdav || {};
 
+  // 管理端回传掩码值时保留已保存的真实密钥，避免把 "********" 当作新密钥加密落库
   const s3Secret =
     incomingS3.secretAccessKey === '********' || incomingS3.secretAccessKey === undefined
       ? current.s3.secretAccessKey
       : incomingS3.secretAccessKey;
-
   const webdavPass =
     incomingWebdav.password === '********' || incomingWebdav.password === undefined
       ? current.webdav.password
@@ -75,68 +92,72 @@ function saveVaultCloudConfig(vaultId, config) {
   const merged = {
     ...current,
     ...config,
-    s3: {
-      ...current.s3,
-      ...incomingS3,
-      secretAccessKey: s3Secret || '',
-    },
-    webdav: {
-      ...current.webdav,
-      ...incomingWebdav,
-      password: webdavPass || '',
-    },
+    s3: { ...current.s3, ...incomingS3, secretAccessKey: s3Secret || '' },
+    webdav: { ...current.webdav, ...incomingWebdav, password: webdavPass || '' },
   };
-
-  const toPersist = {
+  const persisted = {
     ...merged,
-    s3: {
-      ...merged.s3,
-      secretAccessKey: encryptField(merged.s3.secretAccessKey),
-    },
-    webdav: {
-      ...merged.webdav,
-      password: encryptField(merged.webdav.password),
-    },
+    s3: { ...merged.s3, secretAccessKey: encryptField(merged.s3.secretAccessKey) },
+    webdav: { ...merged.webdav, password: encryptField(merged.webdav.password) },
   };
-
   cloudConfigDb.update((data) => {
     if (!data.vaults) data.vaults = {};
-    data.vaults[vaultId] = toPersist;
+    data.vaults[vaultId] = persisted;
     return data;
   });
   return merged;
 }
 
-async function assertSafeCloudUrl(targetUrl) {
-  if (!targetUrl || typeof targetUrl !== 'string') {
-    throw new Error('云存储目标 URL 不能为空');
-  }
+async function validateCloudTarget(rawUrl) {
   let parsed;
-  try {
-    parsed = new URL(targetUrl);
-  } catch {
-    throw new Error(`无效的云存储 URL 格式: "${targetUrl}"`);
+  try { parsed = new URL(rawUrl); } catch { throw new Error('云备份目标 URL 无效'); }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+    throw new Error('云备份目标仅支持不含内嵌账号信息的 HTTP(S) URL');
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error('云存储 URL 仅支持 http:// 或 https:// 协议');
-  }
-  if (process.env.ALLOW_PRIVATE_CLOUD_BACKUP === 'true') {
-    return parsed;
-  }
-  let addresses;
-  try {
-    addresses = await dns.lookup(parsed.hostname, { all: true });
-  } catch (e) {
-    throw new Error(`无法解析云存储主机 "${parsed.hostname}": ${e.message}`);
-  }
-  for (const { address } of addresses) {
-    if (isPrivateOrReservedIp(address)) {
-      throw new Error(
-        `拒绝连接私有或保留内网地址 (${address})。若确需连接局域网自建 NAS/MinIO，请配置环境变量 ALLOW_PRIVATE_CLOUD_BACKUP=true`
-      );
-    }
-  }
-  return parsed;
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
+  const addresses = (process.env.ALLOW_PRIVATE_CLOUD_BACKUP_TARGETS === 'true' || process.env.ALLOW_PRIVATE_CLOUD_BACKUP === 'true')
+    ? await dns.lookup(hostname, { all: true })
+    : await resolvePublicAddresses(hostname);
+  if (!addresses.length) throw new Error('云备份目标域名没有可用地址');
+  return { parsed, addresses };
+}
+
+async function requestCloudTarget(rawUrl, { method, headers = {}, body = null } = {}) {
+  const { parsed, addresses } = await validateCloudTarget(rawUrl);
+  const client = parsed.protocol === 'https:' ? https : http;
+  return new Promise((resolve, reject) => {
+    const request = client.request({
+      protocol: parsed.protocol,
+      hostname: parsed.hostname.replace(/^\[|\]$/g, ''),
+      port: parsed.port || undefined,
+      path: `${parsed.pathname}${parsed.search}`,
+      method: method || 'GET',
+      headers,
+      lookup: createPinnedLookup(addresses),
+      timeout: 120000,
+    }, (response) => {
+      const chunks = [];
+      let size = 0;
+      const maxResponseBytes = 1024 * 1024;
+      response.on('data', (chunk) => {
+        size += chunk.length;
+        if (size > maxResponseBytes) {
+          request.destroy(new Error('Cloud backup response exceeded 1 MB limit'));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        resolve({ status: response.statusCode, ok: response.statusCode >= 200 && response.statusCode < 300, text: async () => text });
+      });
+      response.on('error', reject);
+    });
+    request.on('timeout', () => request.destroy(new Error('Cloud backup request timed out')));
+    request.on('error', reject);
+    if (body) request.end(body);
+    else request.end();
+  });
 }
 
 // --------------------------- AWS SigV4 for S3 ---------------------------
@@ -157,7 +178,7 @@ function getSignatureKey(key, dateStamp, regionName, serviceName) {
 }
 
 async function s3Request({ method, url, headers = {}, body = null, accessKeyId, secretAccessKey, region = 'us-east-1' }) {
-  const parsedUrl = await assertSafeCloudUrl(url);
+  const parsedUrl = new URL(url);
   const host = parsedUrl.host;
   const canonicalUri = parsedUrl.pathname || '/';
   const canonicalQuery = parsedUrl.search ? parsedUrl.search.substring(1).split('&').sort().join('&') : '';
@@ -207,10 +228,10 @@ async function s3Request({ method, url, headers = {}, body = null, accessKeyId, 
     Authorization: authorizationHeader,
   };
 
-  const res = await fetch(url, {
+  const res = await requestCloudTarget(url, {
     method,
     headers: fetchHeaders,
-    body: body || undefined,
+    body,
   });
 
   return res;
@@ -277,7 +298,6 @@ async function testWebDAVConfig(webdavConfig) {
   if (!url) throw new Error('WebDAV 服务端 URL 不能为空');
 
   const cleanUrl = url.replace(/\/+$/, '');
-  await assertSafeCloudUrl(cleanUrl);
   const headers = {
     'Depth': '0',
   };
@@ -286,7 +306,7 @@ async function testWebDAVConfig(webdavConfig) {
     headers['Authorization'] = `Basic ${authStr}`;
   }
 
-  const res = await fetch(cleanUrl, {
+  const res = await requestCloudTarget(cleanUrl, {
     method: 'PROPFIND',
     headers,
   });
@@ -302,7 +322,6 @@ async function uploadToWebDAV(webdavConfig, remotePath, buffer) {
   const { url, username, password } = webdavConfig;
   const cleanUrl = url.replace(/\/+$/, '');
   const targetUrl = `${cleanUrl}/${remotePath.replace(/^\/+/, '')}`;
-  await assertSafeCloudUrl(targetUrl);
 
   const headers = {
     'Content-Type': 'application/zip',
@@ -312,7 +331,7 @@ async function uploadToWebDAV(webdavConfig, remotePath, buffer) {
     headers['Authorization'] = `Basic ${authStr}`;
   }
 
-  const res = await fetch(targetUrl, {
+  const res = await requestCloudTarget(targetUrl, {
     method: 'PUT',
     headers,
     body: buffer,

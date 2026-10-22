@@ -123,51 +123,35 @@ async function recordLog(logData) {
     timestamp: Date.now(),
   };
 
-  // Add to memory cache
-  if (!logsCache.has(entry.vaultId)) {
-    logsCache.set(entry.vaultId, []);
-  }
-  const vaultList = logsCache.get(entry.vaultId);
-  vaultList.unshift(entry);
-  if (vaultList.length > MAX_LOGS_PER_VAULT) {
-    vaultList.pop();
-  }
-
-  globalLogs.unshift(entry);
-  if (globalLogs.length > 2000) {
-    globalLogs.pop();
-  }
-
-  // Persist
   if (dbManager.type === 'json') {
+    addToCache(entry);
     scheduleSaveToFile();
   } else {
     try {
       await dbManager.execute(
         `INSERT INTO sync_logs (id, vault_id, user_id, username, device_name, client_ip, action, file_path, file_size, file_hash, status, detail, timestamp)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          entry.id,
-          entry.vaultId,
-          entry.userId,
-          entry.username,
-          entry.deviceName,
-          entry.clientIp,
-          entry.action,
-          entry.path,
-          entry.size,
-          entry.hash,
-          entry.status,
-          entry.detail,
-          entry.timestamp,
-        ]
+        [entry.id, entry.vaultId, entry.userId, entry.username, entry.deviceName, entry.clientIp, entry.action,
+          entry.path, entry.size, entry.hash, entry.status, entry.detail, entry.timestamp]
       );
     } catch (err) {
+      // Logging is best-effort: do not create a cache-only log or reject callers that do not await it.
       console.error('[SyncLog DB Write Error]:', err.message);
+      return null;
     }
+    addToCache(entry);
   }
 
   return entry;
+}
+
+function addToCache(entry) {
+  if (!logsCache.has(entry.vaultId)) logsCache.set(entry.vaultId, []);
+  const vaultList = logsCache.get(entry.vaultId);
+  vaultList.unshift(entry);
+  if (vaultList.length > MAX_LOGS_PER_VAULT) vaultList.pop();
+  globalLogs.unshift(entry);
+  if (globalLogs.length > 2000) globalLogs.pop();
 }
 
 /**
@@ -213,17 +197,14 @@ function getLogs({ vaultId = null, vaultIds = null, action = null, status = null
  * Clear sync logs for a vault
  */
 async function clearVaultLogs(vaultId) {
-  logsCache.delete(vaultId);
-  globalLogs = globalLogs.filter((l) => l.vaultId !== vaultId);
-
   if (dbManager.type === 'json') {
+    logsCache.delete(vaultId);
+    globalLogs = globalLogs.filter((l) => l.vaultId !== vaultId);
     saveToFile();
   } else {
-    try {
-      await dbManager.execute('DELETE FROM sync_logs WHERE vault_id = ?', [vaultId]);
-    } catch (err) {
-      console.error('[SyncLog DB Delete Error]:', err.message);
-    }
+    await dbManager.execute('DELETE FROM sync_logs WHERE vault_id = ?', [vaultId]);
+    logsCache.delete(vaultId);
+    globalLogs = globalLogs.filter((l) => l.vaultId !== vaultId);
   }
   return true;
 }

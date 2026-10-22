@@ -159,11 +159,13 @@ Docker コンテナ起動時または `docker-compose.yml` 使用時、`-e` オ�
 | `JWT_SECRET` | 自動生成（`.jwt_secret` に保存） | ユーザー認証および API デバイストークンの署名用秘密鍵（本番環境では明示的な設定を強く推奨） |
 | `ENCRYPTION_KEY` | `JWT_SECRET` にフォールバック | 保存された Git 認証情報および秘密情報の対称暗号化キー |
 | `TOKEN_TTL` | `30d` | ユーザーログインおよび API トークンの有効期間（例: `7d`, `30d`, `90d`） |
-| `INITIAL_ADMIN_PASSWORD` | `admin123` | 初回セットアップ時の初期管理者アカウント用デフォルトパスワード |
-| `TRUST_PROXY` | `true` | 前段のリバースプロキシ（Nginx / Caddy / Cloudflare 等）からの `X-Forwarded-*` ヘッダーを信頼するかどうか |
+| `INITIAL_ADMIN_PASSWORD` | デフォルトなし | 初回管理者作成時に必須（12文字以上） |
+| `TRUST_PROXY` | `false` | 管理下のリバースプロキシの背後に置く場合のみ `true` にします |
+| `ALLOW_PRIVATE_CLOUD_BACKUP_TARGETS` | `false` | 信頼できる NAS へのバックアップが必要な場合に限り、プライベートネットワーク宛てを許可します |
 | `CORS_ALLOWED_ORIGINS` | `*`（すべて許可） | クロスオリジン許可ドメインリスト（カンマ区切り、例: `https://notes.example.com`） |
 | **アップロードおよび添付ファイル制限** | | |
 | `MAX_UPLOAD_MB` | `500` | 通常のファイルおよび添付ファイルの最大アップロード容量制限（MB） |
+| `MAX_CONCURRENT_UPLOADS` | `4` | サーバープロセスごとの同時アップロード上限。超過時は後で再試行します |
 | `ATTACHMENT_MAX_MB` | `200` | MCP / AI ツールによる外部メディア転送時の最大容量制限（MB） |
 | **増分同期ログ保持ポリシー** | | |
 | `MAX_DELTA_CHANGES_PER_VAULT` | `5000` | 各 Vault の SQLite / JSON ストレージ内に保持する最新変更ログ件数（超過時は自動削除） |

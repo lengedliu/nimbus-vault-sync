@@ -61,6 +61,33 @@ test('DeltaSync: First sync and cursor boundary tests', async (t) => {
     assert.equal(res.reason, 'CURSOR_AHEAD_OF_SERVER');
   });
 
+  await t.test('并发单条与批量写入按持久化顺序分配游标，失败写入不推进游标', async () => {
+    const orderedVaultId = `test-deltasync-ordered-${Date.now()}`;
+    await deltaSync.initVault(orderedVaultId);
+    const before = deltaSync.getLatestCursor(orderedVaultId);
+    const persistChange = deltaSync._persistChange;
+    deltaSync._persistChange = async () => { throw new Error('simulated persistence failure'); };
+    try {
+      await assert.rejects(
+        deltaSync.recordChange(orderedVaultId, { path: 'failed.md', action: 'UPSERT' }),
+        /simulated persistence failure/
+      );
+      assert.equal(deltaSync.getLatestCursor(orderedVaultId), before);
+    } finally {
+      deltaSync._persistChange = persistChange;
+    }
+
+    const [single, batch] = await Promise.all([
+      deltaSync.recordChange(orderedVaultId, { path: 'single.md', action: 'UPSERT' }),
+      deltaSync.recordBatchChanges(orderedVaultId, [
+        { path: 'batch-a.md', action: 'UPSERT' },
+        { path: 'batch-b.md', action: 'UPSERT' },
+      ]),
+    ]);
+    assert.deepEqual([single, ...batch.map((change) => change.cursor)].sort((a, b) => a - b), [before + 1, before + 2, before + 3]);
+    assert.equal(deltaSync.getLatestCursor(orderedVaultId), before + 3);
+  });
+
   await t.test('增量追更 compact 选项测试：同一文件多次更新自动去重合并', async () => {
     const compactVaultId = 'test-compact-' + Date.now();
     await deltaSync.recordChange(compactVaultId, { path: 'docA.md', action: 'UPSERT', size: 10, hash: 'hA1' });

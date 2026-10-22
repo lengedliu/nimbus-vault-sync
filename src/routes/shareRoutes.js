@@ -65,14 +65,14 @@ router.post('/vaults/:vaultId/shares', requireAuth, asyncHandler(async (req, res
   res.json({ share: record });
 }));
 
-router.delete('/vaults/:vaultId/shares/:shareId', requireAuth, (req, res) => {
+router.delete('/vaults/:vaultId/shares/:shareId', requireAuth, asyncHandler(async (req, res) => {
   const { vaultId, shareId } = req.params;
   if (!requireOwnerOr404(req, res)) return;
   const target = shares.listForVault(vaultId).find((s) => s.id === shareId);
   if (!target) return res.json({ deleted: false });
-  const ok = shares.remove(shareId, null);
+  const ok = await shares.remove(shareId, null);
   res.json({ deleted: ok });
-});
+}));
 
 // --------------------------- Public Share API ---------------------------
 
@@ -120,7 +120,7 @@ router.get('/public/shares/:shareId', asyncHandler(async (req, res) => {
   const buf = storage.readFile(share.vaultId, share.filePath);
   if (buf === null) return res.status(404).json({ error: 'Target file no longer exists in vault' });
 
-  shares.recordView(shareId);
+  await shares.recordView(shareId);
 
   res.json({
     id: share.id,

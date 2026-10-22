@@ -102,7 +102,7 @@ async function createBackup(vaultId, label = '手动快照') {
   const filename = `${safeName}-snapshot-${stamp}-${id}.zip`;
   const fullPath = assertSafeBackupFilename(dir, filename);
 
-  const stats = storage.getVaultStats(vaultId);
+  const stats = await storage.getVaultStats(vaultId);
   const output = fs.createWriteStream(fullPath);
   const archive = createArchiver('zip', { zlib: { level: 6 } });
 
@@ -113,7 +113,14 @@ async function createBackup(vaultId, label = '手动快照') {
 
     const root = vaults.vaultFilesRoot(vaultId);
     if (fs.existsSync(root)) {
-      archive.directory(root, false);
+      archive.directory(root, false, (entry) => {
+        const name = String(entry.name || '').replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+        const segments = name.split('/');
+        const isPluginCredential = segments.length >= 4
+          && segments[segments.length - 4].startsWith('.')
+          && segments.slice(-3).join('/') === 'plugins/nimbus-sync/data.json';
+        return !segments.includes('.git') && !isPluginCredential;
+      });
     }
     archive.finalize();
   });

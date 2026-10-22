@@ -14,7 +14,7 @@ setInterval(() => {
 }, 5 * 60 * 1000).unref();
 
 function generateCode() {
-  return crypto.randomBytes(4).toString('hex').toLowerCase(); // 8 hex chars
+  return crypto.randomBytes(16).toString('hex').toLowerCase(); // 128-bit one-time code
 }
 
 function createPairSession(payload, { maxReads = 5 } = {}) {

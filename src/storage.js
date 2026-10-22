@@ -88,15 +88,28 @@ async function withFileLock(vaultId, relPath, fn) {
   const current = fileLocks.get(key) || Promise.resolve();
   let release;
   const next = new Promise((resolve) => { release = resolve; });
-  fileLocks.set(key, current.then(() => next, () => next));
+  const tail = current.then(() => next, () => next);
+  fileLocks.set(key, tail);
 
   try {
     await current;
     return await fn();
   } finally {
     release();
-    if (fileLocks.get(key) === next) {
+    if (fileLocks.get(key) === tail) {
       fileLocks.delete(key);
+    }
+  }
+}
+
+async function waitForVaultLocks(vaultId) {
+  const prefix = `${vaultId}:`;
+  while (true) {
+    const pending = Array.from(fileLocks.entries()).filter(([key]) => key.startsWith(prefix));
+    if (pending.length === 0) return;
+    await Promise.allSettled(pending.map(([, tail]) => tail));
+    for (const [key, tail] of pending) {
+      if (fileLocks.get(key) === tail) fileLocks.delete(key);
     }
   }
 }
@@ -145,6 +158,15 @@ function isNoisePath(relPath) {
   return NOISE_PATH_REGEXES.some((rx) => rx.test(norm));
 }
 
+/** 凭据保护：识别 vault 内任意位置下的 Nimbus Sync 插件 data.json（例如 .config/plugins/...） */
+function isPrivateVaultPath(relPath) {
+  const normalized = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+  const segments = normalized.split('/');
+  return segments.includes('.git') || (segments.length >= 4
+    && segments[segments.length - 4].startsWith('.')
+    && segments.slice(-3).join('/') === 'plugins/nimbus-sync/data.json');
+}
+
 /** Prevent path traversal: resolve relPath against root and ensure it stays inside root. */
 function safeJoin(root, relPath) {
   const normalized = path.normalize(relPath).replace(/^(\.\.[/\\])+/, '');
@@ -156,9 +178,35 @@ function safeJoin(root, relPath) {
   if (segments.some((seg) => seg === '.git')) {
     throw new Error('Access to the .git directory is not allowed.');
   }
+  const normalizedSegments = segments.map((seg) => seg.toLowerCase());
+  if (normalizedSegments.length >= 4
+    && normalizedSegments[normalizedSegments.length - 4].startsWith('.')
+    && normalizedSegments.slice(-3).join('/') === 'plugins/nimbus-sync/data.json') {
+    throw new Error('Access to the Nimbus Sync plugin credentials file is not allowed.');
+  }
   const full = path.join(root, normalized);
   if (!full.startsWith(path.resolve(root) + path.sep) && full !== path.resolve(root)) {
     throw new Error('Invalid path (outside vault root)');
+  }
+
+  // Lexical containment alone does not stop an in-vault symlink from pointing
+  // outside the vault. Reject symlinked path components before any read/write.
+  let current = path.resolve(root);
+  const rootStat = fs.existsSync(current) ? fs.lstatSync(current) : null;
+  if (rootStat && rootStat.isSymbolicLink()) {
+    throw new Error('Symbolic links are not allowed in vault storage paths.');
+  }
+  const relative = path.relative(current, full);
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) {
+        throw new Error('Symbolic links are not allowed in vault storage paths.');
+      }
+    } catch (err) {
+      if (err.code === 'ENOENT' || err.code === 'ENOTDIR') break;
+      throw err;
+    }
   }
   return full;
 }
@@ -219,7 +267,19 @@ function yieldToEventLoop() {
 // In-memory manifest cache: vaultId -> { manifest, lastScanned }
 const inMemoryManifestCache = new Map();
 
+// 🛡️ 写入代数计数：updateManifestEntry 每次（单条写/删）自增。
+// getManifestAsync 的异步重建用它检测"扫盘窗口期间发生过写入"，据此立刻重扫，
+// 避免旧快照整体覆盖内存清单、新文件永久缺失（见 getManifestAsync 内注释）。
+const manifestGeneration = new Map();
+function bumpManifestGeneration(vaultId) {
+  manifestGeneration.set(vaultId, (manifestGeneration.get(vaultId) || 0) + 1);
+}
+function getManifestGeneration(vaultId) {
+  return manifestGeneration.get(vaultId) || 0;
+}
+
 function invalidateManifestCache(vaultId) {
+  bumpManifestGeneration(vaultId);
   inMemoryManifestCache.delete(vaultId);
   contentCache.delete(vaultId);
   clearVaultTagCache(vaultId);
@@ -259,6 +319,7 @@ function deleteVaultDirectory(vaultId) {
 
 function updateManifestEntry(vaultId, relPath, meta) {
   const normRel = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  bumpManifestGeneration(vaultId); // 🛡️ 通知在途的 getManifestAsync 重建：期间有写入，快照已过期
   let cachedMem = inMemoryManifestCache.get(vaultId);
   if (!cachedMem) {
     getManifest(vaultId);
@@ -278,7 +339,24 @@ function updateManifestEntry(vaultId, relPath, meta) {
         ctimeMs: meta.ctimeMs !== undefined ? meta.ctimeMs : ctimeVal,
       };
     }
-    saveCacheAsync(vaultId, cachedMem.manifest).catch(() => {});
+    // 🛡️ 磁盘扫描缓存的条目契约是 { size, mtimeMs, ctimeMs, hash }；
+    // 绝不能把 manifest 形状（{ size, mtime, ctime }）整个覆盖进缓存文件——
+    // 否则下一次全量构建对所有条目 100% miss，整个库被迫重读盘重哈希。
+    // 这里按契约只合并受影响的这一条。
+    try {
+      const scanCache = loadCache(vaultId);
+      if (meta === null) {
+        delete scanCache[normRel];
+      } else {
+        scanCache[normRel] = {
+          size: meta.size,
+          mtimeMs: meta.mtime,
+          ctimeMs: (meta.ctime !== undefined ? meta.ctime : meta.mtime),
+          hash: meta.hash,
+        };
+      }
+      saveCacheAsync(vaultId, scanCache).catch(() => {});
+    } catch {}
   }
 }
 
@@ -289,6 +367,11 @@ function getManifestEntry(vaultId, relPath) {
     return cachedMem.manifest[relPath] || null;
   }
   const manifest = getManifest(vaultId);
+  return manifest ? (manifest[relPath] || null) : null;
+}
+
+async function getManifestEntryAsync(vaultId, relPath) {
+  const manifest = await getManifestAsync(vaultId);
   return manifest ? (manifest[relPath] || null) : null;
 }
 
@@ -324,7 +407,7 @@ async function walkAsync(dir, base, out = []) {
       if (entry.isFile() && isNoiseFile(entry.name)) continue;
       const full = path.join(dir, entry.name);
       const rel = path.relative(base, full).split(path.sep).join('/');
-      if (isNoisePath(rel)) continue;
+      if (isNoisePath(rel) || isPrivateVaultPath(rel)) continue;
       if (entry.isDirectory()) {
         await walkAsync(full, base, out);
       } else if (entry.isFile()) {
@@ -347,7 +430,7 @@ function walk(dir, base, out = []) {
     if (entry.isFile() && isNoiseFile(entry.name)) continue;
     const full = path.join(dir, entry.name);
     const rel = path.relative(base, full).split(path.sep).join('/');
-    if (isNoisePath(rel)) continue;
+    if (isNoisePath(rel) || isPrivateVaultPath(rel)) continue;
     if (entry.isDirectory()) {
       walk(full, base, out);
     } else if (entry.isFile()) {
@@ -369,56 +452,72 @@ async function getManifestAsync(vaultId, forceRefresh = false) {
   }
 
   const root = vaultFilesRoot(vaultId);
-  let cache = {};
-  const cacheP = manifestCachePath(vaultId);
-  if (fs.existsSync(cacheP)) {
-    try {
-      const data = await fs.promises.readFile(cacheP, 'utf8');
-      cache = JSON.parse(data);
-    } catch {
-      cache = {};
+
+  // 🛡️ 修复重建竞态：本轮 walk 到写完内存缓存之间有多个 await 让出点，
+  // 期间任何一次 updateManifestEntry（即任何普通写文件）都可能发生。
+  // 若快照收尾时发现代数计数变了，说明这份 walk 的文件快照已过时——
+  // 直接落库的话，新写入文件的条目会被旧快照整体覆盖、manifest “持久”缺文件。
+  // 因此立刻重扫，直到两轮之间没有新写入（上限 3 轮，防写入风暴）。
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const genBefore = getManifestGeneration(vaultId);
+
+    let cache = {};
+    const cacheP = manifestCachePath(vaultId);
+    if (fs.existsSync(cacheP)) {
+      try {
+        const data = await fs.promises.readFile(cacheP, 'utf8');
+        cache = JSON.parse(data);
+      } catch {
+        cache = {};
+      }
     }
-  }
 
-  const relPaths = await walkAsync(root, root);
-  const nextCache = {};
-  const manifest = {};
-  const BATCH_SIZE = 32;
+    const relPaths = await walkAsync(root, root);
+    const nextCache = {};
+    const manifest = {};
+    const BATCH_SIZE = 32;
 
-  for (let i = 0; i < relPaths.length; i += BATCH_SIZE) {
-    const chunk = relPaths.slice(i, i + BATCH_SIZE);
-    await Promise.all(
-      chunk.map(async (rel) => {
-        const full = path.join(root, rel);
-        try {
-          const stat = await fs.promises.stat(full);
-          const cached = cache[rel];
-          const cachedMtime = cached ? (cached.mtimeMs !== undefined ? cached.mtimeMs : cached.mtime) : undefined;
-          let hash;
-          if (cached && cached.size === stat.size && cachedMtime === stat.mtimeMs && cached.hash) {
-            hash = cached.hash;
-          } else if (stat.size > 512 * 1024) {
-            hash = await sha256FileAsync(full);
-          } else {
-            const buf = await fs.promises.readFile(full);
-            hash = sha256(buf);
+    for (let i = 0; i < relPaths.length; i += BATCH_SIZE) {
+      const chunk = relPaths.slice(i, i + BATCH_SIZE);
+      await Promise.all(
+        chunk.map(async (rel) => {
+          const full = path.join(root, rel);
+          try {
+            const stat = await fs.promises.stat(full);
+            const cached = cache[rel];
+            const cachedMtime = cached ? (cached.mtimeMs !== undefined ? cached.mtimeMs : cached.mtime) : undefined;
+            let hash;
+            if (cached && cached.size === stat.size && cachedMtime === stat.mtimeMs && cached.hash) {
+              hash = cached.hash;
+            } else if (stat.size > 512 * 1024) {
+              hash = await sha256FileAsync(full);
+            } else {
+              const buf = await fs.promises.readFile(full);
+              hash = sha256(buf);
+            }
+            const ctime = (stat.birthtimeMs && stat.birthtimeMs > 0) ? stat.birthtimeMs : (stat.ctimeMs || stat.mtimeMs);
+            nextCache[rel] = { size: stat.size, mtime: stat.mtimeMs, mtimeMs: stat.mtimeMs, ctime, ctimeMs: ctime, hash };
+            manifest[rel] = { size: stat.size, mtime: stat.mtimeMs, mtimeMs: stat.mtimeMs, ctime, ctimeMs: ctime, hash };
+          } catch {
+            // File could be deleted or locked concurrently
           }
-          const ctime = (stat.birthtimeMs && stat.birthtimeMs > 0) ? stat.birthtimeMs : (stat.ctimeMs || stat.mtimeMs);
-          nextCache[rel] = { size: stat.size, mtime: stat.mtimeMs, mtimeMs: stat.mtimeMs, ctime, ctimeMs: ctime, hash };
-          manifest[rel] = { size: stat.size, mtime: stat.mtimeMs, mtimeMs: stat.mtimeMs, ctime, ctimeMs: ctime, hash };
-        } catch {
-          // File could be deleted or locked concurrently
-        }
-      })
-    );
+        })
+      );
 
-    // Yield control back to the event loop so incoming HTTP/WebSocket connections are not blocked
-    await yieldToEventLoop();
+      // Yield control back to the event loop so incoming HTTP/WebSocket connections are not blocked
+      await yieldToEventLoop();
+    }
+
+    if (getManifestGeneration(vaultId) !== genBefore && attempt < 2) {
+      continue; // 期间有写入，这轮快照不完整，立刻重扫
+    }
+
+    saveCacheAsync(vaultId, nextCache).catch((err) => {
+      console.error('[Storage] manifest 扫描缓存保存失败:', vaultId, (err && err.message) || err);
+    });
+    inMemoryManifestCache.set(vaultId, { manifest, lastScanned: Date.now() });
+    return manifest;
   }
-
-  saveCacheAsync(vaultId, nextCache).catch(() => {});
-  inMemoryManifestCache.set(vaultId, { manifest, lastScanned: Date.now() });
-  return manifest;
 }
 
 /** Build a manifest: { path: { size, mtimeMs, hash } }, cached in memory and on disk. */
@@ -950,7 +1049,7 @@ async function restoreBatchTrash(vaultId, trashIds) {
   for (let i = 0; i < targetEntries.length; i += CHUNK_SIZE) {
     const chunk = targetEntries.slice(i, i + CHUNK_SIZE);
     await Promise.all(
-      chunk.map(async (entry) => {
+      chunk.map(async (entry) => withFileLock(vaultId, entry.path, async () => {
         const trashFull = path.join(vTrashDir, entry.id);
         if (!fs.existsSync(trashFull)) return;
         try {
@@ -998,7 +1097,7 @@ async function restoreBatchTrash(vaultId, trashIds) {
         } catch (err) {
           console.error(`[Trash] Failed to restore "${entry.path}":`, err);
         }
-      })
+      }))
     );
 
     if (i + CHUNK_SIZE < targetEntries.length) {
@@ -1009,10 +1108,29 @@ async function restoreBatchTrash(vaultId, trashIds) {
   if (successfullyRestoredIds.size > 0) {
     mutateIndex(idxPath, (current) => current.filter((e) => !successfullyRestoredIds.has(e.id)));
     if (deltaChanges.length > 0) {
-      await deltaSync.recordBatchChanges(vaultId, deltaChanges).catch(() => {});
+      try {
+        await deltaSync.recordBatchChanges(vaultId, deltaChanges);
+      } catch (err) {
+        console.error('[Storage] 回收站恢复的变更记录持久化失败:', vaultId, (err && err.message) || err);
+      }
     }
+    // 🛡️ 磁盘扫描缓存契约是 { size, mtimeMs, ctimeMs, hash }；manifest 形状（mtime/ctime）
+    // 不能直接写入缓存文件，需转换后保存，避免下次全量构建全表 miss。
     const currentManifest = inMemoryManifestCache.get(vaultId)?.manifest || manifest;
-    await saveCacheAsync(vaultId, currentManifest).catch(() => {});
+    const shapedCache = {};
+    for (const [rel, m] of Object.entries(currentManifest)) {
+      if (m && typeof m === 'object') {
+        shapedCache[rel] = {
+          size: m.size,
+          mtimeMs: m.mtime,
+          ctimeMs: (m.ctime !== undefined ? m.ctime : m.mtime),
+          hash: m.hash,
+        };
+      }
+    }
+    await saveCacheAsync(vaultId, shapedCache).catch((err) => {
+      console.error('[Storage] 回收站恢复后的扫描缓存保存失败:', vaultId, (err && err.message) || err);
+    });
     try {
       gitSync.notifyChange(vaultId);
     } catch {}
@@ -1089,6 +1207,24 @@ function readTrashVersion(vaultId, trashId) {
 // -------------------------------- write / delete ----------------------------------
 
 /**
+ * 给 deltaSync.recordChange 挂一个"只记日志"的旁路 catch：
+ * - 同步调用方不 await 时，杜绝持久化失败升级成 unhandledRejection（server.js 会因此停机）；
+ * - 保留 promise 自身的 rejection 语义，*Async 调用方仍可显式 await 并据此拒绝向客户端 ack 成功。
+ */
+function trackRecordChange(vaultId, desc, promise) {
+  if (promise === undefined) {
+    promise = desc;
+    desc = '';
+  }
+  if (promise && typeof promise.catch === 'function') {
+    promise.catch((err) => {
+      console.error(`[Storage] deltaSync 持久化失败 (${vaultId}${desc ? ` ${desc}` : ''}):`, (err && err.message) || err);
+    });
+  }
+  return promise;
+}
+
+/**
  * Write a file, with:
  *  - conflict-copy protection: if the file changed on the server since the
  *    caller last knew about it (baseHash mismatch), save a `.conflict-*`
@@ -1111,12 +1247,15 @@ function writeFile(vaultId, relPath, buffer, { mtime, baseHash } = {}) {
       // No real change — just acknowledge, no history entry needed.
       if (mtime) {
         touchMtime(full, mtime);
-        try {
-          const st = fs.statSync(full);
-          updateManifestEntry(vaultId, normRel, { size: buffer.length, mtime: st.mtimeMs, ctime: st.birthtimeMs || st.ctimeMs || st.mtimeMs, hash: incomingHash });
-        } catch {}
       }
-      return { written: true, conflict: null, currentHash: incomingHash };
+      // 内容未变也要把真实 mtime 刷进清单：否则客户端续传/去重时看到的是旧 mtime
+      try {
+        const st = fs.statSync(full);
+        const mtimeVal = st.mtimeMs || mtime || Date.now();
+        const ctimeVal = (st.birthtimeMs && st.birthtimeMs > 0) ? st.birthtimeMs : (st.ctimeMs || mtimeVal);
+        updateManifestEntry(vaultId, normRel, { size: buffer.length, mtime: mtimeVal, ctime: ctimeVal, hash: incomingHash });
+      } catch {}
+      return { written: true, conflict: null, currentHash: incomingHash, size: buffer.length, mtime: mtime || fs.statSync(full).mtimeMs };
     }
 
     if (baseHash && existingHash !== baseHash) {
@@ -1138,9 +1277,10 @@ function writeFile(vaultId, relPath, buffer, { mtime, baseHash } = {}) {
         const conflictStat = fs.statSync(conflictFull);
         const hash = sha256(buffer);
         const mtimeVal = conflictStat.mtimeMs || mtime || Date.now();
-        updateManifestEntry(vaultId, conflictRel, { size: buffer.length, mtime: mtimeVal, ctime: mtimeVal, hash });
+        const ctimeVal = (conflictStat.birthtimeMs && conflictStat.birthtimeMs > 0) ? conflictStat.birthtimeMs : (conflictStat.ctimeMs || mtimeVal);
+        updateManifestEntry(vaultId, conflictRel, { size: buffer.length, mtime: mtimeVal, ctime: ctimeVal, hash });
         invalidateContentCacheEntry(vaultId, conflictRel);
-        const changePromise = deltaSync.recordChange(vaultId, { path: conflictRel, action: 'UPSERT', size: buffer.length, mtime: mtimeVal, hash }).catch(() => {});
+        const changePromise = trackRecordChange(vaultId, conflictRel, deltaSync.recordChange(vaultId, { path: conflictRel, action: 'UPSERT', size: buffer.length, mtime: mtimeVal, hash }));
         try {
           ftsEngine.onFileWrite(vaultId, conflictRel, buffer.toString('utf8'), { size: buffer.length, mtime: mtimeVal, hash });
         } catch {}
@@ -1165,7 +1305,7 @@ function writeFile(vaultId, relPath, buffer, { mtime, baseHash } = {}) {
   const ctimeVal = (finalStat.birthtimeMs && finalStat.birthtimeMs > 0) ? finalStat.birthtimeMs : (finalStat.ctimeMs || mtimeVal);
   updateManifestEntry(vaultId, normRel, { size: buffer.length, mtime: mtimeVal, ctime: ctimeVal, hash });
   invalidateContentCacheEntry(vaultId, normRel);
-  const changePromise = deltaSync.recordChange(vaultId, { path: normRel, action: 'UPSERT', size: buffer.length, mtime: mtimeVal, hash }).catch(() => {});
+  const changePromise = trackRecordChange(vaultId, normRel, deltaSync.recordChange(vaultId, { path: normRel, action: 'UPSERT', size: buffer.length, mtime: mtimeVal, hash }));
   try {
     ftsEngine.onFileWrite(vaultId, normRel, buffer.toString('utf8'), { size: buffer.length, mtime: mtimeVal, hash });
   } catch {}
@@ -1177,13 +1317,12 @@ function writeFile(vaultId, relPath, buffer, { mtime, baseHash } = {}) {
 
 /**
  * 异步版本的 writeFile：在写盘与元数据更新完成后，确保 deltaSync 变更记录与游标持久化已完成。
+ * 持久化失败会抛给调用方（调用方应在这种情况下拒绝向客户端 ack 成功文件已同步）。
  */
 async function writeFileAsync(vaultId, relPath, buffer, options = {}) {
   const result = writeFile(vaultId, relPath, buffer, options);
   if (result && result.changePromise) {
-    try {
-      await result.changePromise;
-    } catch {}
+    await result.changePromise;
   }
   return result;
 }
@@ -1225,7 +1364,7 @@ function writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, { mtime
       if (mtime) {
         touchMtime(full, mtime);
         try {
-          const st = fs.statSync(full);
+
           updateManifestEntry(vaultId, normRel, { size: st.size, mtime: st.mtimeMs, ctime: st.birthtimeMs || st.ctimeMs || st.mtimeMs, hash: incomingHash });
         } catch {}
       }
@@ -1250,9 +1389,10 @@ function writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, { mtime
 
         const stat = fs.statSync(conflictFull);
         const mtimeVal = stat.mtimeMs || mtime || Date.now();
-        updateManifestEntry(vaultId, conflictRel, { size: stat.size, mtime: mtimeVal, ctime: mtimeVal, hash: incomingHash });
+        const ctimeVal = (stat.birthtimeMs && stat.birthtimeMs > 0) ? stat.birthtimeMs : (stat.ctimeMs || mtimeVal);
+        updateManifestEntry(vaultId, conflictRel, { size: stat.size, mtime: mtimeVal, ctime: ctimeVal, hash: incomingHash });
         invalidateContentCacheEntry(vaultId, conflictRel);
-        const changePromise = deltaSync.recordChange(vaultId, { path: conflictRel, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash: incomingHash }).catch(() => {});
+        const changePromise = trackRecordChange(vaultId, conflictRel, deltaSync.recordChange(vaultId, { path: conflictRel, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash: incomingHash }));
         try {
           if (stat.size <= 2 * 1024 * 1024) {
             const buf = fs.readFileSync(conflictFull);
@@ -1278,7 +1418,7 @@ function writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, { mtime
   const ctimeVal = (stat.birthtimeMs && stat.birthtimeMs > 0) ? stat.birthtimeMs : (stat.ctimeMs || mtimeVal);
   updateManifestEntry(vaultId, normRel, { size: stat.size, mtime: mtimeVal, ctime: ctimeVal, hash: incomingHash });
   invalidateContentCacheEntry(vaultId, normRel);
-  const changePromise = deltaSync.recordChange(vaultId, { path: normRel, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash: incomingHash }).catch(() => {});
+  const changePromise = trackRecordChange(vaultId, normRel, deltaSync.recordChange(vaultId, { path: normRel, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash: incomingHash }));
   try {
     if (stat.size <= 2 * 1024 * 1024) {
       const buf = fs.readFileSync(full);
@@ -1291,13 +1431,11 @@ function writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, { mtime
   return { written: true, conflict: null, currentHash: incomingHash, changePromise };
 }
 
-/** 异步版本的 writeFileFromPath：确保 deltaSync 变更记录与游标持久化已完成 */
+/** 异步版本的 writeFileFromPath：确保 deltaSync 变更记录与游标持久化已完成；失败会抛给调用方 */
 async function writeFileFromPathAsync(vaultId, relPath, tempFilePath, incomingHash, options = {}) {
   const result = writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, options);
   if (result && result.changePromise) {
-    try {
-      await result.changePromise;
-    } catch {}
+    await result.changePromise;
   }
   return result;
 }
@@ -1312,6 +1450,18 @@ function deleteFile(vaultId, relPath) {
   const id = randomId();
   fs.renameSync(full, path.join(trashDir(vaultId), id));
 
+  // 同步清单只记录文件；删除最后一个文件后清理空父目录，避免服务端遗留旧目录树。
+  const filesRoot = path.resolve(vaultFilesRoot(vaultId));
+  let parentDir = path.dirname(full);
+  while (parentDir !== filesRoot && parentDir.startsWith(filesRoot + path.sep)) {
+    try {
+      fs.rmdirSync(parentDir);
+      parentDir = path.dirname(parentDir);
+    } catch {
+      break; // 目录仍有文件、子目录或当前进程无权删除时保留
+    }
+  }
+
   const idxPath = trashIndexPath(vaultId);
   const size = fs.statSync(path.join(trashDir(vaultId), id)).size;
   mutateIndex(idxPath, (entries) => {
@@ -1320,7 +1470,7 @@ function deleteFile(vaultId, relPath) {
   });
   updateManifestEntry(vaultId, normRel, null);
   invalidateContentCacheEntry(vaultId, normRel);
-  deltaSync.recordChange(vaultId, { path: normRel, action: 'DELETE', size: 0, mtime: Date.now() }).catch(() => {});
+  trackRecordChange(vaultId, normRel, deltaSync.recordChange(vaultId, { path: normRel, action: 'DELETE', size: 0, mtime: Date.now() }));
   try {
     ftsEngine.onFileDelete(vaultId, normRel);
   } catch {}
@@ -1427,7 +1577,7 @@ async function searchVault(vaultId, query, limit = 50) {
   const q = query.trim();
 
   // 1. Trigger background index warm-up if not already loaded/indexed
-  const manifest = getManifest(vaultId);
+  const manifest = await getManifestAsync(vaultId);
   const idx = ftsEngine.getIndex(vaultId);
   if (!idx.isLoaded || idx.docCount === 0) {
     // Warm up index asynchronously
@@ -1504,8 +1654,8 @@ async function searchVault(vaultId, query, limit = 50) {
 }
 
 /** Vault statistics summary. */
-function getVaultStats(vaultId) {
-  const manifest = getManifest(vaultId);
+async function getVaultStats(vaultId) {
+  const manifest = await getManifestAsync(vaultId);
   const paths = Object.keys(manifest);
   let totalBytes = 0;
   let notesCount = 0;
@@ -1544,7 +1694,7 @@ function exportVaultZip(vaultId, outputStream) {
   archive.pipe(outputStream);
   const root = vaultFilesRoot(vaultId);
   if (fs.existsSync(root)) {
-    archive.directory(root, false);
+    archive.directory(root, false, (entry) => !isPrivateVaultPath(entry.name));
   }
   return archive.finalize();
 }
@@ -1629,7 +1779,7 @@ function moveVaultFile(vaultId, oldRelPath, newRelPath, options = {}) {
 
   updateManifestEntry(vaultId, normOld, null);
   invalidateContentCacheEntry(vaultId, normOld);
-  const pDel = deltaSync.recordChange(vaultId, { path: normOld, action: 'DELETE', size: 0, mtime: Date.now() }).catch(() => {});
+  const pDel = trackRecordChange(vaultId, normOld, deltaSync.recordChange(vaultId, { path: normOld, action: 'DELETE', size: 0, mtime: Date.now() }));
   try {
     ftsEngine.onFileDelete(vaultId, normOld);
   } catch {}
@@ -1645,7 +1795,7 @@ function moveVaultFile(vaultId, oldRelPath, newRelPath, options = {}) {
   const ctimeVal = oldMeta?.ctime || stat.birthtimeMs || stat.ctimeMs || mtimeVal;
   updateManifestEntry(vaultId, normNew, { size: stat.size, mtime: mtimeVal, ctime: ctimeVal, hash });
   invalidateContentCacheEntry(vaultId, normNew);
-  const pUpsert = deltaSync.recordChange(vaultId, { path: normNew, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash }).catch(() => {});
+  const pUpsert = trackRecordChange(vaultId, normNew, deltaSync.recordChange(vaultId, { path: normNew, action: 'UPSERT', size: stat.size, mtime: mtimeVal, hash }));
   const changePromise = Promise.all([pDel, pUpsert]);
   try {
     if (SEARCHABLE_EXT_RE.test(normNew) && stat.size <= 2 * 1024 * 1024) {
@@ -1660,13 +1810,13 @@ function moveVaultFile(vaultId, oldRelPath, newRelPath, options = {}) {
   return { ok: true, hash, mtime: mtimeVal, size: stat.size, changePromise };
 }
 
+/** 异步版本：等待两条变更记录（DELETE 旧路径 + UPSERT 新路径）持久化完成；失败抛给调用方 */
 async function moveVaultFileAsync(vaultId, oldRelPath, newRelPath, options = {}) {
   const res = moveVaultFile(vaultId, oldRelPath, newRelPath, options);
   if (res && res.changePromise) {
-    try {
-      await res.changePromise;
-    } catch {}
+    await res.changePromise;
   }
+  if (res && res.changePromise !== undefined) delete res.changePromise;
   return res;
 }
 
@@ -1744,6 +1894,7 @@ module.exports = {
   getManifest,
   getManifestAsync,
   getManifestEntry,
+  getManifestEntryAsync,
   walkAsync,
   invalidateManifestCache,
   readFile,
@@ -1785,6 +1936,7 @@ module.exports = {
   isNoiseFile,
   pruneVaultHistory,
   withFileLock,
+  waitForVaultLocks,
   withDualFileLock,
   clearVaultCache,
   deleteVaultDirectory,

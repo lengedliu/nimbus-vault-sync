@@ -12,6 +12,7 @@ const DEFAULT_RULES = {
     '.obsidian/cache/**',
     '.obsidian/icons/**',
     '.obsidian/plugins/nimbus-sync/**',
+    '**/plugins/nimbus-sync/data.json',
     '**/*.tmp',
     '**/*.swp',
     '**/.DS_Store',
@@ -63,45 +64,39 @@ async function loadFromDb() {
   }
 }
 
-function saveRules(vaultId, rules) {
+async function saveRules(vaultId, rules) {
   const merged = { ...DEFAULT_RULES, ...rules };
-  rulesCache.set(vaultId, merged);
-
-  // Also save to disk for backwards compatibility / local vault portability
-  try {
+  if (dbManager.type === 'json') {
     const p = rulesPath(vaultId);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, JSON.stringify(merged, null, 2));
-  } catch {}
-
-  if (dbManager.type !== 'json') {
+  } else {
     const jsonStr = JSON.stringify(merged);
     const now = Date.now();
     if (dbManager.type === 'sqlite') {
-      dbManager
-        .execute('INSERT OR REPLACE INTO sync_rules (vault_id, rules_json, updated_at) VALUES (?, ?, ?)', [
-          vaultId,
-          jsonStr,
-          now,
-        ])
-        .catch((err) => console.error('[SyncRules] SQLite save error:', err));
+      await dbManager.execute('INSERT OR REPLACE INTO sync_rules (vault_id, rules_json, updated_at) VALUES (?, ?, ?)', [vaultId, jsonStr, now]);
     } else if (dbManager.type === 'postgres') {
-      dbManager
-        .execute(
-          'INSERT INTO sync_rules (vault_id, rules_json, updated_at) VALUES (?, ?, ?) ON CONFLICT (vault_id) DO UPDATE SET rules_json = EXCLUDED.rules_json, updated_at = EXCLUDED.updated_at',
-          [vaultId, jsonStr, now]
-        )
-        .catch((err) => console.error('[SyncRules] Postgres save error:', err));
+      await dbManager.execute(
+        'INSERT INTO sync_rules (vault_id, rules_json, updated_at) VALUES (?, ?, ?) ON CONFLICT (vault_id) DO UPDATE SET rules_json = EXCLUDED.rules_json, updated_at = EXCLUDED.updated_at',
+        [vaultId, jsonStr, now]
+      );
     } else if (dbManager.type === 'mysql') {
-      dbManager
-        .execute(
-          'INSERT INTO sync_rules (vault_id, rules_json, updated_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE rules_json = VALUES(rules_json), updated_at = VALUES(updated_at)',
-          [vaultId, jsonStr, now]
-        )
-        .catch((err) => console.error('[SyncRules] MySQL save error:', err));
+      await dbManager.execute(
+        'INSERT INTO sync_rules (vault_id, rules_json, updated_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE rules_json = VALUES(rules_json), updated_at = VALUES(updated_at)',
+        [vaultId, jsonStr, now]
+      );
+    }
+    // SQL is authoritative in SQL mode; JSON is only a portability copy.
+    try {
+      const p = rulesPath(vaultId);
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, JSON.stringify(merged, null, 2));
+    } catch (err) {
+      console.warn('[SyncRules] Failed to refresh JSON portability copy:', err.message);
     }
   }
 
+  rulesCache.set(vaultId, merged);
   return merged;
 }
 
@@ -154,13 +149,14 @@ function isPathIgnored(vaultId, relPath) {
 }
 
 async function removeRulesForVault(vaultId) {
-  rulesCache.delete(vaultId);
   if (dbManager.type !== 'json') {
-    try {
-      await dbManager.execute('DELETE FROM sync_rules WHERE vault_id = ?', [vaultId]);
-    } catch (err) {
-      console.error('[SyncRules] Error deleting sync_rules for vault:', err.message);
-    }
+    await dbManager.execute('DELETE FROM sync_rules WHERE vault_id = ?', [vaultId]);
+  }
+  rulesCache.delete(vaultId);
+  try {
+    fs.rmSync(rulesPath(vaultId), { force: true });
+  } catch (err) {
+    console.warn('[SyncRules] Failed to remove JSON portability copy:', err.message);
   }
 }
 

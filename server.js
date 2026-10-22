@@ -8,6 +8,8 @@ const fs = require('fs');
 const path = require('path');
 
 const { PORT, DATA_DIR, VAULTS_DIR, TLS_CERT_PATH, TLS_KEY_PATH, TRUST_PROXY, JWT_SECRET, JWT_SECRET_SOURCE, VERSION } = require('./src/config');
+const cloudBackup = require('./src/cloudBackup');
+const gitSync = require('./src/gitSync');
 const authRoutes = require('./src/routes/authRoutes');
 const vaultRoutes = require('./src/routes/vaultRoutes');
 const fileRoutes = require('./src/routes/fileRoutes');
@@ -51,44 +53,37 @@ if (JWT_SECRET_SOURCE === 'env') {
   console.log('[AUTH] JWT_SECRET 运行于内存临时高熵密钥模式。');
 }
 
-const cloudBackup = require('./src/cloudBackup');
-const gitSync = require('./src/gitSync');
+// 初始化必须完成后才能接受同步请求，避免客户端过早拿到空 Vault 清单。
+const startupPromise = (async () => {
+  await dbManager.init();
+  await users.loadFromDb();
+  await vaultsStore.loadFromDb();
+  await vaultMembers.loadFromDb();
+  await sharesStore.loadFromDb();
+  await syncRulesStore.loadFromDb();
+  await settingsManager.loadFromDb();
+  await syncLogger.loadFromDb();
+  await devicesStore.loadFromDb();
 
-// Initialize database and background maintenance tasks
-const dbBootstrapPromise = (async () => {
-  try {
-    await dbManager.init();
-    await users.loadFromDb();
-    await vaultsStore.loadFromDb();
-    await vaultMembers.loadFromDb();
-    await sharesStore.loadFromDb();
-    await syncRulesStore.loadFromDb();
-    await settingsManager.loadFromDb();
-    await syncLogger.loadFromDb();
-    await devicesStore.loadFromDb();
-
-    // 自动为系统初始化默认测试笔记库（当当前库数量为0时）
-    const allUsers = users.listAll();
-    const adminUser = allUsers.find((u) => u.role === 'admin') || allUsers[0];
-    if (adminUser) {
-      await vaultsStore.ensureDefaultVaults(adminUser.id);
-    }
-
-    // 启动后台自动备份、Git 周期同步与过期回收站清理调度器
-    cloudBackup.startCloudBackupScheduler();
-    gitSync.startGitSyncScheduler();
-    const trashTimer = setInterval(() => {
-      try {
-        const allVaults = vaultsStore.getRawVaults ? vaultsStore.getRawVaults() : [];
-        for (const v of allVaults) {
-          storage.purgeExpiredTrash(v.id).catch(() => {});
-        }
-      } catch {}
-    }, 6 * 60 * 60 * 1000);
-    if (trashTimer.unref) trashTimer.unref();
-  } catch (err) {
-    console.error('[DB] Initial startup load error:', err);
+  // 自动为系统初始化默认测试笔记库（当当前库数量为0时）
+  const allUsers = users.listAll();
+  const adminUser = allUsers.find((u) => u.role === 'admin') || allUsers[0];
+  if (adminUser) {
+    await vaultsStore.ensureDefaultVaults(adminUser.id);
   }
+
+  // 启动后台自动备份、Git 周期同步与过期回收站清理调度
+  cloudBackup.startCloudBackupScheduler();
+  gitSync.startGitSyncScheduler();
+  const trashTimer = setInterval(() => {
+    try {
+      const allVaults = vaultsStore.getRawVaults ? vaultsStore.getRawVaults() : [];
+      for (const v of allVaults) {
+        storage.purgeExpiredTrash(v.id).catch(() => {});
+      }
+    } catch {}
+  }, 6 * 60 * 60 * 1000);
+  if (trashTimer.unref) trashTimer.unref();
 })();
 
 const app = express();
@@ -96,6 +91,15 @@ app.set('fnsHub', fnsHub);
 if (TRUST_PROXY) {
   app.set('trust proxy', 1);
 }
+
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  next();
+});
 
 // 默认对所有来源开放（等价于原来的 cors()，避免默认就打破现有的 Web 客户端/插件），
 // 但支持用 CORS_ALLOWED_ORIGINS（逗号分隔）收紧到指定域名——自己部署 Web 面板在固定
@@ -245,6 +249,9 @@ process.on('uncaughtException', (err) => {
 
 let server;
 let usingTls = false;
+if (Boolean(TLS_CERT_PATH) !== Boolean(TLS_KEY_PATH)) {
+  throw new Error('TLS_CERT_PATH and TLS_KEY_PATH must either both be configured or both be empty.');
+}
 if (TLS_CERT_PATH && TLS_KEY_PATH) {
   try {
     const tlsOptions = {
@@ -254,17 +261,16 @@ if (TLS_CERT_PATH && TLS_KEY_PATH) {
     server = https.createServer(tlsOptions, app);
     usingTls = true;
   } catch (e) {
-    console.error(`Failed to load TLS cert/key (${e.message}). Falling back to plain HTTP.`);
-    server = http.createServer(app);
+    console.error(`Failed to load configured TLS cert/key (${e.message}). Refusing to start without TLS.`);
+    throw e;
   }
 } else {
   server = http.createServer(app);
 }
-fnsHub.init(server);
-
 const scheme = usingTls ? 'https' : 'http';
 const wsScheme = usingTls ? 'wss' : 'ws';
-dbBootstrapPromise.finally(() => {
+startupPromise.then(() => {
+  fnsHub.init(server);
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`Nimbus server listening on ${scheme}://0.0.0.0:${PORT}`);
     console.log(`Management dashboard: ${scheme}://0.0.0.0:${PORT}/admin`);
@@ -274,6 +280,9 @@ dbBootstrapPromise.finally(() => {
       console.log('TLS not configured (TLS_CERT_PATH/TLS_KEY_PATH) — serving plain HTTP/WS.');
     }
   });
+}).catch((err) => {
+  console.error('[DB] Initial startup load failed; server will not accept requests:', err);
+  process.exitCode = 1;
 });
 
 // 优雅关闭：容器/进程被停止时，先停止接受新连接、给在飞请求（比如正在流式

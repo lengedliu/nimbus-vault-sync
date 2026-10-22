@@ -1,9 +1,14 @@
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const { JWT_SECRET, TOKEN_TTL } = require('./config');
 const users = require('./users');
 
 function signToken(user) {
-  return jwt.sign({ sub: user.id, username: user.username }, JWT_SECRET, { expiresIn: TOKEN_TTL });
+  const storedUser = users.findById(user.id);
+  const passwordVersion = storedUser && storedUser.passwordHash
+    ? crypto.createHash('sha256').update(storedUser.passwordHash).digest('hex')
+    : undefined;
+  return jwt.sign({ sub: user.id, username: user.username, passwordVersion }, JWT_SECRET, { expiresIn: TOKEN_TTL });
 }
 
 function verifyToken(token) {
@@ -26,6 +31,15 @@ function requireAuth(req, res, next) {
   }
   const user = users.findById(payload.sub);
   if (!user) return res.status(401).json({ ok: false, error: 'Unauthorized', message: 'Unauthorized', code: 401 });
+  if (!payload.deviceId && !payload.passwordVersion) {
+    return res.status(401).json({ ok: false, error: '登录凭证已过期，请重新登录', message: '登录凭证已过期，请重新登录', code: 401 });
+  }
+  if (!payload.deviceId && payload.passwordVersion) {
+    const currentVersion = crypto.createHash('sha256').update(user.passwordHash || '').digest('hex');
+    if (payload.passwordVersion !== currentVersion) {
+      return res.status(401).json({ ok: false, error: '登录凭证已失效，请重新登录', message: '登录凭证已失效，请重新登录', code: 401 });
+    }
+  }
   req.user = { id: user.id, username: user.username, role: user.role || 'user' };
   next();
 }

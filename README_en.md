@@ -162,11 +162,13 @@ When launching the container directly or via `docker-compose.yml`, configure the
 | `JWT_SECRET` | Auto-generated in `.jwt_secret` | Secret key for signing user auth and API device JWT tokens (recommended to set explicitly) |
 | `ENCRYPTION_KEY` | Falls back to `JWT_SECRET` | Symmetric encryption key for stored Git credentials and sensitive secrets |
 | `TOKEN_TTL` | `30d` | Lifetime of user auth sessions and API tokens (e.g., `7d`, `30d`, `90d`) |
-| `INITIAL_ADMIN_PASSWORD` | `admin123` | Default password for the initial administrator account during first boot wizard |
-| `TRUST_PROXY` | `true` | Trust `X-Forwarded-*` headers from upstream reverse proxies (Nginx / Caddy / Cloudflare / Ingress) |
+| `INITIAL_ADMIN_PASSWORD` | No default | Required for first administrator creation; at least 12 characters |
+| `TRUST_PROXY` | `false` | Set to `true` only behind a controlled reverse proxy; keep disabled when directly exposed |
+| `ALLOW_PRIVATE_CLOUD_BACKUP_TARGETS` | `false` | Allow cloud backups to private network targets (enable only when required for a trusted on-premises NAS) |
 | `CORS_ALLOWED_ORIGINS` | `*` (All allowed) | Comma-separated whitelist of allowed CORS origins (e.g., `https://notes.example.com`) |
 | **Upload & Attachment Limits** | | |
 | `MAX_UPLOAD_MB` | `500` | Maximum size in MB allowed for standard file uploads and attachments |
+| `MAX_CONCURRENT_UPLOADS` | `4` | Maximum simultaneous file uploads per server process; excess requests should retry later |
 | `ATTACHMENT_MAX_MB` | `200` | Maximum size in MB allowed for remote attachment downloads via MCP / AI tools |
 | **Delta Sync Retention Policy** | | |
 | `MAX_DELTA_CHANGES_PER_VAULT` | `5000` | Maximum number of incremental changes retained per vault in SQLite / JSON storage before auto-pruning |

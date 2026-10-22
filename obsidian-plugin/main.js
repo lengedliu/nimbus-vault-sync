@@ -29,7 +29,7 @@ const DEFAULT_SETTINGS = {
   authToken: '',
   vaultId: '',
   vaultName: '',
-  deviceId: '',
+  deviceId: 'Obsidian Device',
   autoSync: true,
   syncConfigFolder: false,
   syncIntervalSeconds: 30,
@@ -42,13 +42,11 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     await this.loadSettings();
     await this.loadBaselineCache();
 
-    // Generate unique device ID if empty or still using legacy generic placeholder
-    if (!this.settings.deviceId || this.settings.deviceId === 'Obsidian Device') {
+    // Default device ID if empty
+    if (!this.settings.deviceId) {
       this.settings.deviceId = 'Obsidian-' + Math.random().toString(36).substring(2, 7);
       await this.saveSettings();
     }
-    // Unique runtime session ID for accurate HTTP/WS echo suppression across multi-device setups
-    this.clientId = 'client-' + Math.random().toString(36).substring(2, 10) + '-' + Date.now().toString(36);
 
     this.localChangeQueue = new Map();
     this.isApplyingRemoteChange = false;
@@ -57,15 +55,9 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     this.isVaultReady = false;
     this.syncBarrierActive = true; // 🛡️ 启动期下行优先屏障保护 (Pull-First Sync Barrier)
     this.pendingLocalQueueWhileBarrier = new Set();
-    this.pendingLocalDeletesWhileBarrier = new Set();
-    this.pendingPushes = new Map();
-    this.remoteIgnorePatterns = [];
     this.fileHashes = new Map();
-    this.fileLocks = new Map();
-    this._wsMessageChain = Promise.resolve();
     this.reconnectTimer = null;
     this.pingTimer = null;
-    this.barrierSafetyTimer = null;
     this._saveSettingsTimer = null;
     this._saveBaselineTimer = null;
 
@@ -190,7 +182,6 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     this.disconnectWebSocket();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.pingTimer) clearInterval(this.pingTimer);
-    if (this.barrierSafetyTimer) clearTimeout(this.barrierSafetyTimer);
     if (this.localChangeQueue) {
       for (const timer of this.localChangeQueue.values()) {
         clearTimeout(timer);
@@ -234,13 +225,24 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   }
 
   scheduleSaveSettings() {
+    // 🛡️ 防抖但给硬截止：400ms 防抖在高频变更风暴下会无限后移，强杀进程时整个窗口全部丢失。
+    // 首次调用起 5 秒内必须落盘一次。
+    if (!this._saveSettingsDeadline) {
+      this._saveSettingsDeadline = Date.now() + 5000;
+    }
     if (this._saveSettingsTimer) {
       clearTimeout(this._saveSettingsTimer);
     }
+    const wait = Math.max(50, Math.min(400, this._saveSettingsDeadline - Date.now()));
     this._saveSettingsTimer = setTimeout(async () => {
       this._saveSettingsTimer = null;
-      await this.saveSettings();
-    }, 400);
+      this._saveSettingsDeadline = null;
+      try {
+        await this.saveSettings();
+      } catch (e) {
+        console.error('[Nimbus] 保存设置失败:', e);
+      }
+    }, wait);
   }
 
   async loadBaselineCache() {
@@ -283,13 +285,23 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   }
 
   scheduleSaveBaselineCache() {
+    // 🛡️ 与 scheduleSaveSettings 相同：5 秒硬截止防无限后移
+    if (!this._saveBaselineDeadline) {
+      this._saveBaselineDeadline = Date.now() + 5000;
+    }
     if (this._saveBaselineTimer) {
       clearTimeout(this._saveBaselineTimer);
     }
+    const wait = Math.max(50, Math.min(400, this._saveBaselineDeadline - Date.now()));
     this._saveBaselineTimer = setTimeout(async () => {
       this._saveBaselineTimer = null;
-      await this.saveBaselineCache();
-    }, 400);
+      this._saveBaselineDeadline = null;
+      try {
+        await this.saveBaselineCache();
+      } catch (e) {
+        console.error('[Nimbus] 保存基线缓存失败:', e);
+      }
+    }, wait);
   }
 
   getVaultBaseline(vaultId = this.settings.vaultId) {
@@ -339,46 +351,13 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     this.scheduleSaveSettings();
   }
 
-  setRemoteIgnorePatterns(patterns) {
-    if (Array.isArray(patterns)) {
-      this.remoteIgnorePatterns = patterns.filter((p) => typeof p === 'string' && p.trim().length > 0);
-    }
-  }
-
-  matchIgnorePattern(relPath, pattern) {
-    const normPath = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
-    const normPat = String(pattern || '').trim().replace(/\\/g, '/').replace(/^\/+/, '');
-    if (!normPat) return false;
-    if (normPath === normPat) return true;
-    if (!normPat.includes('/') && normPat.startsWith('*.')) {
-      const ext = normPat.slice(1);
-      if (normPath.toLowerCase().endsWith(ext.toLowerCase())) return true;
-    }
-    let p = normPat;
-    let prefix = '^';
-    if (p.startsWith('**/')) {
-      prefix = '^(?:.*/)?';
-      p = p.slice(3);
-    }
-    const regexStr =
-      prefix +
-      p
-        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-        .replace(/\*\*\//g, '(?:.*/)?')
-        .replace(/\*\*/g, '.*')
-        .replace(/(?<!\.)\*/g, '[^/]*')
-        .replace(/\?/g, '.') +
-      '$';
-    try {
-      return new RegExp(regexStr, 'i').test(normPath);
-    } catch {
-      return normPath.toLowerCase().includes(normPat.toLowerCase());
-    }
-  }
-
   isIgnoredLocalPath(filePath) {
     if (!filePath) return true;
     const clean = String(filePath).replace(/\\/g, '/').replace(/^\/+/, '');
+
+    // 插件凭据文件（无论所在配置目录叫什么）永远不同步
+    const configDir = ((this.app.vault && this.app.vault.configDir) || '.obsidian').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    if (`${configDir}/plugins/nimbus-sync/data.json`.toLowerCase() === clean.toLowerCase()) return true;
 
     // 无论是否开启配置目录同步，机台强绑定的本地 UI / 工作区状态 / 本插件运行态永远绝对忽略
     const alwaysIgnoredPatterns = [
@@ -405,28 +384,6 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       return true;
     }
 
-    // 对齐服务端自定义忽略规则 (syncRules.ignorePatterns)
-    if (Array.isArray(this.remoteIgnorePatterns) && this.remoteIgnorePatterns.length > 0) {
-      for (const pat of this.remoteIgnorePatterns) {
-        if (this.matchIgnorePattern(clean, pat)) {
-          return true;
-        }
-      }
-    }
-
-    return false;
-  }
-
-  isPathApplyingRemote(filePath, isFolder = false) {
-    if (!filePath || !this.applyingRemotePaths || this.applyingRemotePaths.size === 0) return false;
-    const clean = String(filePath).replace(/\\/g, '/').replace(/^\/+/, '');
-    if (this.applyingRemotePaths.has(clean)) return true;
-    if (isFolder) {
-      const prefix = clean ? `${clean}/` : '';
-      for (const p of this.applyingRemotePaths) {
-        if (p.startsWith(prefix)) return true;
-      }
-    }
     return false;
   }
 
@@ -436,30 +393,6 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     // 隐藏目录（如 .obsidian/）或隐藏文件视为辅助系统配置，非核心笔记资产
     if (clean.startsWith('.') || clean.includes('/.')) return false;
     return true;
-  }
-
-  async withLocalFileLock(filePath, fn) {
-    const clean = String(filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
-    if (!clean) return fn();
-    if (!this.fileLocks) this.fileLocks = new Map();
-    const prev = this.fileLocks.get(clean) || Promise.resolve();
-    let release;
-    const next = new Promise((r) => {
-      release = r;
-    });
-    const chain = prev.then(() => next, () => next);
-    this.fileLocks.set(clean, chain);
-    try {
-      await prev;
-    } catch {}
-    try {
-      return await fn();
-    } finally {
-      release();
-      if (this.fileLocks.get(clean) === chain) {
-        this.fileLocks.delete(clean);
-      }
-    }
   }
 
   updateStatusBar(status, customText) {
@@ -496,9 +429,6 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     const headers = {
       'Authorization': `Bearer ${cleanToken}`,
     };
-    if (this.clientId) {
-      headers['x-client-id'] = String(this.clientId);
-    }
     if (this.settings.deviceId) {
       // 对设备名进行 URI 编码，彻底防御 Windows PC (默认设备) 等中文设备名称击穿 fetch 请求头校验
       headers['x-device-id'] = encodeURIComponent(String(this.settings.deviceId));
@@ -643,33 +573,44 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   connectWebSocket() {
     this.disconnectWebSocket();
 
+    // 🛡️ 启动连接时激活下行优先屏障，直到服务端握手与初次对齐完成
+    this.syncBarrierActive = true;
+
     const cleanToken = this.getCleanToken();
     if (!cleanToken || !this.settings.vaultId) {
-      this.syncBarrierActive = false;
       this.updateStatusBar('idle', '☁️ Nimbus: 未配置');
       return;
     }
-
-    // 🛡️ 启动连接时激活下行优先屏障，直到服务端握手与初次对齐完成（含 15s 超时防死锁兜底）
-    this.syncBarrierActive = true;
-    if (this.barrierSafetyTimer) clearTimeout(this.barrierSafetyTimer);
-    this.barrierSafetyTimer = setTimeout(() => {
-      this.barrierSafetyTimer = null;
-      if (this.syncBarrierActive) {
-        this.flushPendingLocalChangesAfterBarrier().catch(() => {});
-      }
-    }, 15000);
 
     const baseUrl = this.getCleanServerUrl();
     const wsProto = baseUrl.startsWith('https:') ? 'wss:' : 'ws:';
     const host = baseUrl.replace(/^https?:\/\//i, '');
     const localCursor = this.getVaultCursor(this.settings.vaultId || 'default');
-    const wsUrl = `${wsProto}//${host}/ws?token=${encodeURIComponent(cleanToken)}&vaultId=${encodeURIComponent(this.settings.vaultId)}&deviceId=${encodeURIComponent(this.settings.deviceId || 'Obsidian Device')}&clientId=${encodeURIComponent(this.clientId || '')}&cursor=${encodeURIComponent(localCursor)}`;
+    const wsUrl = `${wsProto}//${host}/ws?token=${encodeURIComponent(cleanToken)}&vaultId=${encodeURIComponent(this.settings.vaultId)}&deviceId=${encodeURIComponent(this.settings.deviceId || 'Obsidian Device')}&cursor=${encodeURIComponent(localCursor)}`;
+
+    // 🛡️ 多库切换卫生：目标库变化时清空上一库的内存状态（回声哈希、防抖队列、挂起队列），
+    // 并用新库基线重播 fileHashes。否则旧库哈希会参与新库的回声抑制，造成漏拉/漏推。
+    if (this._connectedVaultId && this._connectedVaultId !== this.settings.vaultId) {
+      if (this.localChangeQueue) {
+        for (const timer of this.localChangeQueue.values()) clearTimeout(timer);
+        this.localChangeQueue.clear();
+      }
+      this.fileHashes = new Map();
+      if (this.pendingLocalQueueWhileBarrier) this.pendingLocalQueueWhileBarrier.clear();
+      if (this.pendingLocalDeletes) this.pendingLocalDeletes.clear();
+      const nextBaseline = this.getVaultBaseline(this.settings.vaultId);
+      for (const [path, meta] of Object.entries(nextBaseline)) {
+        if (meta && meta.hash) this.fileHashes.set(path, meta.hash);
+      }
+      console.log(`[Nimbus] 切换笔记库: ${this._connectedVaultId} -> ${this.settings.vaultId}（已重置内存同步状态）`);
+    }
+    this._connectedVaultId = this.settings.vaultId;
 
     try {
-      this.ws = new WebSocket(wsUrl);
+      const socket = new WebSocket(wsUrl);
+      this.ws = socket;
 
-      this.ws.onopen = () => {
+      socket.onopen = () => {
         this.updateStatusBar('connected');
         new Notice('☁️ Nimbus 实时双向同步已连接');
 
@@ -682,28 +623,20 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         }, 25000);
       };
 
-      this.ws.onmessage = (evt) => {
-        this._wsMessageChain = (this._wsMessageChain || Promise.resolve())
-          .then(async () => {
-            try {
-              const msg = JSON.parse(evt.data);
-              await this.handleServerMessage(msg);
-            } catch (err) {
-              console.error('[Nimbus] 解析服务器消息异常:', err);
-            }
-          })
-          .catch(() => {});
+      socket.onmessage = async (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          await this.handleServerMessage(msg);
+        } catch (err) {
+          console.error('[Nimbus] 解析服务器消息异常:', err);
+        }
       };
 
-      this.ws.onclose = (e) => {
-        this.syncBarrierActive = false;
-        if (this.pendingPushes) {
-          this.pendingPushes.clear();
-        }
-        if (this.barrierSafetyTimer) {
-          clearTimeout(this.barrierSafetyTimer);
-          this.barrierSafetyTimer = null;
-        }
+      socket.onclose = (e) => {
+        // 🛡️ 只有"当前这一条连接"被意外关闭时才安排重连。
+        // 若 close 由 connectWebSocket() 换线/主动断开触发（this.ws 已被替换或置空），
+        // 这里直接忽略——否则旧连接会每 5 秒催生一条新连接，形成永不停止的重连震荡。
+        if (this.ws !== socket) return;
         if (this.pingTimer) clearInterval(this.pingTimer);
         if (e && (e.code === 4001 || e.code === 4003)) {
           this.updateStatusBar('error', '☁️ Nimbus: 令牌已失效');
@@ -717,12 +650,11 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         }
       };
 
-      this.ws.onerror = (err) => {
+      socket.onerror = (err) => {
         console.error('[Nimbus] WebSocket 错误:', err);
         this.updateStatusBar('error');
       };
     } catch (err) {
-      this.syncBarrierActive = false;
       console.error('[Nimbus] 连接初始化失败:', err);
       this.updateStatusBar('error');
     }
@@ -730,12 +662,9 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
   disconnectWebSocket() {
     this.syncBarrierActive = false;
-    if (this.pendingPushes) {
-      this.pendingPushes.clear();
-    }
-    if (this.barrierSafetyTimer) {
-      clearTimeout(this.barrierSafetyTimer);
-      this.barrierSafetyTimer = null;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
     if (this.pingTimer) clearInterval(this.pingTimer);
     if (this.ws) {
@@ -750,143 +679,111 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
     switch (msg.type) {
       case 'init': {
-        if (Array.isArray(msg.ignorePatterns)) {
-          this.setRemoteIgnorePatterns(msg.ignorePatterns);
-        }
         const serverCursor = typeof msg.cursor === 'number' ? msg.cursor : 0;
         const vaultId = this.settings.vaultId || 'default';
         const localCursor = this.getVaultCursor(vaultId);
-        const localNonIgnoredCount = this.app.vault.getFiles().filter((f) => !this.isIgnoredLocalPath(f.path)).length;
 
-        // 🛡️ 防御：仅当本地存在非忽略文件 (localNonIgnoredCount > 0) 时才启用游标增量快车道。
-        // 若本地为 0 个文件但存在残留游标（如清空本地目录重建或换机残留配置），强制走下方 syncManifest 触发空库自愈全量拉取！
-        if (localNonIgnoredCount > 0 && localCursor > 0 && serverCursor > localCursor) {
+        // 如果本地已存在有效游标且服务端游标大于本地游标，优先执行秒级增量追更 (Delta Sync)
+        if (localCursor >= 0 && serverCursor > localCursor) {
           const deltaOk = await this.syncDeltaChanges(localCursor);
           if (deltaOk) {
-            await this.reconcileLocalOfflineChanges();
             await this.flushPendingLocalChangesAfterBarrier();
             break;
           }
           console.warn('[Nimbus] 增量追更未能完成全部项，自动降级为全量 3-Way 双向清单比对兜底');
-        } else if (localNonIgnoredCount > 0 && localCursor > 0 && serverCursor === localCursor) {
-          // 游标完全吻合，进一步扫描本地离线期间可能发生的快速修改或新增，秒级对齐完成
-          await this.reconcileLocalOfflineChanges();
+        } else if (localCursor > 0 && serverCursor === localCursor) {
+          // 游标完全吻合，秒级对齐完成
           await this.flushPendingLocalChangesAfterBarrier();
           new Notice('✅ 本地已与 Nimbus 云端完全对齐');
           break;
         }
 
-        // 首次同步、本地空库自愈、游标断层或增量未完全对齐时，执行 3-Way 双向对比兜底
+        // 首次同步、游标断层或增量未完全对齐时，执行 3-Way 双向对比兜底
         let manifest = msg.manifest;
         if (!manifest || Object.keys(manifest).length === 0) {
-          manifest = await this.fetchManifestHttp(vaultId);
+          const fetched = await this.fetchManifestHttp(vaultId);
+          if (fetched === null) {
+            // 🛡️ 拉取失败 ≠ 云端空库！绝不能用空清单执行 3-Way（否则场景 2 会把本地笔记当作“云端已删”批量删除）
+            // 保持屏障与待推队列原样，等下次连接成功后自然重试
+            console.error('[Nimbus] 云端全量清单拉取失败，已跳过本轮 3-Way 同步以防误删本地笔记');
+            new Notice('⚠️ 云端清单获取失败，本轮同步已安全跳过，将在网络恢复后自动重试');
+            break;
+          }
+          manifest = fetched;
         }
-        await this.syncManifest(manifest || {}, serverCursor);
+        await this.syncManifest(manifest, serverCursor);
         await this.flushPendingLocalChangesAfterBarrier();
         break;
       }
 
-      case 'rules_updated':
-        if (Array.isArray(msg.ignorePatterns)) {
-          this.setRemoteIgnorePatterns(msg.ignorePatterns);
-        }
-        break;
-
       case 'change':
         // A file was created/updated remotely
-        if (typeof msg.cursor === 'number') {
-          this.setVaultCursor(this.settings.vaultId, msg.cursor);
-        }
-        if (msg.path && this.isIgnoredLocalPath(msg.path)) {
+        // 🛡️ 游标在应用成功后才推进（见下方 changeApplied 分支）；
+        // 绝不能在 apply 失败前就消费掉 msg.cursor，否则增量通道不再重放，文件将被永久漏拉。
+        if (!msg.path) break;
+        if (this.isIgnoredLocalPath(msg.path)) {
           return;
         }
-        if (msg.path && msg.hash && this.fileHashes.get(msg.path) === msg.hash) {
+        if (msg.hash && this.fileHashes.get(msg.path) === msg.hash) {
           // 本地已是目标相同哈希版本（如本设备自产生上传或已同步），无需重复拉取，拦截自反回声
+          if (typeof msg.cursor === 'number') this.setVaultCursor(this.settings.vaultId, msg.cursor);
           return;
         }
+        let changeApplied = false;
         if (msg.pullRequired || !msg.content) {
-          await this.pullRemoteFileViaHttp(msg.path, msg.mtime, msg.hash);
+          changeApplied = await this.pullRemoteFileViaHttp(msg.path, msg.mtime, msg.hash);
         } else {
-          await this.applyRemoteChange(msg.path, msg.content, msg.mtime, msg.hash);
+          changeApplied = await this.applyRemoteChange(msg.path, msg.content, msg.mtime, msg.hash);
         }
+        if (changeApplied && typeof msg.cursor === 'number') this.setVaultCursor(this.settings.vaultId, msg.cursor);
         break;
 
       case 'batch_file_change':
       case 'batch_change':
-        if (typeof msg.cursor === 'number') {
-          this.setVaultCursor(this.settings.vaultId, msg.cursor);
-        }
         // Handle coalesced or server batch change notifications
         if (msg.pullRequired) {
           await this.fullSyncAllFiles();
         } else if (Array.isArray(msg.changes)) {
+          let allApplied = true;
           for (const item of msg.changes) {
             if (!item || !item.path) continue;
-            if (this.isIgnoredLocalPath(item.path)) continue;
             if (item.action === 'delete') {
-              await this.applyRemoteDelete(item.path);
+              allApplied = (await this.applyRemoteDelete(item.path, true)) && allApplied;
             } else {
               const localHash = this.fileHashes.get(item.path);
               if (item.hash && localHash === item.hash) {
                 continue;
               }
-              if (item.size && item.size > 2 * 1024 * 1024) {
-                await this.pullRemoteFileViaHttp(item.path, item.mtime, item.hash);
-              } else {
-                this.sendWsMessage({ type: 'pull', path: item.path });
-              }
+              allApplied = (await this.pullRemoteFileViaHttp(item.path, item.mtime, item.hash)) && allApplied;
             }
           }
+          if (allApplied && typeof msg.cursor === 'number') this.setVaultCursor(this.settings.vaultId, msg.cursor);
         }
         break;
 
       case 'pull_stream':
         // Server directed large file pull via streaming HTTP
-        if (msg.path && this.isIgnoredLocalPath(msg.path)) {
-          return;
-        }
         await this.pullRemoteFileViaHttp(msg.path, msg.mtime, msg.hash);
         break;
 
       case 'deleted':
         // A file was deleted remotely
-        if (typeof msg.cursor === 'number') {
+        if (await this.applyRemoteDelete(msg.path, true) && typeof msg.cursor === 'number') {
           this.setVaultCursor(this.settings.vaultId, msg.cursor);
         }
-        if (msg.path && this.isIgnoredLocalPath(msg.path)) {
-          return;
-        }
-        await this.applyRemoteDelete(msg.path);
         break;
 
-      case 'conflict': {
-        if (msg.path && this.pendingPushes) {
-          this.pendingPushes.delete(msg.path);
+      case 'conflict':
+        new Notice(`⚠️ 检测到并发冲突！已自动创建云端分支副本: ${msg.conflictPath}`);
+        // 1. 自动拉取云端新创建的分支副本保存至本地
+        if (msg.conflictPath) {
+          this.sendWsMessage({ type: 'pull', path: msg.conflictPath });
         }
-        if (msg.serverWin) {
-          new Notice(`⚠️ 检测到并发冲突 (云端版本较新优先)：正在备份本地改动并拉取云端最新版本: ${msg.path}`);
-          if (msg.path) {
-            const localFile = this.app.vault.getAbstractFileByPath(msg.path);
-            if (localFile instanceof TFile) {
-              await this.backupLocalConflictFile(localFile, msg.path);
-            }
-            this.fileHashes.delete(msg.path);
-            await this.pullRemoteFileViaHttp(msg.path, undefined, msg.currentHash);
-          }
-        } else {
-          new Notice(`⚠️ 检测到并发冲突！已自动创建云端分支副本: ${msg.conflictPath}`);
-          // 1. 自动拉取云端新创建的分支副本保存至本地
-          if (msg.conflictPath) {
-            this.sendWsMessage({ type: 'pull', path: msg.conflictPath });
-          }
-          // 2. 自动清除本地旧哈希缓存并拉取云端主文件当前胜出版本同步至本地
-          if (msg.path) {
-            this.fileHashes.delete(msg.path);
-            this.sendWsMessage({ type: 'pull', path: msg.path });
-          }
+        // 2. 自动拉取云端主文件当前胜出版本同步至本地
+        if (msg.path) {
+          this.sendWsMessage({ type: 'pull', path: msg.path });
         }
         break;
-      }
 
       case 'permission_updated':
         new Notice(`ℹ️ ${msg.message || '您的笔记库权限已更新'}`);
@@ -894,89 +791,24 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
       case 'file':
         // Response to pull
-        if (msg.path && this.isIgnoredLocalPath(msg.path)) {
-          return;
-        }
         await this.applyRemoteChange(msg.path, msg.content, msg.mtime, msg.hash);
         break;
 
-      case 'rename_fallback': {
-        if (msg.oldPath) {
-          this.fileHashes.delete(msg.oldPath);
-          this.updateBaselineEntry(this.settings.vaultId, msg.oldPath, null);
+      case 'ack':
+        if (msg.path && this.pendingSyncAcks) {
+          const ok = msg.action === 'delete'
+            ? msg.deleted !== false
+            : (msg.ignored ? true : !!msg.hash); // ignored 是服务端黑名单的终态确认，不算失败
+          this.pendingSyncAcks.get(`${msg.action || 'push'}:${msg.path}`)?.resolve(ok, msg);
         }
-        if (msg.path && !this.isIgnoredLocalPath(msg.path)) {
-          const targetFile = this.app.vault.getAbstractFileByPath(msg.path);
-          if (targetFile instanceof TFile) {
-            this.fileHashes.delete(msg.path);
-            await this.pushLocalFile(targetFile);
-          }
-        }
-        break;
-      }
-
-      case 'ack': {
-        const pending = (msg.path && this.pendingPushes) ? this.pendingPushes.get(msg.path) : null;
-        if (msg.path && this.pendingPushes) {
-          this.pendingPushes.delete(msg.path);
-        }
-        if (typeof msg.cursor === 'number' && msg.cursor > 0) {
-          this.setVaultCursor(this.settings.vaultId, msg.cursor);
-        }
-        if (msg.action === 'delete') {
-          if (msg.path) {
-            this.fileHashes.delete(msg.path);
-            this.updateBaselineEntry(this.settings.vaultId, msg.path, null);
-          }
-          break;
-        }
-        if (msg.action === 'rename') {
-          if (msg.oldPath) {
-            this.fileHashes.delete(msg.oldPath);
-            this.updateBaselineEntry(this.settings.vaultId, msg.oldPath, null);
-          }
-          if (msg.path && !msg.ignored && msg.hash) {
-            const localFile = this.app.vault.getAbstractFileByPath(msg.path);
-            const localMtime = (localFile && localFile.stat && localFile.stat.mtime)
-              ? localFile.stat.mtime
-              : (msg.mtime || Date.now());
-            const localSize = (localFile && localFile.stat && localFile.stat.size !== undefined)
-              ? localFile.stat.size
-              : (msg.size || 0);
-            this.fileHashes.set(msg.path, msg.hash);
-            this.updateBaselineEntry(this.settings.vaultId, msg.path, {
-              hash: msg.hash,
-              mtime: localMtime,
-              size: localSize,
-            });
-          }
-          break;
-        }
-        if (msg.ignored && msg.path) {
-          // 服务端忽略规则拦截：记录本地已知哈希避免全量同步重复上传
-          if (pending && pending.hash) {
-            this.fileHashes.set(msg.path, pending.hash);
-          }
-          break;
-        }
-        const confirmedHash = msg.hash || (pending && pending.hash);
-        if (msg.path && confirmedHash) {
-          const localFile = this.app.vault.getAbstractFileByPath(msg.path);
-          const localMtime = (localFile && localFile.stat && localFile.stat.mtime)
-            ? localFile.stat.mtime
-            : ((pending && pending.mtime) || msg.mtime || Date.now());
-          const localSize = (localFile && localFile.stat && localFile.stat.size !== undefined)
-            ? localFile.stat.size
-            : (msg.size !== undefined ? msg.size : (pending ? pending.size : 0));
-          this.fileHashes.set(msg.path, confirmedHash);
+        if (msg.hash) {
+          this.fileHashes.set(msg.path, msg.hash);
           this.updateBaselineEntry(this.settings.vaultId, msg.path, {
-            hash: confirmedHash,
-            mtime: localMtime,
-            size: localSize,
+            hash: msg.hash,
+            mtime: msg.mtime || Date.now()
           });
         }
         break;
-      }
 
       case 'pong':
         break;
@@ -988,6 +820,10 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         break;
 
       case 'error':
+        if (msg.path && this.pendingSyncAcks) {
+          this.pendingSyncAcks.get(`push:${msg.path}`)?.resolve(false);
+          this.pendingSyncAcks.get(`delete:${msg.path}`)?.resolve(false);
+        }
         console.warn('[Nimbus] 服务器返回错误:', msg.message);
         break;
     }
@@ -1006,12 +842,19 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       });
       if (!res.ok) return false;
       const data = await res.json();
-      if (Array.isArray(data.ignorePatterns)) {
-        this.setRemoteIgnorePatterns(data.ignorePatterns);
-      }
       if (data.full || data.fullSyncRequired) {
         console.warn('[Nimbus] 服务端要求全量快照同步, 原因:', data.reason);
-        await this.syncManifest(data.manifest || {}, data.cursor || 0);
+        let fullManifest = data.manifest;
+        if (!fullManifest || Object.keys(fullManifest).length === 0) {
+          // 同样不可把“清单缺失/失败”折叠成空清单：先尝试 HTTP 重新拉取
+          const fetched = await this.fetchManifestHttp(vaultId);
+          if (fetched === null) {
+            console.error('[Nimbus] 全量快照清单拉取失败，本轮同步已中止，绝不以空清单执行 3-Way');
+            return false;
+          }
+          fullManifest = fetched;
+        }
+        await this.syncManifest(fullManifest, data.cursor || 0);
         return true;
       }
 
@@ -1021,25 +864,17 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
       if (totalChanges > 0) {
         new Notice(`⚡ 正在应用增量追更: 下载 ${updates.length} 篇，删除 ${deletes.length} 篇...`);
-        // 1. 删除远程已删文件（保护本地离线新建或修改过的文件不被静默误删）
+        // 1. 删除远程已删文件
         for (const del of deletes) {
           if (del && del.path) {
-            const cleanDelPath = String(del.path).replace(/\\/g, '/').replace(/^\/+/, '');
-            if (this.isIgnoredLocalPath(cleanDelPath)) continue;
-            const localFile = this.app.vault.getAbstractFileByPath(cleanDelPath);
-            const baseMeta = this.getBaselineEntry(vaultId, cleanDelPath);
-            if (localFile instanceof TFile) {
-              const currentLocalHash = await this.computeFileHash(localFile);
-              if (currentLocalHash && (!baseMeta || !baseMeta.hash || currentLocalHash !== baseMeta.hash)) {
-                // 本地离线有未同步的新建或修改，保留本地版本并通过 HTTP 同步推送至云端
-                await this.pushLocalFile(localFile, { preferHttp: true });
-                continue;
-              }
+            const deleted = await this.applyRemoteDelete(del.path, true);
+            if (deleted === false) {
+              console.warn('[Nimbus] 增量删除未能落地，保留游标等待重试:', del.path);
+              return false;
             }
-            await this.applyRemoteDelete(cleanDelPath);
           }
         }
-        // 2. 更新远程改动文件：严格使用 HTTP 并发流式拉取并等待落盘屏障 (Promise Barrier)，同时对本地离线改动做 3-Way 冲突备份
+        // 2. 更新远程改动文件：严格使用 HTTP 并发流式拉取并等待落盘屏障 (Promise Barrier)
         let hasPullFailure = false;
         let hasCriticalFailure = false;
         const PULL_CONCURRENCY = 4;
@@ -1049,37 +884,12 @@ module.exports = class NimbusSyncPlugin extends Plugin {
             if (!item || !item.path) return true;
             const cleanPath = String(item.path).replace(/\\/g, '/').replace(/^\/+/, '');
             if (this.isIgnoredLocalPath(cleanPath)) return true;
+            const localHash = this.fileHashes.get(cleanPath);
             const localFile = this.app.vault.getAbstractFileByPath(cleanPath);
-            const baseMeta = this.getBaselineEntry(vaultId, cleanPath);
-
-            if (localFile instanceof TFile) {
-              const currentLocalHash = await this.computeFileHash(localFile);
-              if (item.hash && currentLocalHash === item.hash) {
-                this.fileHashes.set(cleanPath, item.hash);
-                this.updateBaselineEntry(vaultId, cleanPath, {
-                  hash: item.hash,
-                  mtime: (localFile.stat && localFile.stat.mtime) ? localFile.stat.mtime : (item.mtime || Date.now()),
-                  size: (localFile.stat && localFile.stat.size !== undefined) ? localFile.stat.size : (item.size || 0),
-                });
-                return true;
-              }
-              // 若本地文件相比基线也发生了离线修改（双端并发冲突），先将本地改动备份为离线分支副本再拉取云端新版本！
-              if (
-                currentLocalHash &&
-                ((baseMeta && baseMeta.hash && currentLocalHash !== baseMeta.hash) ||
-                  (!baseMeta && item.hash && currentLocalHash !== item.hash))
-              ) {
-                await this.backupLocalConflictFile(localFile, cleanPath);
-                this.fileHashes.delete(cleanPath);
-              }
-            } else {
-              const localHash = this.fileHashes.get(cleanPath);
-              const fileExists = this.app.vault.adapter && await this.app.vault.adapter.exists(cleanPath);
-              if (item.hash && fileExists && localHash === item.hash) {
-                return true;
-              }
+            const fileExists = (localFile instanceof TFile) || (this.app.vault.adapter && await this.app.vault.adapter.exists(cleanPath));
+            if (item.hash && fileExists && localHash === item.hash) {
+              return true;
             }
-
             const ok = await this.pullRemoteFileViaHttp(cleanPath, item.mtime, item.hash);
             if (ok === false) {
               if (this.isCriticalSyncFile(cleanPath)) {
@@ -1128,93 +938,6 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     }
   }
 
-  async reconcileLocalOfflineChanges() {
-    try {
-      const vaultId = this.settings.vaultId || 'default';
-      const baseline = this.getVaultBaseline(vaultId);
-      const baselineCount = Object.keys(baseline).length;
-      const files = this.app.vault.getFiles();
-      const localFileMap = new Map();
-      const toPush = [];
-
-      for (const f of files) {
-        if (this.isIgnoredLocalPath(f.path)) continue;
-        localFileMap.set(f.path, f);
-      }
-
-      // 🛡️ 空库保护：若本地有效文件为 0 但存在历史基线，绝不可作为离线删除清空云端，立即转入全量 3-Way 自愈拉取
-      if (localFileMap.size === 0 && baselineCount > 0) {
-        console.warn('[Nimbus] reconcileLocalOfflineChanges 检测到本地有效文件为 0 但存在历史基线，转入全量 3-Way 自愈同步');
-        await this.fullSyncAllFiles();
-        return;
-      }
-
-      for (const f of localFileMap.values()) {
-        const baseMeta = baseline[f.path];
-        if (!baseMeta || !baseMeta.hash) {
-          toPush.push(f);
-          continue;
-        }
-        // 快速路径：若文件大小和本地修改时间戳均未变化，零磁盘 I/O 直接复用基线哈希
-        if (f.stat && f.stat.size === baseMeta.size && f.stat.mtime === baseMeta.mtime) {
-          this.fileHashes.set(f.path, baseMeta.hash);
-          continue;
-        }
-        // 大小或 mtime 变化时计算真实 SHA-256 比对基线
-        const currentHash = await this.computeFileHash(f);
-        if (currentHash && currentHash !== baseMeta.hash) {
-          toPush.push(f);
-        } else if (currentHash) {
-          this.fileHashes.set(f.path, currentHash);
-          this.updateBaselineEntry(vaultId, f.path, {
-            hash: currentHash,
-            mtime: f.stat?.mtime || baseMeta.mtime,
-            size: f.stat?.size ?? baseMeta.size,
-          });
-        }
-      }
-
-      // 检测离线期间在本地被删除的文件
-      const toRemoteDelete = [];
-      for (const basePath of Object.keys(baseline)) {
-        if (this.isIgnoredLocalPath(basePath)) continue;
-        if (!localFileMap.has(basePath)) {
-          toRemoteDelete.push(basePath);
-        }
-      }
-
-      const delThreshold = Math.max(5, Math.floor(baselineCount * 0.35));
-      if (toRemoteDelete.length > delThreshold) {
-        console.error(`[Nimbus 安全熔断] 离线对账拦截异常大批量云端删除！尝试删除: ${toRemoteDelete.length} 篇，基线总数: ${baselineCount}`);
-        new Notice(`⚠️ [Nimbus 安全熔断] 拦截到离线期间单次尝试删除 ${toRemoteDelete.length} 篇云端笔记（超安全阈值）！\n已自动暂停云端删除以防数据丢失。`, 10000);
-      } else if (toRemoteDelete.length > 0) {
-        for (const delPath of toRemoteDelete) {
-          await this.deleteRemoteFile(delPath, { preferHttp: true });
-        }
-      }
-
-      let modifiedExistingCount = 0;
-      for (const f of toPush) {
-        if (baseline[f.path] && baseline[f.path].hash) {
-          modifiedExistingCount++;
-        }
-      }
-      const pushThreshold = Math.max(15, Math.floor(baselineCount * 0.4));
-      if (baselineCount > 0 && modifiedExistingCount > pushThreshold) {
-        console.warn(`[Nimbus 安全熔断] 离线对账拦截异常大批量修改推送: 尝试覆写 ${modifiedExistingCount} 篇，基线总数: ${baselineCount}`);
-        new Notice(`⚠️ [Nimbus 安全熔断] 检测到离线对账尝试单次向云端覆写 ${modifiedExistingCount} 篇已有笔记（超过安全阈值）！\n已自动暂停大批量推送以防意外覆盖云端。`, 10000);
-      } else if (toPush.length > 0) {
-        const PUSH_CONCURRENCY = 4;
-        for (let i = 0; i < toPush.length; i += PUSH_CONCURRENCY) {
-          const batch = toPush.slice(i, i + PUSH_CONCURRENCY);
-          await Promise.all(batch.map((f) => this.pushLocalFile(f, { preferHttp: true })));
-        }
-      }
-    } catch (err) {
-      console.warn('[Nimbus] 扫描本地离线变更异常:', err);
-    }
-  }
-
   async fetchManifestHttp(vaultId) {
     try {
       const baseUrl = this.getCleanServerUrl();
@@ -1225,9 +948,6 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       });
       if (!res.ok) return null;
       const data = await res.json();
-      if (Array.isArray(data.ignorePatterns)) {
-        this.setRemoteIgnorePatterns(data.ignorePatterns);
-      }
       return data.manifest || null;
     } catch (err) {
       console.error('[Nimbus] 获取云端全量清单失败:', err);
@@ -1246,8 +966,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     }
   }
 
-  async syncManifest(remoteManifest, remoteCursor = 0, options = {}) {
-    const isManual = Boolean(options && options.manual);
+  async syncManifest(remoteManifest, remoteCursor = 0) {
     new Notice('☁️ Nimbus 正在检查笔记库并自动同步 (3-Way Diff)...');
     try {
       const vaultId = this.settings.vaultId || 'default';
@@ -1282,16 +1001,29 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         }
 
         const toPull = remoteEntries.map(([p, meta]) => ({ path: p, meta }));
+        const pulledOk = new Set(); // 🛡️ 全量首拉也必须记录成功项；失败项绝不推进游标，留待增量重试
         const PULL_CONCURRENCY = 6;
         for (let i = 0; i < toPull.length; i += PULL_CONCURRENCY) {
           const batch = toPull.slice(i, i + PULL_CONCURRENCY);
-          await Promise.all(batch.map((item) => this.pullRemoteFileViaHttp(item.path, item.meta?.mtime, item.meta?.hash)));
+          await Promise.all(batch.map(async (item) => {
+            if (item.path && this.isIgnoredLocalPath(item.path)) return;
+            const ok = await this.pullRemoteFileViaHttp(item.path, item.meta?.mtime, item.meta?.hash);
+            if (ok) pulledOk.add(item.path);
+            else console.warn('[Nimbus] 首次全量拉取失败，已推迟游标推进以便自动重试:', item.path);
+          }));
           if (i + PULL_CONCURRENCY < toPull.length) {
             await new Promise((r) => setTimeout(r, 40));
           }
         }
         await this.saveBaselineCache();
-        await this.saveSettings();
+        // 🛡️ 仅在全部拉取成功（或没有需要拉取的条目）时才推进游标；有失败时保持旧游标，下次 init 走增量重放补漏
+        if (pulledOk.size === toPull.length && typeof remoteCursor === 'number' && remoteCursor >= 0) {
+          this.setVaultCursor(vaultId, remoteCursor);
+          await this.saveSettings();
+        }
+        if (pulledOk.size < toPull.length) {
+          new Notice(`⚠️ 首次拉取有 ${toPull.length - pulledOk.size} 篇未成功，将在下次连接时自动重试`);
+        }
         return;
       }
 
@@ -1301,11 +1033,34 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         ...Object.keys(baseline)
       ]);
 
+      // 只为需要三方判断的路径计算哈希，并限制并发读取，避免逐文件串行扫描拖慢大型 Vault。
+      const hashTargets = [];
+      for (const path of allPaths) {
+        const localFile = localFileMap.get(path);
+        if (!localFile) continue;
+        const remoteMeta = remoteManifest[path];
+        const baseMeta = baseline[path];
+        if (baseMeta && !remoteMeta && baseMeta.ignored) continue; // 黑名单文件无需比对
+        if ((remoteMeta && baseMeta) || (!remoteMeta && baseMeta) || (remoteMeta && !baseMeta)) {
+          hashTargets.push([path, localFile]);
+        }
+      }
+      const localHashes = new Map();
+      const HASH_CONCURRENCY = 4;
+      for (let i = 0; i < hashTargets.length; i += HASH_CONCURRENCY) {
+        const batch = hashTargets.slice(i, i + HASH_CONCURRENCY);
+        const hashes = await Promise.all(batch.map(([, file]) => this.computeFileHash(file)));
+        for (let j = 0; j < batch.length; j++) localHashes.set(batch[j][0], hashes[j]);
+      }
+
       const toPull = [];
       const toPush = [];
       const toLocalDelete = [];
       const toRemoteDelete = [];
       const toLocalConflictBackup = [];
+      let hasDeferredRemoteDeletes = false;
+      let hasDeferredLocalDeletes = false;
+      let hasDeferredLocalPushes = false;
 
       // 3-Way 对比分析：Local (本地当前) vs Remote (云端当前) vs Base (上次同步基线)
       for (const path of allPaths) {
@@ -1317,15 +1072,11 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
         if (localFile && remoteMeta && baseMeta) {
           // 场景 1: 三方均存在
-          const localHash = await this.computeFileHash(localFile);
+          const localHash = localHashes.get(path);
           if (localHash === remoteMeta.hash) {
-            // 内容一致，更新内存与基线（保存本地 TFile.stat.mtime 以确保离线对账快速路径命中）
+            // 内容一致，更新内存与基线
             this.fileHashes.set(path, remoteMeta.hash);
-            baseline[path] = {
-              hash: remoteMeta.hash,
-              mtime: (localFile.stat && localFile.stat.mtime) ? localFile.stat.mtime : remoteMeta.mtime,
-              size: (localFile.stat && localFile.stat.size !== undefined) ? localFile.stat.size : remoteMeta.size
-            };
+            baseline[path] = { hash: remoteMeta.hash, mtime: remoteMeta.mtime, size: remoteMeta.size };
           } else {
             const localChanged = (localHash !== baseMeta.hash);
             const remoteChanged = (remoteMeta.hash !== baseMeta.hash);
@@ -1345,17 +1096,19 @@ module.exports = class NimbusSyncPlugin extends Plugin {
             }
           }
         } else if (localFile && !remoteMeta && baseMeta) {
+          if (baseMeta.ignored) {
+            // 🛡️ 服务端黑名单文件：不入同步域。本地保留，不参与“云端已删→本地删”判定，也不重复推送
+            continue;
+          }
           // 场景 2: 本地存在，基线存在，但云端已不存在 (例如 PC 端删除了云端文件)
-          const localHash = await this.computeFileHash(localFile);
+          const localHash = localHashes.get(path);
           const localChanged = (localHash !== baseMeta.hash);
           if (!localChanged) {
             // 本地未修改过 -> 遵从云端删除指令，删除本地文件，避免复活云端！
             toLocalDelete.push(path);
-            delete baseline[path];
             this.fileHashes.delete(path);
           } else {
             // 本地离线有新编辑 -> 保留本地修改，作为新文件重新推送
-            this.fileHashes.set(path, localHash);
             toPush.push(localFile);
           }
         } else if (!localFile && remoteMeta && baseMeta) {
@@ -1364,30 +1117,23 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           if (!remoteChanged) {
             // 云端未被其他设备修改 -> 遵从本地删除，向云端发送删除指令
             toRemoteDelete.push(path);
+            this.fileHashes.delete(path);
           } else {
             // 云端被其他设备更新了 -> 保留云端新内容，拉取到本地
             toPull.push({ path, meta: remoteMeta });
           }
         } else if (localFile && !remoteMeta && !baseMeta) {
           // 场景 4: 本地纯新增文件 (无基线，云端无) -> 推送
-          const localHash = await this.computeFileHash(localFile);
-          if (localHash) {
-            this.fileHashes.set(path, localHash);
-          }
           toPush.push(localFile);
         } else if (!localFile && remoteMeta && !baseMeta) {
           // 场景 5: 云端纯新增文件 (无基线，本地无) -> 拉取
           toPull.push({ path, meta: remoteMeta });
         } else if (localFile && remoteMeta && !baseMeta) {
           // 场景 6: 两端均存在但无历史基线 (首次绑定/基线重置/长期离线基线断层)
-          const localHash = await this.computeFileHash(localFile);
+          const localHash = localHashes.get(path);
           if (localHash && remoteMeta.hash && localHash === remoteMeta.hash) {
             this.fileHashes.set(path, remoteMeta.hash);
-            baseline[path] = {
-              hash: remoteMeta.hash,
-              mtime: (localFile.stat && localFile.stat.mtime) ? localFile.stat.mtime : remoteMeta.mtime,
-              size: (localFile.stat && localFile.stat.size !== undefined) ? localFile.stat.size : remoteMeta.size
-            };
+            baseline[path] = { hash: remoteMeta.hash, mtime: remoteMeta.mtime, size: remoteMeta.size };
           } else {
             // 🛡️ 两端内容不一致且无历史基线时：云端为权威源（Source of Truth）优先拉取，
             // 绝不盲目信赖本地被 OS 刷新的 mtime。本地版本自动保留为离线分支副本，防止旧客户端逆向冲毁云端！
@@ -1405,43 +1151,34 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       // 🛡️ 防御机制 2: 批量删除安全熔断阀 (Safety Circuit Breaker)
       // 若单次尝试删除超过安全阈值（例如 > 5 篇且占总比 > 35%），自动强制拦截！
       // =========================================================================
-      let circuitBreakerTriggered = false;
-      const unconfirmedRemoteDeletes = new Set();
       const remoteDelThreshold = Math.max(5, Math.floor(remoteCount * 0.35));
       if (toRemoteDelete.length > remoteDelThreshold) {
-        circuitBreakerTriggered = true;
         console.error(`[Nimbus 安全熔断] 拦截异常大批量云端删除！尝试删除: ${toRemoteDelete.length} 篇，云端总数: ${remoteCount}`);
         new Notice(`⚠️ [Nimbus 安全熔断] 拦截到单次尝试删除 ${toRemoteDelete.length} 篇云端笔记！\n已自动暂停云端删除以防意外清空。若确需批量删除，请在控制台操作。`, 10000);
-        for (const p of toRemoteDelete) {
-          unconfirmedRemoteDeletes.add(p);
-        }
-        toRemoteDelete.length = 0; // 清空删除任务并保留基线记录，防止下次被误判为云端新增文件而复活
+        hasDeferredRemoteDeletes = true;
+        toRemoteDelete.length = 0; // 保留旧基线，等待用户确认后重新评估
       }
 
       const localDelThreshold = Math.max(5, Math.floor(localCount * 0.35));
       if (toLocalDelete.length > localDelThreshold) {
-        circuitBreakerTriggered = true;
         console.error(`[Nimbus 安全熔断] 拦截异常大批量本地删除！尝试删除: ${toLocalDelete.length} 篇，本地总数: ${localCount}`);
         new Notice(`⚠️ [Nimbus 安全熔断] 拦截到单次尝试删除本地 ${toLocalDelete.length} 篇笔记！\n已自动暂停本地删除以防数据丢失。`, 10000);
+        hasDeferredLocalDeletes = true;
         toLocalDelete.length = 0; // 清空本地删除任务
       }
 
       // =========================================================================
-      // 🛡️ 防御机制 3: 异常大批量修改覆写安全熔断阀 (Safety Circuit Breaker for Overwrite Upload)
-      // 仅统计对云端已有文件的修改覆写数量（纯本地新增文件 !remoteMeta 不存在覆盖云端风险，无条件放行）；
-      // 若用户手动点击「立即全量双向同步」(isManual === true)，则遵从用户显式操作放行上传。
+      // 🛡️ 防御机制 3: 异常大批量上传安全熔断阀 (Safety Circuit Breaker for Upload)
+      // 若单次尝试上传超过安全阈值（例如 > 15 篇且占云端总比 > 40%），拦截疑似陈旧设备大批量覆盖
       // =========================================================================
       const remoteCountVal = remoteCount || 0;
-      const overwritePushCount = toPush.filter((f) => Boolean(remoteManifest && remoteManifest[f.path])).length;
       const pushThreshold = Math.max(15, Math.floor(remoteCountVal * 0.4));
-      if (!isManual && remoteCountVal > 0 && overwritePushCount > pushThreshold) {
-        circuitBreakerTriggered = true;
-        console.warn(`[Nimbus 安全熔断] 拦截异常大批量修改推送: 尝试覆写 ${overwritePushCount} 篇，云端总数: ${remoteCountVal}`);
-        new Notice(`⚠️ [Nimbus 安全熔断] 检测到当前设备尝试单次向云端覆写 ${overwritePushCount} 篇已有笔记（超过安全阈值）！\n已自动暂停大批量覆写以防意外冲毁云端较新笔记。若确认无误，请点击侧边栏「一键全量同步」放行。`, 12000);
-        // 仅保留无覆盖风险的纯新增文件上传
-        const safeNewFiles = toPush.filter((f) => !(remoteManifest && remoteManifest[f.path]));
+      if (remoteCountVal > 0 && toPush.length > pushThreshold) {
+        console.warn(`[Nimbus 安全熔断] 拦截异常大批量推送: 尝试上传 ${toPush.length} 篇，云端总数: ${remoteCountVal}`);
+        new Notice(`⚠️ [Nimbus 安全熔断] 检测到当前设备尝试单次向云端推送 ${toPush.length} 篇笔记（超过安全阈值）！\n已自动暂停大批量推送以防意外覆盖云端较新笔记。请在控制台核对。`, 12000);
         toPush.length = 0;
-        toPush.push(...safeNewFiles);
+        // 🛡️ 与删除熔断同一语义：熔断 = 未完成，绝不推进游标（否则下次增量对齐会跳过这批推送）
+        hasDeferredLocalPushes = true;
       }
 
       const pullCount = toPull.length;
@@ -1450,11 +1187,11 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       const remoteDelCount = toRemoteDelete.length;
       const conflictBackupCount = toLocalConflictBackup.length;
 
-      if (pullCount === 0 && pushCount === 0 && localDelCount === 0 && remoteDelCount === 0 && conflictBackupCount === 0) {
+      if (pullCount === 0 && pushCount === 0 && localDelCount === 0 && remoteDelCount === 0 && conflictBackupCount === 0 && !hasDeferredRemoteDeletes && !hasDeferredLocalDeletes && !hasDeferredLocalPushes) {
         if (!this.baselinesCache) this.baselinesCache = {};
         this.baselinesCache[vaultId] = baseline;
         await this.saveBaselineCache();
-        if (typeof remoteCursor === 'number' && remoteCursor >= 0 && !circuitBreakerTriggered) {
+        if (typeof remoteCursor === 'number' && remoteCursor >= 0) {
           this.setVaultCursor(vaultId, remoteCursor);
         }
         new Notice('✅ 本地笔记与 Nimbus 云端已保持一致 (3-Way 基线校验完成)');
@@ -1463,6 +1200,9 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
       new Notice(`⚡ 3-Way 同步开始: 上传 ${pushCount}，下载 ${pullCount}，本地删除 ${localDelCount}，云端删除 ${remoteDelCount}${conflictBackupCount > 0 ? `，冲突备份 ${conflictBackupCount}` : ''}`);
 
+      let hasPullFailure = false;
+      let hasCriticalFailure = false;
+
       // 0. 为离线并发冲突生成本地版本备份
       for (const item of toLocalConflictBackup) {
         await this.backupLocalConflictFile(item.file, item.path);
@@ -1470,22 +1210,18 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
       // 1. 执行本地删除 (云端已删)
       for (const delPath of toLocalDelete) {
-        await this.applyRemoteDelete(delPath);
+        if (!(await this.applyRemoteDelete(delPath))) hasPullFailure = true;
       }
 
       // 2. 执行云端删除 (本地已删)
       for (const delPath of toRemoteDelete) {
-        const delOk = await this.deleteRemoteFile(delPath, { preferHttp: true });
-        if (delOk) {
-          delete baseline[delPath];
-        } else {
-          unconfirmedRemoteDeletes.add(delPath);
-        }
+        const deleted = await this.sendWsMessageAndWait({ type: 'delete', path: delPath });
+        if (deleted) delete baseline[delPath];
+        else hasPullFailure = true;
       }
 
       // 3. 并发节流执行拉取 (PULL)，等待所有文件确认落地落盘
-      let hasPullFailure = false;
-      let hasCriticalFailure = false;
+      const pulledOk = new Set(); // 🛡️ 仅记录已确认拉取成功的文件；未成功的文件绝不写入基线
       const PULL_CONCURRENCY = 4;
       for (let i = 0; i < toPull.length; i += PULL_CONCURRENCY) {
         const batch = toPull.slice(i, i + PULL_CONCURRENCY);
@@ -1498,6 +1234,8 @@ module.exports = class NimbusSyncPlugin extends Plugin {
             } else {
               console.warn('[Nimbus] 辅助/配置文件拉取受阻，已安全忽略:', item.path);
             }
+          } else {
+            pulledOk.add(item.path);
           }
           return ok !== false;
         }));
@@ -1509,59 +1247,35 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         }
       }
 
-      // 4. 并发节流执行推送 (PUSH)：在屏障期优先使用 HTTP PUT 直接拿回服务端确认结果与最新游标，避免与 _wsMessageChain 死锁排队
-      const pushedMetaMap = new Map();
+      // 4. 并发节流执行推送 (PUSH)
       const PUSH_CONCURRENCY = 4;
       for (let i = 0; i < toPush.length; i += PUSH_CONCURRENCY) {
         const batch = toPush.slice(i, i + PUSH_CONCURRENCY);
-        await Promise.all(batch.map(async (f) => {
-          const pushMeta = await this.pushLocalFile(f, { preferHttp: true });
-          if (pushMeta && pushMeta.hash) {
-            pushedMetaMap.set(f.path, pushMeta);
-            if (typeof pushMeta.cursor === 'number' && pushMeta.cursor > remoteCursor) {
-              remoteCursor = pushMeta.cursor;
-            }
-          }
-        }));
+        const results = await Promise.all(batch.map((f) => this.pushLocalFile(f)));
+        if (results.some((ok) => !ok)) hasPullFailure = true;
         if (i + PUSH_CONCURRENCY < toPush.length) {
           await new Promise((r) => setTimeout(r, 30));
         }
       }
 
-      // 🛡️ 防御机制 4: 合并同步期间实时更新的基线（含 HTTP PUT / WS ack / 新拉取文件），防止旧快照覆写冲掉新推送文件的基线
+      // 🛡️ 防御机制 3: 仅固化本地已经存在且内容确认的文件基线，新拉取落盘的文件也一并纳入
       const currentVaultFiles = this.app.vault.getFiles();
-      const currentFileByPath = new Map(currentVaultFiles.map((f) => [f.path, f]));
-      const currentLocalPaths = new Set(currentFileByPath.keys());
-      const liveBaseline = this.getVaultBaseline(vaultId);
-      const mergedBaseline = { ...baseline, ...liveBaseline };
+      const currentLocalPaths = new Set(currentVaultFiles.map((f) => f.path));
       const sanitizedBaseline = {};
-      for (const [p, bInfo] of Object.entries(mergedBaseline)) {
-        if ((currentLocalPaths.has(p) || unconfirmedRemoteDeletes.has(p)) && bInfo && bInfo.hash) {
-          const lf = currentFileByPath.get(p);
-          sanitizedBaseline[p] = {
-            ...bInfo,
-            mtime: (lf && lf.stat && lf.stat.mtime) ? lf.stat.mtime : bInfo.mtime,
-            size: (lf && lf.stat && lf.stat.size !== undefined) ? lf.stat.size : bInfo.size,
-          };
+      for (const [p, bInfo] of Object.entries(baseline)) {
+        if (currentLocalPaths.has(p) || (remoteManifest[p] && (toRemoteDelete.includes(p) || hasDeferredRemoteDeletes))) {
+          sanitizedBaseline[p] = bInfo;
         }
       }
       for (const item of toPull) {
-        if (item && item.path && currentLocalPaths.has(item.path) && item.meta && item.meta.hash) {
-          const lf = currentFileByPath.get(item.path);
+        // 🛡️ 只有拉取确实已确认落盘的文件才允许写入云端基线；
+        // 否则本地内容可能是旧版本，基线却被污染成云端最新 hash，
+        // 随后 flush 阶段会把旧内容反向推回云端（baseHash 恰好等于云端当前 hash，连冲突副本都不会留）
+        if (item && item.path && pulledOk.has(item.path) && currentLocalPaths.has(item.path) && item.meta) {
           sanitizedBaseline[item.path] = {
             hash: item.meta.hash,
-            mtime: (lf && lf.stat && lf.stat.mtime) ? lf.stat.mtime : (item.meta.mtime || Date.now()),
-            size: (lf && lf.stat && lf.stat.size !== undefined) ? lf.stat.size : (item.meta.size || 0),
-          };
-        }
-      }
-      for (const [pushedPath, pMeta] of pushedMetaMap.entries()) {
-        if (currentLocalPaths.has(pushedPath) && pMeta && pMeta.hash && pMeta.confirmed) {
-          const lf = currentFileByPath.get(pushedPath);
-          sanitizedBaseline[pushedPath] = {
-            hash: pMeta.hash,
-            mtime: (lf && lf.stat && lf.stat.mtime) ? lf.stat.mtime : (pMeta.mtime || Date.now()),
-            size: (lf && lf.stat && lf.stat.size !== undefined) ? lf.stat.size : (pMeta.size || 0),
+            mtime: item.meta.mtime || Date.now(),
+            size: item.meta.size || 0,
           };
         }
       }
@@ -1569,12 +1283,12 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       if (!this.baselinesCache) this.baselinesCache = {};
       this.baselinesCache[vaultId] = sanitizedBaseline;
       await this.saveBaselineCache();
-      const latestRecordedCursor = Math.max(remoteCursor || 0, this.getVaultCursor(vaultId) || 0);
-      if (latestRecordedCursor >= 0 && !hasCriticalFailure && !circuitBreakerTriggered) {
-        this.setVaultCursor(vaultId, latestRecordedCursor);
+      if (typeof remoteCursor === 'number' && remoteCursor >= 0 && !hasCriticalFailure && !hasPullFailure && !hasDeferredRemoteDeletes && !hasDeferredLocalDeletes && !hasDeferredLocalPushes) {
+        this.setVaultCursor(vaultId, remoteCursor);
         await this.saveSettings();
-      } else if (hasCriticalFailure || circuitBreakerTriggered) {
-        console.warn('[Nimbus] 3-Way 同步有核心笔记受阻或触发熔断，暂不推进最新游标以备下次重试完整对齐');
+      } else if (hasCriticalFailure || hasPullFailure || hasDeferredRemoteDeletes || hasDeferredLocalDeletes || hasDeferredLocalPushes) {
+        console.warn('[Nimbus] 3-Way 同步存在未完成操作或拉取失败，暂不推进最新游标以备下次重试完整对齐');
+        new Notice('⚠️ 部分同步操作未完成，暂不推进游标以防漏拉，将在网络稳定后自动重试');
       }
 
       new Notice(`✅ 3-Way 自动同步完成: 成功处理 ${pushCount + pullCount + localDelCount + remoteDelCount} 个变更任务`);
@@ -1586,57 +1300,61 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
   async flushPendingLocalChangesAfterBarrier() {
     this.syncBarrierActive = false;
-    if (this.barrierSafetyTimer) {
-      clearTimeout(this.barrierSafetyTimer);
-      this.barrierSafetyTimer = null;
-    }
-
-    const vaultId = this.settings.vaultId || 'default';
-    const baseline = this.getVaultBaseline(vaultId);
-
-    // 1. 先处理屏障期间捕获的本地删除事件
-    if (this.pendingLocalDeletesWhileBarrier && this.pendingLocalDeletesWhileBarrier.size > 0) {
-      const deletesToCheck = Array.from(this.pendingLocalDeletesWhileBarrier);
-      this.pendingLocalDeletesWhileBarrier.clear();
-      for (const delPath of deletesToCheck) {
-        if (this.isIgnoredLocalPath(delPath)) continue;
-        const stillExists = this.app.vault.getAbstractFileByPath(delPath);
-        if (!stillExists && baseline[delPath]) {
-          await this.deleteRemoteFile(delPath);
-        }
-      }
-    }
-
-    // 2. 再处理屏障期间捕获的本地新建/修改事件
     if (!this.pendingLocalQueueWhileBarrier || this.pendingLocalQueueWhileBarrier.size === 0) {
+      // 没有待推队列时也要清理挂起删除
+      await this.flushPendingLocalDeletes();
       return;
     }
     const pathsToCheck = Array.from(this.pendingLocalQueueWhileBarrier);
     this.pendingLocalQueueWhileBarrier.clear();
+
+    const vaultId = this.settings.vaultId || 'default';
+    const baseline = this.getVaultBaseline(vaultId);
 
     for (const path of pathsToCheck) {
       const file = this.app.vault.getAbstractFileByPath(path);
       if (file instanceof TFile) {
         const currentHash = await this.computeFileHash(file);
         const baseMeta = baseline[path];
-        // 关键判定：只有当本地当前内容 Hash 确实与基线不一致时，说明离线/握手期间用户确实编辑了该文件，才进行上传
+        // 关键判定：只有当本地当前内容 Hash 确实与基线不一致时，说明离线期间用户确实编辑了该文件，才进行上传
         if (currentHash && (!baseMeta || currentHash !== baseMeta.hash)) {
           await this.pushLocalFile(file);
         }
       }
     }
+    await this.flushPendingLocalDeletes();
+  }
+
+  /**
+   * 补发“删除指令未确认/屏障期产生”的挂起删除：
+   * 逐条等待云端 ack；确认成功后清基线；仍失败则继续挂起，等待下一次屏障完成。
+   */
+  async flushPendingLocalDeletes() {
+    if (!this.pendingLocalDeletes || this.pendingLocalDeletes.size === 0) return;
+    const deletes = Array.from(this.pendingLocalDeletes);
+    for (const delPath of deletes) {
+      const ack = await this.sendWsMessageAndWait({ type: 'delete', path: delPath });
+      if (ack) {
+        this.pendingLocalDeletes.delete(delPath);
+        this.fileHashes.delete(delPath);
+        this.updateBaselineEntry(this.settings.vaultId, delPath, null);
+      } else if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        // 失败但连接仍健康（如 ack 超时）：丢弃本次挂起，依赖下次 3-Way 场景 3 兜底，
+        // 避免把永久失败的删除放进集合变成死循环。
+        this.pendingLocalDeletes.delete(delPath);
+        console.warn('[Nimbus] 挂起删除仍未获确认，交由下次 3-Way 对账兜底:', delPath);
+      }
+      // 连接中断时保留挂起，等重连后的屏障阶段继续重试
+    }
   }
 
   async backupLocalConflictFile(localFile, relPath) {
     if (!localFile || !(localFile instanceof TFile)) return null;
-    const ext = localFile.extension ? `.${localFile.extension}` : '';
-    const base = relPath.slice(0, relPath.length - ext.length);
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const conflictPath = `${base}.conflict-offline-${stamp}${ext}`;
-    if (!this.applyingRemotePaths) this.applyingRemotePaths = new Set();
-    this.applyingRemotePaths.add(conflictPath);
-    let createdOk = false;
     try {
+      const ext = localFile.extension ? `.${localFile.extension}` : '';
+      const base = relPath.slice(0, relPath.length - ext.length);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const conflictPath = `${base}.conflict-offline-${stamp}${ext}`;
       const buffer = await this.app.vault.readBinary(localFile);
 
       // 确保父目录存在
@@ -1651,27 +1369,12 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         }
       }
       await this.app.vault.createBinary(conflictPath, buffer);
-      createdOk = true;
       new Notice(`⚠️ 检测到离线并发冲突，已保留本地版本备份:\n${conflictPath}`, 7000);
+      return conflictPath;
     } catch (e) {
       console.warn('[Nimbus] 创建本地离线冲突备份失败:', relPath, e);
       return null;
-    } finally {
-      this.applyingRemotePaths.delete(conflictPath);
     }
-
-    // 将本地离线冲突副本同步上传至云端，确保 Web 端「冲突解决中心」也能看到并管理该分支副本
-    if (createdOk) {
-      try {
-        const conflictFile = this.app.vault.getAbstractFileByPath(conflictPath);
-        if (conflictFile instanceof TFile) {
-          await this.pushLocalFile(conflictFile, { preferHttp: true });
-        }
-      } catch (pushErr) {
-        console.warn('[Nimbus] 上传本地离线冲突副本至云端受阻，将在后续对账自动补传:', conflictPath, pushErr);
-      }
-    }
-    return conflictPath;
   }
 
   async fullSyncAllFiles() {
@@ -1698,12 +1401,9 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       }
 
       const data = await res.json();
-      if (Array.isArray(data.ignorePatterns)) {
-        this.setRemoteIgnorePatterns(data.ignorePatterns);
-      }
       const remoteManifest = data.manifest || {};
       const remoteCursor = data.cursor || data.latestCursor || 0;
-      await this.syncManifest(remoteManifest, remoteCursor, { manual: true });
+      await this.syncManifest(remoteManifest, remoteCursor);
     } catch (err) {
       console.error('[Nimbus] 全量双向同步失败:', err);
       new Notice(`❌ 全量双向同步失败: ${err.message}`);
@@ -1712,7 +1412,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
   async forcePushAllLocalFiles() {
     new Notice('☁️ 开始强制推送本地所有笔记到云端...');
-    const files = this.app.vault.getFiles().filter((f) => !this.isIgnoredLocalPath(f.path));
+    const files = this.app.vault.getFiles();
     if (!this.settings.token || !this.settings.vaultId) {
       new Notice('❌ 请先在 Nimbus 设置中完成登录并绑定 Vault');
       return;
@@ -1728,7 +1428,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     for (let i = 0; i < files.length; i += CONCURRENCY) {
       const batch = files.slice(i, i + CONCURRENCY);
       await Promise.all(batch.map(async (f) => {
-        await this.pushLocalFile(f, { force: true });
+        await this.pushLocalFile(f);
         pushed++;
       }));
       if (i + CONCURRENCY < files.length) {
@@ -1739,113 +1439,99 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   }
 
   async applyRemoteChange(filePath, base64Content, mtime, hash) {
-    if (!filePath || !base64Content) return;
+    if (!filePath || !base64Content) return false;
     const buffer = base64ToArrayBuffer(base64Content);
-    await this.applyRemoteBinaryChange(filePath, buffer, mtime, hash);
+    return this.applyRemoteBinaryChange(filePath, buffer, mtime, hash);
   }
 
   async applyRemoteBinaryChange(filePath, buffer, mtime, hash) {
     const cleanPath = String(filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
     if (!cleanPath || !buffer) return false;
-    return this.withLocalFileLock(cleanPath, async () => {
-      if (!this.applyingRemotePaths) this.applyingRemotePaths = new Set();
-      this.applyingRemotePaths.add(cleanPath);
-      this.remoteApplyingCount = (this.remoteApplyingCount || 0) + 1;
-      this.isApplyingRemoteChange = true;
+    if (!this.applyingRemotePaths) this.applyingRemotePaths = new Set();
+    this.applyingRemotePaths.add(cleanPath);
+    this.remoteApplyingCount = (this.remoteApplyingCount || 0) + 1;
+    this.isApplyingRemoteChange = true;
 
-      try {
-        const existing = this.app.vault.getAbstractFileByPath(cleanPath);
-        const isHidden = cleanPath.startsWith('.') || cleanPath.includes('/.');
-        const adapterExists = this.app.vault.adapter ? await this.app.vault.adapter.exists(cleanPath) : false;
+    try {
+      const existing = this.app.vault.getAbstractFileByPath(cleanPath);
+      const isHidden = cleanPath.startsWith('.') || cleanPath.includes('/.');
+      const adapterExists = this.app.vault.adapter ? await this.app.vault.adapter.exists(cleanPath) : false;
 
-        if (existing instanceof TFile) {
-          // 如果本地有尚未推送完成的编辑防抖任务或飞行中推送，先备份本地实时改动防冲毁
-          if (
-            (this.localChangeQueue && this.localChangeQueue.has(cleanPath)) ||
-            (this.pendingPushes && this.pendingPushes.has(cleanPath))
-          ) {
-            if (this.localChangeQueue && this.localChangeQueue.has(cleanPath)) {
-              clearTimeout(this.localChangeQueue.get(cleanPath));
-              this.localChangeQueue.delete(cleanPath);
-            }
-            const localHashNow = await this.computeFileHash(existing);
-            const incomingHashNow = hash || (await computeSha256(buffer));
-            if (localHashNow && incomingHashNow && localHashNow !== incomingHashNow) {
-              await this.backupLocalConflictFile(existing, cleanPath);
-            }
-          }
-          await this.app.vault.modifyBinary(existing, buffer);
-        } else if (adapterExists) {
-          if (this.app.vault.adapter) {
-            await this.app.vault.adapter.writeBinary(cleanPath, buffer);
-          }
-        } else {
-          // Ensure parent directories exist
-          const parts = cleanPath.split('/');
-          if (parts.length > 1) {
-            let currentPath = '';
-            for (let i = 0; i < parts.length - 1; i++) {
-              currentPath += (currentPath ? '/' : '') + parts[i];
-              const folderExists = this.app.vault.getAbstractFileByPath(currentPath) ||
-                (this.app.vault.adapter && await this.app.vault.adapter.exists(currentPath));
-              if (!folderExists) {
-                try {
-                  if (currentPath.startsWith('.')) {
-                    if (this.app.vault.adapter) await this.app.vault.adapter.mkdir(currentPath);
-                  } else {
-                    await this.app.vault.createFolder(currentPath);
-                  }
-                } catch (folderErr) {
-                  // Folder may already exist or created concurrently
+      if (existing instanceof TFile) {
+        await this.app.vault.modifyBinary(existing, buffer);
+      } else if (adapterExists) {
+        // 文件已在磁盘上存在（例如 .obsidian/ 隐藏配置或未被抽象索引的文件）
+        if (this.app.vault.adapter) {
+          await this.app.vault.adapter.writeBinary(cleanPath, buffer);
+        }
+      } else {
+        // Ensure parent directories exist
+        const parts = cleanPath.split('/');
+        if (parts.length > 1) {
+          let currentPath = '';
+          for (let i = 0; i < parts.length - 1; i++) {
+            currentPath += (currentPath ? '/' : '') + parts[i];
+            const folderExists = this.app.vault.getAbstractFileByPath(currentPath) ||
+              (this.app.vault.adapter && await this.app.vault.adapter.exists(currentPath));
+            if (!folderExists) {
+              try {
+                if (currentPath.startsWith('.')) {
+                  if (this.app.vault.adapter) await this.app.vault.adapter.mkdir(currentPath);
+                } else {
+                  await this.app.vault.createFolder(currentPath);
                 }
+              } catch (folderErr) {
+                // Folder may already exist or created concurrently
               }
             }
           }
-          try {
-            if (isHidden) {
-              if (this.app.vault.adapter) {
-                await this.app.vault.adapter.writeBinary(cleanPath, buffer);
-              } else {
-                await this.app.vault.createBinary(cleanPath, buffer);
-              }
-            } else {
-              await this.app.vault.createBinary(cleanPath, buffer);
-            }
-          } catch (createErr) {
+        }
+        try {
+          if (isHidden) {
+            // 隐藏目录/配置：直接使用底层 adapter 写入，杜绝 app.vault.createBinary 拒绝或 File already exists 异常
             if (this.app.vault.adapter) {
               await this.app.vault.adapter.writeBinary(cleanPath, buffer);
             } else {
-              throw createErr;
+              await this.app.vault.createBinary(cleanPath, buffer);
             }
+          } else {
+            await this.app.vault.createBinary(cleanPath, buffer);
+          }
+        } catch (createErr) {
+          if (this.app.vault.adapter) {
+            await this.app.vault.adapter.writeBinary(cleanPath, buffer);
+          } else {
+            throw createErr;
           }
         }
-
-        const calculatedHash = hash || (await computeSha256(buffer));
-        if (calculatedHash) {
-          const updatedFile = this.app.vault.getAbstractFileByPath(cleanPath);
-          const localMtime = (updatedFile && updatedFile.stat && updatedFile.stat.mtime)
-            ? updatedFile.stat.mtime
-            : (mtime || Date.now());
-          const localSize = (updatedFile && updatedFile.stat && updatedFile.stat.size !== undefined)
-            ? updatedFile.stat.size
-            : buffer.byteLength;
-          this.fileHashes.set(cleanPath, calculatedHash);
-          this.updateBaselineEntry(this.settings.vaultId, cleanPath, {
-            hash: calculatedHash,
-            mtime: localMtime,
-            size: localSize
-          });
-        }
-        return true;
-      } catch (err) {
-        console.error('[Nimbus] 写入远程文件失败:', cleanPath, err);
-        return false;
-      } finally {
-        this.applyingRemotePaths.delete(cleanPath);
-        this.remoteApplyingCount = Math.max(0, (this.remoteApplyingCount || 1) - 1);
-        this.isApplyingRemoteChange = (this.remoteApplyingCount > 0);
       }
-    });
+
+      // 🛡️ 字节级完整性校验：始终对“实际落盘内容”计算 sha256。
+      // 若服务端声明了 hash 而内容不匹配（代理/防盗门错误页、传输损坏），
+      // 绝不能把错误内容写入文件并盖上“云端最新 hash”的基线（那会产生伪对齐）。
+      const actualHash = await computeSha256(buffer);
+      if (hash && actualHash && String(hash) !== actualHash) {
+        console.error(`[Nimbus] 拉取内容与其声明哈希不一致，拒绝写入: ${cleanPath} expected=${hash} actual=${actualHash}`);
+        return false;
+      }
+      const calculatedHash = actualHash || hash;
+      if (calculatedHash) {
+        this.fileHashes.set(cleanPath, calculatedHash);
+        this.updateBaselineEntry(this.settings.vaultId, cleanPath, {
+          hash: calculatedHash,
+          mtime: mtime || Date.now(),
+          size: buffer.byteLength
+        });
+      }
+      return true;
+    } catch (err) {
+      console.error('[Nimbus] 写入远程文件失败:', cleanPath, err);
+      return false;
+    } finally {
+      this.applyingRemotePaths.delete(cleanPath);
+      this.remoteApplyingCount = Math.max(0, (this.remoteApplyingCount || 1) - 1);
+      this.isApplyingRemoteChange = (this.remoteApplyingCount > 0);
+    }
   }
 
   async pullRemoteFileViaHttp(filePath, mtime, expectedHash) {
@@ -1862,10 +1548,6 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       const headers = this.buildAuthHeaders();
       const res = await fetch(url, { headers });
       if (!res.ok) {
-        if (res.status === 404) {
-          console.warn(`[Nimbus] 远程文件在服务端已不存在 (404)，已安全跳过: ${cleanPath}`);
-          return 'NOT_FOUND';
-        }
         console.warn(`[Nimbus] HTTP 拉取文件失败 (${res.status}): ${cleanPath}`);
         return false;
       }
@@ -1878,58 +1560,76 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     }
   }
 
-  async applyRemoteDelete(filePath) {
+  async applyRemoteDelete(filePath, protectModified = false) {
     const cleanPath = String(filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
-    if (!cleanPath || this.isIgnoredLocalPath(cleanPath)) return false;
-    return this.withLocalFileLock(cleanPath, async () => {
-      if (!this.applyingRemotePaths) this.applyingRemotePaths = new Set();
-      this.applyingRemotePaths.add(cleanPath);
-      this.remoteApplyingCount = (this.remoteApplyingCount || 0) + 1;
-      this.isApplyingRemoteChange = true;
-      try {
-        const existing = this.app.vault.getAbstractFileByPath(cleanPath);
-        if (existing instanceof TFile) {
-          // 若本地正处于活跃编辑防抖或飞行上传中，先备份本地未同步改动，防止远端删除直接冲毁用户正在输入的内容
-          if (
-            (this.localChangeQueue && this.localChangeQueue.has(cleanPath)) ||
-            (this.pendingPushes && this.pendingPushes.has(cleanPath))
-          ) {
-            if (this.localChangeQueue && this.localChangeQueue.has(cleanPath)) {
-              clearTimeout(this.localChangeQueue.get(cleanPath));
-              this.localChangeQueue.delete(cleanPath);
-            }
-            await this.backupLocalConflictFile(existing, cleanPath);
-          }
-          await this.app.vault.delete(existing);
-        } else if (this.app.vault.adapter && await this.app.vault.adapter.exists(cleanPath)) {
-          await this.app.vault.adapter.remove(cleanPath);
+    if (!cleanPath) return false;
+    if (!this.applyingRemotePaths) this.applyingRemotePaths = new Set();
+    this.applyingRemotePaths.add(cleanPath);
+    this.remoteApplyingCount = (this.remoteApplyingCount || 0) + 1;
+    this.isApplyingRemoteChange = true;
+    try {
+      const existing = this.app.vault.getAbstractFileByPath(cleanPath);
+      if (protectModified && existing instanceof TFile) {
+        // 🛡️ 增量/实时删除防护：本地内容与“上次已同步基线”不一致（有离线修改）时，
+        // 绝不能静默执行远端删除指令。先把本地版本备份为 `.conflict-offline-*` 副本再删，
+        // 与 3-Way 场景 2 的“本地有修改→保留修改”语义保持一致。
+        const baseMeta = this.getBaselineEntry(this.settings.vaultId, cleanPath);
+        const lastKnown = (baseMeta && baseMeta.hash) || this.fileHashes.get(cleanPath) || null;
+        const currentHash = await this.computeFileHash(existing);
+        if (!currentHash) {
+          console.warn('[Nimbus] 删除防护：无法读取本地内容计算哈希，已安全跳过该删除指令:', cleanPath);
+          return false;
         }
-        this.fileHashes.delete(cleanPath);
-        this.updateBaselineEntry(this.settings.vaultId, cleanPath, null);
-        return true;
-      } catch (err) {
-        console.error('[Nimbus] 删除本地文件失败:', cleanPath, err);
-        return false;
-      } finally {
-        this.applyingRemotePaths.delete(cleanPath);
-        this.remoteApplyingCount = Math.max(0, (this.remoteApplyingCount || 1) - 1);
-        this.isApplyingRemoteChange = (this.remoteApplyingCount > 0);
+        if (!lastKnown || lastKnown !== currentHash) {
+          const conflictPath = await this.backupLocalConflictFile(existing, cleanPath);
+          if (!conflictPath) {
+            console.warn('[Nimbus] 删除防护：本地修改备份失败，已暂停该删除指令以防数据丢失:', cleanPath);
+            return false;
+          }
+          // 备份副本的创建事件会被 isApplyingRemoteChange 屏蔽，这里直接推送它参与同步
+          const backupFile = this.app.vault.getAbstractFileByPath(conflictPath);
+          if (backupFile instanceof TFile) {
+            await this.pushLocalFile(backupFile);
+          }
+        }
       }
-    });
+      if (existing instanceof TFile) {
+        await this.app.vault.delete(existing);
+      } else if (this.app.vault.adapter && await this.app.vault.adapter.exists(cleanPath)) {
+        await this.app.vault.adapter.remove(cleanPath);
+      }
+      // 清理因删除文件而变空的父文件夹
+      const parts = cleanPath.split('/');
+      parts.pop();
+      while (parts.length > 0) {
+        const folderPath = parts.join('/');
+        const folder = this.app.vault.getAbstractFileByPath(folderPath);
+        if (!(folder instanceof TFolder) || folder.children.length > 0) break;
+        await this.app.vault.delete(folder);
+        parts.pop();
+      }
+      this.fileHashes.delete(cleanPath);
+      this.updateBaselineEntry(this.settings.vaultId, cleanPath, null);
+      return true;
+    } catch (err) {
+      console.error('[Nimbus] 删除本地文件失败:', cleanPath, err);
+      return false;
+    } finally {
+      this.applyingRemotePaths.delete(cleanPath);
+      this.remoteApplyingCount = Math.max(0, (this.remoteApplyingCount || 1) - 1);
+      this.isApplyingRemoteChange = (this.remoteApplyingCount > 0);
+    }
   }
 
   // --- Local File Changes ---
   async onLocalFileChange(type, file) {
     if (!this.isVaultReady || !(file instanceof TFile)) return;
-    if (this.isPathApplyingRemote(file.path, false)) return;
+    if (this.isApplyingRemoteChange || (this.applyingRemotePaths && this.applyingRemotePaths.has(file.path))) return;
     if (this.isIgnoredLocalPath(file.path)) return;
 
     // 🛡️ 启动期下行优先屏障保护 (Pull-First Sync Barrier)
     // 在首轮与云端完成下行增量或清单对齐前，禁止向云端盲目外发本地文件
     if (this.syncBarrierActive) {
-      if (this.pendingLocalDeletesWhileBarrier) {
-        this.pendingLocalDeletesWhileBarrier.delete(file.path);
-      }
       if (this.pendingLocalQueueWhileBarrier) {
         this.pendingLocalQueueWhileBarrier.add(file.path);
       }
@@ -1952,26 +1652,38 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   }
 
   async onLocalFileDelete(file) {
-    if (!this.isVaultReady) return;
+    if (!this.isVaultReady || this.isApplyingRemoteChange || this.syncBarrierActive) {
+      // 🛡️ 屏障期删除不能丢弃（旧实现直接 return）：记入挂起删除，屏障结束后补发
+      if (this.syncBarrierActive && file instanceof TFile && !this.isIgnoredLocalPath(file.path)) {
+        if (!this.pendingLocalDeletes) this.pendingLocalDeletes = new Set();
+        this.pendingLocalDeletes.add(file.path);
+      }
+      return;
+    }
     if (file instanceof TFile) {
-      if (this.isPathApplyingRemote(file.path, false)) return;
+      if (this.applyingRemotePaths && this.applyingRemotePaths.has(file.path)) return;
       if (this.isIgnoredLocalPath(file.path)) return;
       if (this.localChangeQueue.has(file.path)) {
         clearTimeout(this.localChangeQueue.get(file.path));
         this.localChangeQueue.delete(file.path);
       }
-      if (this.syncBarrierActive) {
-        if (this.pendingLocalQueueWhileBarrier) {
-          this.pendingLocalQueueWhileBarrier.delete(file.path);
-        }
-        if (this.pendingLocalDeletesWhileBarrier) {
-          this.pendingLocalDeletesWhileBarrier.add(file.path);
-        }
-        return;
+      const ack = await this.sendWsMessageAndWait({
+        type: 'delete',
+        path: file.path
+      });
+      if (ack) {
+        this.fileHashes.delete(file.path);
+        this.updateBaselineEntry(this.settings.vaultId, file.path, null);
+      } else {
+        // 🛡️ 删除指令未确认：旧实现已把基线清空，若本地文件其实是“WS 不在线时删的”，
+        // 下次 3-Way 会因“云端仍存在”把文件复活拉回本地（用户每删一次复活一次）。
+        // 现在挂起基线与删除指令，由 flushPendingLocalChangesAfterBarrier 补发，或由 3-Way 场景 3 兜底。
+        if (!this.pendingLocalDeletes) this.pendingLocalDeletes = new Set();
+        this.pendingLocalDeletes.add(file.path);
+        this.fileHashes.delete(file.path);
+        console.warn('[Nimbus] 云端删除指令未获确认，已挂起等待重试/3-Way 补发:', file.path);
       }
-      await this.deleteRemoteFile(file.path);
     } else if (file instanceof TFolder) {
-      if (this.isPathApplyingRemote(file.path, true)) return;
       const folderPrefix = file.path ? `${file.path}/` : '';
       for (const [queuedPath, timer] of this.localChangeQueue.entries()) {
         if (queuedPath.startsWith(folderPrefix)) {
@@ -1979,73 +1691,49 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           this.localChangeQueue.delete(queuedPath);
         }
       }
-      const vaultId = this.settings.vaultId || 'default';
-      const baseline = this.getVaultBaseline(vaultId);
-      const knownPathsSet = new Set([
-        ...Array.from(this.fileHashes.keys()),
-        ...Object.keys(baseline || {}),
-      ]);
       const matchedPaths = [];
-      for (const knownPath of knownPathsSet) {
+      for (const knownPath of Array.from(this.fileHashes.keys())) {
         if (knownPath.startsWith(folderPrefix) && !this.isIgnoredLocalPath(knownPath)) {
           matchedPaths.push(knownPath);
         }
       }
-      if (this.syncBarrierActive) {
-        for (const p of matchedPaths) {
-          if (this.pendingLocalQueueWhileBarrier) this.pendingLocalQueueWhileBarrier.delete(p);
-          if (this.pendingLocalDeletesWhileBarrier) this.pendingLocalDeletesWhileBarrier.add(p);
-        }
-        return;
-      }
       // 🛡️ 文件夹级批量删除安全熔断保护
-      const totalKnownCount = Math.max(this.fileHashes.size, Object.keys(baseline || {}).length);
-      if (matchedPaths.length > 10 && matchedPaths.length >= Math.max(1, totalKnownCount * 0.4)) {
+      if (matchedPaths.length > 10 && matchedPaths.length >= Math.max(1, this.fileHashes.size * 0.4)) {
         console.warn(`[Nimbus 安全熔断] 拦截异常文件夹批量删除: ${file.path}, 涉及文件: ${matchedPaths.length}`);
         new Notice(`⚠️ [Nimbus 安全熔断] 检测到删除文件夹包含 ${matchedPaths.length} 篇笔记（超安全阈值），已阻止向云端同步清空！`, 8000);
         return;
       }
+      // 🛡️ 不再逐条 fire-and-forget 清基线（旧实现 WS 不在线时删除指令静默丢弃 + 基线被清 → 全部复活）。
+      // 统一走挂起删除，与单文件删除同一条可靠通道。
+      if (!this.pendingLocalDeletes) this.pendingLocalDeletes = new Set();
       for (const knownPath of matchedPaths) {
-        await this.deleteRemoteFile(knownPath);
+        this.pendingLocalDeletes.add(knownPath);
+        this.fileHashes.delete(knownPath);
       }
     }
   }
 
   async onLocalFileRename(file, oldPath) {
-    if (!this.isVaultReady) return;
+    if (!this.isVaultReady || this.isApplyingRemoteChange || this.syncBarrierActive) return;
     if (file instanceof TFile) {
-      if (this.isPathApplyingRemote(file.path, false) || this.isPathApplyingRemote(oldPath, false)) return;
+      if (this.applyingRemotePaths && (this.applyingRemotePaths.has(file.path) || this.applyingRemotePaths.has(oldPath))) return;
       if (this.isIgnoredLocalPath(file.path) && this.isIgnoredLocalPath(oldPath)) return;
       if (this.localChangeQueue.has(oldPath)) {
         clearTimeout(this.localChangeQueue.get(oldPath));
         this.localChangeQueue.delete(oldPath);
       }
-      if (this.syncBarrierActive) {
-        if (!this.isIgnoredLocalPath(oldPath)) {
-          if (this.pendingLocalQueueWhileBarrier) this.pendingLocalQueueWhileBarrier.delete(oldPath);
-          if (this.pendingLocalDeletesWhileBarrier) this.pendingLocalDeletesWhileBarrier.add(oldPath);
-        }
-        if (!this.isIgnoredLocalPath(file.path)) {
-          if (this.pendingLocalDeletesWhileBarrier) this.pendingLocalDeletesWhileBarrier.delete(file.path);
-          if (this.pendingLocalQueueWhileBarrier) this.pendingLocalQueueWhileBarrier.add(file.path);
-        }
-        return;
-      }
-      // 若原路径与新路径均未命中忽略规则，优先调用原生 rename 指令（零流量原位重命名，保留历史版本且不污染回收站）
-      if (!this.isIgnoredLocalPath(oldPath) && !this.isIgnoredLocalPath(file.path)) {
-        await this.renameRemoteFile(oldPath, file);
-        return;
-      }
+      // Delete old path on server and push new path
       if (!this.isIgnoredLocalPath(oldPath)) {
-        await this.deleteRemoteFile(oldPath);
+        this.sendWsMessage({ type: 'delete', path: oldPath });
+        this.fileHashes.delete(oldPath);
+        this.updateBaselineEntry(this.settings.vaultId, oldPath, null);
       }
       if (!this.isIgnoredLocalPath(file.path)) {
-        this.fileHashes.delete(file.path);
+        this.fileHashes.delete(file.path); // 避免新路径残留旧哈希导致 push 短路
         await this.pushLocalFile(file);
       }
     } else if (file instanceof TFolder) {
-      if (this.isPathApplyingRemote(file.path, true) || this.isPathApplyingRemote(oldPath, true)) return;
-      // 文件夹重命名：同步重命名该目录下所有子文件
+      // 文件夹重命名：同步重命名并推送该目录下所有子文件
       const oldPrefix = oldPath ? `${oldPath}/` : '';
       const newPrefix = file.path ? `${file.path}/` : '';
       for (const [queuedPath, timer] of this.localChangeQueue.entries()) {
@@ -2060,223 +1748,134 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           if (this.isIgnoredLocalPath(f.path)) continue;
           const relativePart = f.path.substring(newPrefix.length);
           const oldFilePath = oldPrefix + relativePart;
-          if (this.syncBarrierActive) {
-            if (!this.isIgnoredLocalPath(oldFilePath)) {
-              if (this.pendingLocalQueueWhileBarrier) this.pendingLocalQueueWhileBarrier.delete(oldFilePath);
-              if (this.pendingLocalDeletesWhileBarrier) this.pendingLocalDeletesWhileBarrier.add(oldFilePath);
-            }
-            if (this.pendingLocalDeletesWhileBarrier) this.pendingLocalDeletesWhileBarrier.delete(f.path);
-            if (this.pendingLocalQueueWhileBarrier) this.pendingLocalQueueWhileBarrier.add(f.path);
-            continue;
-          }
-          if (!this.isIgnoredLocalPath(oldFilePath)) {
-            await this.renameRemoteFile(oldFilePath, f);
-          } else {
-            this.fileHashes.delete(f.path);
-            await this.pushLocalFile(f);
-          }
+          this.sendWsMessage({ type: 'delete', path: oldFilePath });
+          this.fileHashes.delete(oldFilePath);
+          // 🛡️ 修复：不要把旧路径的 hash 播种到新路径！旧 hash 与新路径内容一致会让 pushLocalFile
+          // 误判“内容无变化”而跳过上传 → 其他设备只收到 delete(旧路径)，永远收不到新路径的推送直到下次全量对齐。
+          // 清空新路径缓存，让 push 的哈希重新计算并入队上传。
+          this.fileHashes.delete(f.path);
+          this.updateBaselineEntry(this.settings.vaultId, oldFilePath, null);
+          await this.pushLocalFile(f);
         }
       }
     }
   }
 
-  async renameRemoteFile(oldPath, newFile) {
-    const cleanOld = String(oldPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
-    const cleanNew = newFile && newFile.path ? String(newFile.path).replace(/\\/g, '/').replace(/^\/+/, '') : '';
-    if (!cleanOld || !cleanNew) return false;
-    const wsReady = Boolean(this.ws && this.ws.readyState === WebSocket.OPEN);
-    if (wsReady) {
-      const oldHash = this.fileHashes.get(cleanOld);
-      this.fileHashes.delete(cleanOld);
-      if (oldHash) {
-        this.fileHashes.set(cleanNew, oldHash);
+  async pushLocalFile(file) {
+    if (this.isIgnoredLocalPath(file.path)) return true;
+    if (this.applyingRemotePaths && this.applyingRemotePaths.has(file.path)) return true;
+    try {
+      const buffer = await this.app.vault.readBinary(file);
+      const baseMeta = this.getBaselineEntry(this.settings.vaultId, file.path);
+      const baseHash = (baseMeta && baseMeta.hash) || this.fileHashes.get(file.path) || null;
+      const currentHash = await computeSha256(buffer);
+
+      // 🛡️ 内容无变化前置拦截：若内容与缓存哈希完全一致，跳过冗余的网络序列化与上传
+      if (currentHash && this.fileHashes.get(file.path) === currentHash) {
+        return true;
       }
-      this.sendWsMessage({ type: 'rename', oldPath: cleanOld, newPath: cleanNew });
-      return true;
-    }
-    await this.deleteRemoteFile(cleanOld);
-    this.fileHashes.delete(cleanNew);
-    await this.pushLocalFile(newFile);
-    return true;
-  }
+      const MAX_WS_INLINE = 2 * 1024 * 1024; // 2MB
 
-  async deleteRemoteFile(filePath, options = {}) {
-    const cleanPath = String(filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
-    if (!cleanPath || this.isIgnoredLocalPath(cleanPath)) return false;
-    const vaultId = this.settings.vaultId || 'default';
-    const preferHttp = Boolean(options && options.preferHttp);
-    const wsReady = Boolean(this.ws && this.ws.readyState === WebSocket.OPEN);
+      // If file exceeds 2MB, stream via HTTP PUT to avoid WebSocket buffer memory pressure
+      if (buffer.byteLength > MAX_WS_INLINE && this.settings.serverUrl && this.settings.vaultId && this.settings.token) {
+        const serverUrl = this.getCleanServerUrl();
+        const encodedPath = file.path.split('/').map(encodeURIComponent).join('/');
+        const url = `${serverUrl}/api/vaults/${encodeURIComponent(this.settings.vaultId)}/files/${encodedPath}`;
+        const headers = this.buildAuthHeaders({
+          'Content-Type': 'application/octet-stream',
+          ...(baseHash ? { 'x-base-hash': String(baseHash) } : {}),
+          ...((file.stat && file.stat.mtime) ? { 'x-mtime': String(file.stat.mtime) } : {})
+        });
 
-    // 常规实时删除且 WebSocket 处于连接态时，走 WebSocket 快速通道（等待服务端 ack 确认后再抹除 baseline）
-    if (!preferHttp && wsReady) {
-      this.sendWsMessage({ type: 'delete', path: cleanPath });
-      this.fileHashes.delete(cleanPath);
-      return true;
-    }
-
-    // 屏障期批量同步 (preferHttp) 或 WebSocket 断连时，尝试使用 HTTP DELETE 确保云端真正删除
-    const serverUrl = this.getCleanServerUrl();
-    const cleanToken = this.getCleanToken();
-    if (serverUrl && vaultId && cleanToken) {
-      try {
-        const encodedPath = cleanPath.split('/').map(encodeURIComponent).join('/');
-        const url = `${serverUrl}/api/vaults/${encodeURIComponent(vaultId)}/files/${encodedPath}`;
         const res = await fetch(url, {
-          method: 'DELETE',
-          headers: this.buildAuthHeaders(),
+          method: 'PUT',
+          headers,
+          body: buffer,
         });
-        if (res.ok || res.status === 404) {
-          try {
-            const body = await res.json();
-            if (body && typeof body.cursor === 'number' && body.cursor > 0) {
-              this.setVaultCursor(vaultId, body.cursor);
-            }
-          } catch {}
-          this.fileHashes.delete(cleanPath);
-          this.updateBaselineEntry(vaultId, cleanPath, null);
+
+        if (res.ok) {
+          const body = await res.json();
+          if (body && (body.ignored || body.written === false)) {
+            // 🛡️ 服务端同步规则黑名单明确排除了该文件：
+            // 标记基线为 ignored=true（本地保留、不参与云端删除判定、不再重复推送），
+            // 绝不能用本地 hash 伪造“云端已存在”的基线（那会在 3-Way 场景 2 中被误判为“云端已删”而删除本地文件）
+            this.fileHashes.set(file.path, currentHash);
+            this.updateBaselineEntry(this.settings.vaultId, file.path, {
+              hash: currentHash,
+              mtime: file.stat ? file.stat.mtime : Date.now(),
+              size: buffer.byteLength,
+              ignored: true
+            });
+            console.warn(`[Nimbus] 服务端同步规则已忽略该文件，已标记为本地保留（不参与 3-Way 删除判定）:`, file.path);
+            return true;
+          }
+          const returnedHash = body && (body.currentHash || body.hash || currentHash);
+          if (returnedHash) {
+            this.fileHashes.set(file.path, returnedHash);
+            this.updateBaselineEntry(this.settings.vaultId, file.path, {
+              hash: returnedHash,
+              mtime: file.stat ? file.stat.mtime : Date.now(),
+              size: buffer.byteLength
+            });
+          }
+          if (body && body.conflict) {
+            new Notice(`⚠️ 检测到并发冲突！已自动创建冲突副本: ${body.conflict}`);
+          }
           return true;
+        } else {
+          console.warn(`[Nimbus] 大文件 HTTP PUT 推送失败 (${res.status}):`, file.path);
+          return false;
         }
-      } catch (err) {
-        // 网络完全断开或请求不可达
       }
-    }
 
-    if (wsReady) {
-      this.sendWsMessage({ type: 'delete', path: cleanPath });
-      this.fileHashes.delete(cleanPath);
-      return true;
+      const base64 = arrayBufferToBase64(buffer);
+      const result = await this.sendWsMessageAndWait({
+        type: 'push',
+        path: file.path,
+        content: base64,
+        mtime: file.stat ? file.stat.mtime : Date.now(),
+        baseHash: baseHash || undefined,
+      });
+      if (result && result.ignored) {
+        // 🛡️ WS 推送命中服务端黑名单：与 HTTP ignored 分支同语义，标记基线避免误删与重复推送
+        this.fileHashes.set(file.path, currentHash);
+        this.updateBaselineEntry(this.settings.vaultId, file.path, {
+          hash: currentHash,
+          mtime: file.stat ? file.stat.mtime : Date.now(),
+          size: buffer.byteLength,
+          ignored: true
+        });
+        console.warn(`[Nimbus] 服务端同步规则已忽略该文件，已标记为本地保留:`, file.path);
+      }
+      return !!result;
+    } catch (err) {
+      console.error('[Nimbus] 读取本地文件准备上传失败:', file.path, err);
+      return false;
     }
-
-    // 🛡️ 彻底离线保护：仅移除内存哈希缓存，绝不提前抹除 baseline[cleanPath]！
-    // 保留 baseline 记录可确保设备重连后，reconcileLocalOfflineChanges / syncManifest
-    // 能够识别出 (!localFile && baseMeta) 属于「本地离线删除」，从而向云端补发删除而非将旧文件反向复活拉回本地！
-    this.fileHashes.delete(cleanPath);
-    return false;
   }
 
-  async pushLocalFile(file, options = {}) {
-    if (!file || !file.path) return null;
-    if (this.isIgnoredLocalPath(file.path)) return null;
-    if (this.isPathApplyingRemote(file.path, false)) return null;
-    const isForce = Boolean(options && options.force);
-    const preferHttp = Boolean(options && options.preferHttp);
-    return this.withLocalFileLock(file.path, async () => {
-      if (this.isPathApplyingRemote(file.path, false)) return null;
+  async sendWsMessageAndWait(payload, timeoutMs = 15000) {
+    if (!payload || !payload.path || !this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    if (!this.pendingSyncAcks) this.pendingSyncAcks = new Map();
+    const key = `${payload.type}:${payload.path}`;
+    const previous = this.pendingSyncAcks.get(key);
+    if (previous) previous.resolve(false);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingSyncAcks.delete(key);
+        resolve(false);
+      }, timeoutMs);
+      this.pendingSyncAcks.set(key, {
+        resolve: (ok, msg) => {
+          clearTimeout(timer);
+          this.pendingSyncAcks.delete(key);
+          resolve(ok ? msg : false);
+        }
+      });
       try {
-        const buffer = await this.app.vault.readBinary(file);
-        const baseMeta = this.getBaselineEntry(this.settings.vaultId, file.path);
-        const inFlightPending = (this.pendingPushes && this.pendingPushes.has(file.path))
-          ? this.pendingPushes.get(file.path)
-          : null;
-        const baseHash = isForce
-          ? null
-          : ((inFlightPending && inFlightPending.hash) || (baseMeta && baseMeta.hash) || this.fileHashes.get(file.path) || null);
-        const currentHash = await computeSha256(buffer);
-        const fileMtime = (file.stat && file.stat.mtime) ? file.stat.mtime : Date.now();
-
-        // 🛡️ 内容无变化前置拦截：非强制模式下，若内容与已确认缓存哈希或飞行中待确认哈希完全一致，跳过冗余上传
-        if (
-          !isForce &&
-          currentHash &&
-          (this.fileHashes.get(file.path) === currentHash || (inFlightPending && inFlightPending.hash === currentHash))
-        ) {
-          return {
-            hash: currentHash,
-            mtime: fileMtime,
-            size: buffer.byteLength,
-            confirmed: this.fileHashes.get(file.path) === currentHash,
-          };
-        }
-        const MAX_WS_INLINE = 2 * 1024 * 1024; // 2MB
-
-        // If file exceeds 2MB, preferHttp is set (e.g. during init barrier sync), or WebSocket is not open, stream via HTTP PUT
-        const wsReady = Boolean(this.ws && this.ws.readyState === WebSocket.OPEN);
-        if ((preferHttp || buffer.byteLength > MAX_WS_INLINE || !wsReady) && this.settings.serverUrl && this.settings.vaultId && this.settings.token) {
-          const serverUrl = this.getCleanServerUrl();
-          const encodedPath = file.path.split('/').map(encodeURIComponent).join('/');
-          const url = `${serverUrl}/api/vaults/${encodeURIComponent(this.settings.vaultId)}/files/${encodedPath}`;
-          const headers = this.buildAuthHeaders({
-            'Content-Type': 'application/octet-stream',
-            ...(baseHash ? { 'x-base-hash': String(baseHash) } : {}),
-            ...(fileMtime ? { 'x-mtime': String(fileMtime) } : {})
-          });
-
-          const res = await fetch(url, {
-            method: 'PUT',
-            headers,
-            body: buffer,
-          });
-
-          if (res.ok) {
-            const body = await res.json();
-            if (body && typeof body.cursor === 'number' && body.cursor > 0) {
-              this.setVaultCursor(this.settings.vaultId, body.cursor);
-            }
-            if (body && body.ignored) {
-              if (currentHash) this.fileHashes.set(file.path, currentHash);
-              return null;
-            }
-            if (body && body.serverWin) {
-              new Notice(`⚠️ 检测到并发冲突 (云端版本较新优先)：已备份本地改动并拉取云端最新版本: ${file.path}`);
-              await this.backupLocalConflictFile(file, file.path);
-              this.fileHashes.delete(file.path);
-              await this.pullRemoteFileViaHttp(file.path, undefined, body.currentHash);
-              return null;
-            }
-            if (body && body.conflict) {
-              new Notice(`⚠️ 检测到并发冲突！已自动创建冲突副本: ${body.conflict}`);
-              await this.pullRemoteFileViaHttp(body.conflict, undefined, body.conflictHash);
-              this.fileHashes.delete(file.path);
-              await this.pullRemoteFileViaHttp(file.path, undefined, body.currentHash);
-              return null;
-            }
-            const returnedHash = body && (body.currentHash || body.hash || currentHash);
-            if (returnedHash) {
-              this.fileHashes.set(file.path, returnedHash);
-              this.updateBaselineEntry(this.settings.vaultId, file.path, {
-                hash: returnedHash,
-                mtime: fileMtime,
-                size: buffer.byteLength
-              });
-            }
-            return {
-              hash: returnedHash,
-              mtime: fileMtime,
-              size: buffer.byteLength,
-              cursor: body && body.cursor,
-              confirmed: true
-            };
-          } else {
-            console.warn(`[Nimbus] HTTP PUT 推送失败 (${res.status}):`, file.path);
-            return null;
-          }
-        }
-
-        if (!wsReady) {
-          return null;
-        }
-
-        // WebSocket 小文件内联推送：先登记到 pendingPushes，待服务端 ack 确认后再正式写入 fileHashes 与 baseline
-        if (currentHash && this.pendingPushes) {
-          this.pendingPushes.set(file.path, {
-            hash: currentHash,
-            mtime: fileMtime,
-            size: buffer.byteLength,
-          });
-        }
-
-        const base64 = arrayBufferToBase64(buffer);
-        this.sendWsMessage({
-          type: 'push',
-          path: file.path,
-          content: base64,
-          mtime: fileMtime,
-          baseHash: baseHash || undefined,
-        });
-        return { hash: currentHash, mtime: fileMtime, size: buffer.byteLength, confirmed: false };
+        this.ws.send(JSON.stringify(payload));
       } catch (err) {
-        console.error('[Nimbus] 读取本地文件准备上传失败:', file.path, err);
-        return null;
+        this.pendingSyncAcks.get(key)?.resolve(false);
       }
     });
   }
@@ -2561,24 +2160,19 @@ class NimbusSettingTab extends PluginSettingTab {
 
       // Baseline management
       const currentVaultId = this.plugin.settings.vaultId || 'default';
-      const baselineCount = Object.keys(this.plugin.getVaultBaseline(currentVaultId)).length;
+      const baselineCount = Object.keys((this.plugin.settings.syncBaselines && this.plugin.settings.syncBaselines[currentVaultId]) || {}).length;
       new Setting(containerEl)
         .setName('📋 同步基线快照 (Sync Baseline)')
         .setDesc(`当前 Vault 已记录 ${baselineCount} 个文件的同步基线快照（用于识别跨端删除，防止已删文件复活）`)
         .addButton(btn => btn
           .setButtonText('重置基线快照')
           .onClick(async () => {
-            if (!this.plugin.baselinesCache) {
-              this.plugin.baselinesCache = {};
+            if (!this.plugin.settings.syncBaselines) {
+              this.plugin.settings.syncBaselines = {};
             }
-            this.plugin.baselinesCache[currentVaultId] = {};
-            if (this.plugin.fileHashes) {
-              this.plugin.fileHashes.clear();
-            }
-            this.plugin.setVaultCursor(currentVaultId, 0);
-            await this.plugin.saveBaselineCache();
+            this.plugin.settings.syncBaselines[currentVaultId] = {};
             await this.plugin.saveSettings();
-            new Notice('✅ 已重置当前 Vault 的同步基线快照与增量游标');
+            new Notice('✅ 已重置当前 Vault 的同步基线快照');
             await this.display();
           }));
 

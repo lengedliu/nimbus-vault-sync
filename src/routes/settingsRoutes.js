@@ -27,15 +27,15 @@ router.get('/', (req, res) => {
 });
 
 // PUT /api/settings - update system settings (admin only for server-wide params)
-router.put('/', (req, res) => {
+router.put('/', asyncHandler(async (req, res) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ error: '只有管理员有权限修改全局系统同步设置' });
   }
 
   const updates = req.body || {};
-  const updated = settingsManager.updateSystemSettings(updates);
+  const updated = await settingsManager.updateSystemSettings(updates);
   res.json({ ok: true, settings: updated, message: '系统设置保存成功' });
-});
+}));
 
 // POST /api/settings/change-password - modify own password
 router.post('/change-password', asyncHandler(async (req, res) => {
@@ -232,14 +232,14 @@ router.get('/tokens', (req, res) => {
   res.json({ tokens });
 });
 
-router.post('/tokens', (req, res) => {
+router.post('/tokens', asyncHandler(async (req, res) => {
   const { label, expiresInDays } = req.body || {};
   if (!label || !label.trim()) {
     return res.status(400).json({ error: '请输入设备或令牌名称' });
   }
 
   const devicesStore = require('../devices');
-  const record = devicesStore.generateDeviceToken(
+  const record = await devicesStore.generateDeviceToken(
     req.user,
     label.trim(),
     'desktop',
@@ -263,12 +263,12 @@ router.post('/tokens', (req, res) => {
     },
     message: '设备令牌创建成功',
   });
-});
+}));
 
-router.post('/tokens/:tokenId/regenerate', (req, res) => {
+router.post('/tokens/:tokenId/regenerate', asyncHandler(async (req, res) => {
   const { expiresInDays } = req.body || {};
   const devicesStore = require('../devices');
-  const record = devicesStore.regenerateDeviceToken(
+  const record = await devicesStore.regenerateDeviceToken(
     req.params.tokenId,
     req.user,
     expiresInDays ? parseInt(expiresInDays, 10) : 365,
@@ -296,12 +296,12 @@ router.post('/tokens/:tokenId/regenerate', (req, res) => {
     },
     message: '令牌已重新生成',
   });
-});
+}));
 
-router.post('/tokens/:tokenId/extend', (req, res) => {
+router.post('/tokens/:tokenId/extend', asyncHandler(async (req, res) => {
   const { extendDays } = req.body || {};
   const devicesStore = require('../devices');
-  const record = devicesStore.extendDeviceToken(
+  const record = await devicesStore.extendDeviceToken(
     req.params.tokenId,
     req.user,
     extendDays ? parseInt(extendDays, 10) : 365,
@@ -329,13 +329,13 @@ router.post('/tokens/:tokenId/extend', (req, res) => {
     },
     message: '令牌有效期已成功延长',
   });
-});
+}));
 
-router.delete('/tokens/:tokenId', (req, res) => {
+router.delete('/tokens/:tokenId', asyncHandler(async (req, res) => {
   const devicesStore = require('../devices');
-  const ok = devicesStore.revokeDevice(req.params.tokenId, req.user.id, req.user.role === 'admin');
+  const ok = await devicesStore.revokeDevice(req.params.tokenId, req.user.id, req.user.role === 'admin');
   res.json({ ok });
-});
+}));
 
 // ----------------------- Webhook Settings -----------------------
 const webhooks = require('../webhooks');
@@ -354,13 +354,13 @@ router.get('/webhooks', (req, res) => {
   res.json({ ok: true, config, webhooks: config });
 });
 
-const handleSaveWebhooks = (req, res) => {
+const handleSaveWebhooks = asyncHandler(async (req, res) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ error: '只有管理员有权限配置全局 Webhook' });
   }
-  const updated = webhooks.saveWebhookConfig(req.body || {});
+  const updated = await webhooks.saveWebhookConfig(req.body || {});
   res.json({ ok: true, config: updated, webhooks: updated, message: 'Webhook 设置已更新' });
-};
+});
 
 router.put('/webhooks', handleSaveWebhooks);
 router.post('/webhooks', handleSaveWebhooks);

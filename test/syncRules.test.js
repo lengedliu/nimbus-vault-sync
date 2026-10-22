@@ -23,8 +23,8 @@ test('Sync Rules and Blacklist Filtering', async (t) => {
     assert.equal(syncRules.isPathIgnored(vaultId, 'projects/nimbus/spec.txt'), false);
   });
 
-  await t.test('自定义黑名单规则生效', () => {
-    syncRules.saveRules(vaultId, {
+  await t.test('自定义黑名单规则生效', async () => {
+    await syncRules.saveRules(vaultId, {
       ignorePatterns: ['*.bak', 'private/**', '.obsidian/workspace.json'],
     });
 

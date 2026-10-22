@@ -23,18 +23,21 @@ function safeDecodeHeader(val, fallback = '') {
   }
 }
 
-// 单次上传大小上限（字节），优先读取系统设置 maxUploadSizeMb，其次可用 MAX_UPLOAD_MB 环境变量覆盖。
+// 单次上传大小上限（字节）：优先读取系统设置 maxUploadSizeMb，其次用 MAX_UPLOAD_MB 环境变量兜底。
+// 流式写入之后，这个上限只是"防止无限占用磁盘"的安全阀，不再等价于"这么大都要先进内存"。
 function getMaxUploadBytes() {
   try {
     const settingsStore = require('../settings');
-    const s = settingsStore.getSettings();
-    const mb = Number(s?.maxUploadSizeMb);
+    const mb = Number(settingsStore.getSettings()?.maxUploadSizeMb);
     if (Number.isFinite(mb) && mb >= 1) {
       return Math.round(mb * 1024 * 1024);
     }
   } catch {}
   return parseInt(process.env.MAX_UPLOAD_MB || '500', 10) * 1024 * 1024;
 }
+const MAX_UPLOAD_BYTES = getMaxUploadBytes();
+const MAX_CONCURRENT_UPLOADS = Math.max(1, parseInt(process.env.MAX_CONCURRENT_UPLOADS || '4', 10) || 4);
+let activeUploads = 0;
 
 // GET file content — 流式下载，不再把整个文件先读进内存。
 router.get('/:vaultId/files/*', (req, res) => {
@@ -66,15 +69,11 @@ router.get('/:vaultId/files/*', (req, res) => {
     detail: '读取笔记文件',
   });
 
-  const entryMeta = storage.getManifestEntry(req.params.vaultId, relPath);
+  const entryMeta = storage.getManifestEntry(vaultId, relPath);
   res.set('Content-Type', 'application/octet-stream');
   res.set('Content-Length', String(fileInfo.size));
-  if (entryMeta && entryMeta.hash) {
-    res.set('X-File-Hash', String(entryMeta.hash));
-  }
-  if (entryMeta && entryMeta.mtime) {
-    res.set('X-File-Mtime', String(entryMeta.mtime));
-  }
+  if (entryMeta && entryMeta.hash) res.set('X-File-Hash', String(entryMeta.hash));
+  if (entryMeta && entryMeta.mtime) res.set('X-File-Mtime', String(entryMeta.mtime));
   res.set('Access-Control-Expose-Headers', 'X-File-Hash, X-File-Mtime');
   fileInfo.stream.on('error', (err) => {
     console.error('[FileRoutes] read stream error:', err.message);
@@ -126,11 +125,16 @@ router.put('/:vaultId/files/*', (req, res) => {
   if (declaredLength && declaredLength > maxUploadBytes) {
     return res.status(413).json({ error: `文件超过单次上传上限（${Math.round(maxUploadBytes / 1024 / 1024)}MB）` });
   }
+  if (activeUploads >= MAX_CONCURRENT_UPLOADS) {
+    return res.status(429).json({ error: '当前上传任务较多，请稍后重试' });
+  }
+  activeUploads++;
 
   let tempPath;
   try {
     tempPath = storage.createUploadTempPath(vaultId);
   } catch (e) {
+    activeUploads--;
     return res.status(500).json({ error: `无法创建临时文件: ${e.message}` });
   }
 
@@ -159,6 +163,7 @@ router.put('/:vaultId/files/*', (req, res) => {
 
   pipeline(req, hashingPass, writeStream, async (err) => {
     if (err) {
+      activeUploads--;
       cleanupTemp();
       const status = aborted ? 413 : 400;
       const message = err.message || '上传失败';
@@ -181,26 +186,13 @@ router.put('/:vaultId/files/*', (req, res) => {
     try {
       const incomingHash = hash.digest('hex');
       const result = await storage.withFileLock(vaultId, relPath, async () => {
+        // 🛡️ async 版本：直到 deltaSync 变更记录与游标持久化完成，才广播/回包成功
         return storage.writeFileFromPathAsync(vaultId, relPath, tempPath, incomingHash, { mtime, baseHash });
       });
-      const rawDeviceId = req.headers['x-client-id'] || req.headers['x-device-id'] || null;
+      const rawDeviceId = req.headers['x-device-id'] || req.headers['x-client-id'] || null;
       const clientDeviceId = rawDeviceId ? safeDecodeHeader(rawDeviceId) : null;
       
-      if (!result.written && result.serverWin) {
-        syncLogger.recordLog({
-          vaultId,
-          userId: req.user.id,
-          username: req.user.username,
-          deviceName,
-          clientIp: req.ip || req.connection.remoteAddress,
-          action: 'conflict',
-          path: relPath,
-          size: totalBytes,
-          hash: result.currentHash,
-          status: 'conflict',
-          detail: '版本冲突 (策略: 保留云端最新版本)，已拒绝旧基线覆盖',
-        });
-      } else if (!result.written && result.conflict) {
+      if (!result.written && result.conflict) {
         // Broadcast the newly created conflict file to all connected clients
         req.app.get('fnsHub').broadcastFileChange(vaultId, result.conflict, { currentHash: result.conflictHash || incomingHash }, req.user.id, clientDeviceId);
         
@@ -241,7 +233,9 @@ router.put('/:vaultId/files/*', (req, res) => {
         hash: result.currentHash,
         cursor: deltaSync.getLatestCursor(vaultId),
       });
+      activeUploads--;
     } catch (e) {
+      activeUploads--;
       cleanupTemp();
       syncLogger.recordLog({
         vaultId,
@@ -271,9 +265,10 @@ router.delete('/:vaultId/files/*', asyncHandler(async (req, res) => {
 
   const vaultId = req.params.vaultId;
   const deviceName = safeDecodeHeader(req.headers['x-device-name'], 'REST / Web Client');
-  const rawDeviceId = req.headers['x-client-id'] || req.headers['x-device-id'] || null;
+  const rawDeviceId = req.headers['x-device-id'] || req.headers['x-client-id'] || null;
   const clientDeviceId = rawDeviceId ? safeDecodeHeader(rawDeviceId) : null;
   const ok = await storage.withFileLock(vaultId, relPath, async () => {
+    // 🛡️ async 版本：DELETE 变更记录持久化完成后再回包
     return storage.deleteFileAsync(vaultId, relPath);
   });
   req.app.get('fnsHub').broadcastFileDelete(vaultId, relPath, req.user.id, clientDeviceId);
@@ -312,9 +307,7 @@ router.post('/:vaultId/batch/delete', express.json(), asyncHandler(async (req, r
 
   const { vaultId } = req.params;
   const fnsHub = req.app.get('fnsHub');
-  const deviceName = safeDecodeHeader(req.headers['x-device-name'], 'Web Client (Batch)');
-  const rawDeviceId = req.headers['x-client-id'] || req.headers['x-device-id'] || null;
-  const clientDeviceId = rawDeviceId ? safeDecodeHeader(rawDeviceId) : null;
+  const deviceName = req.headers['x-device-name'] || 'Web Client (Batch)';
   const results = [];
   const deletedChanges = [];
   let successCount = 0;
@@ -323,6 +316,7 @@ router.post('/:vaultId/batch/delete', express.json(), asyncHandler(async (req, r
     if (!rawPath || typeof rawPath !== 'string') continue;
     const relPath = rawPath.replace(/\\/g, '/');
     const ok = await storage.withFileLock(vaultId, relPath, async () => {
+      // 🛡️ async 版本：逐条等待 DELETE 变更记录持久化完成
       return storage.deleteFileAsync(vaultId, relPath);
     });
     if (ok) {
@@ -340,9 +334,9 @@ router.post('/:vaultId/batch/delete', express.json(), asyncHandler(async (req, r
 
   if (fnsHub && deletedChanges.length > 0) {
     if (deletedChanges.length === 1) {
-      fnsHub.broadcastFileDelete(vaultId, deletedChanges[0].path, req.user.id, clientDeviceId);
+      fnsHub.broadcastFileDelete(vaultId, deletedChanges[0].path, req.user.id);
     } else {
-      fnsHub.broadcastBatchChanges(vaultId, deletedChanges, req.user.id, clientDeviceId);
+      fnsHub.broadcastBatchChanges(vaultId, deletedChanges, req.user.id);
     }
   }
 
@@ -371,8 +365,6 @@ router.post('/:vaultId/batch/move', express.json(), asyncHandler(async (req, res
 
   const { vaultId } = req.params;
   const fnsHub = req.app.get('fnsHub');
-  const rawDeviceId = req.headers['x-client-id'] || req.headers['x-device-id'] || null;
-  const clientDeviceId = rawDeviceId ? safeDecodeHeader(rawDeviceId) : null;
   const targetDir = (targetFolder || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
   const results = [];
   const batchChanges = [];
@@ -394,26 +386,27 @@ router.post('/:vaultId/batch/move', express.json(), asyncHandler(async (req, res
     }
 
     const moveRes = await storage.withDualFileLock(vaultId, relPath, newRelPath, async () => {
+      // 🛡️ 批量移动也纳入双路径文件锁：与并发 PUT/DELETE 对同一文件的写路径互斥
       return storage.moveVaultFileAsync(vaultId, relPath, newRelPath);
     });
     if (moveRes.ok) {
       successCount++;
       batchChanges.push({ action: 'delete', path: relPath });
-      const newMeta = storage.getManifestEntry(vaultId, newRelPath);
+      const newMeta = await storage.getManifestEntryAsync(vaultId, newRelPath);
       batchChanges.push({ action: 'update', path: newRelPath, ...newMeta });
     }
     results.push({ path: relPath, newPath: newRelPath, success: moveRes.ok, error: moveRes.error });
   }
 
   if (fnsHub && batchChanges.length > 0) {
-    fnsHub.broadcastBatchChanges(vaultId, batchChanges, req.user.id, clientDeviceId);
+    fnsHub.broadcastBatchChanges(vaultId, batchChanges, req.user.id);
   }
 
   syncLogger.recordLog({
     vaultId,
     userId: req.user.id,
     username: req.user.username,
-    deviceName: safeDecodeHeader(req.headers['x-device-name'], 'Web Client (Batch)'),
+    deviceName: req.headers['x-device-name'] || 'Web Client (Batch)',
     clientIp: req.ip || req.connection.remoteAddress,
     action: 'update',
     path: `批量移动 (${successCount} 项 -> /${targetDir})`,
@@ -425,7 +418,7 @@ router.post('/:vaultId/batch/move', express.json(), asyncHandler(async (req, res
 }));
 
 // GET tags overview for vault
-router.get('/:vaultId/tags', (req, res) => {
+router.get('/:vaultId/tags', asyncHandler(async (req, res) => {
   if (!requireReadAccess(req, res)) return;
   const { vaultId } = req.params;
   try {
@@ -435,7 +428,7 @@ router.get('/:vaultId/tags', (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // GET / POST batch download selected files as ZIP
 router.get('/:vaultId/batch/download', (req, res) => {

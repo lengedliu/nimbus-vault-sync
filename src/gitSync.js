@@ -18,36 +18,19 @@ const { encryptField, decryptField } = require('./utils/crypto');
 const debounceTimers = new Map(); // vaultId -> NodeJS.Timeout
 const vaultLocks = new Map(); // vaultId -> Promise chain
 
-function cleanStaleGitLock(vaultId) {
-  try {
-    const lockPath = path.join(vaultFilesRoot(vaultId), '.git', 'index.lock');
-    if (fs.existsSync(lockPath)) {
-      const stats = fs.statSync(lockPath);
-      // If older than 10 seconds, it's a stale lock from a dead or aborted process
-      if (Date.now() - stats.mtimeMs > 10000) {
-        fs.unlinkSync(lockPath);
-        console.warn(`[GitSync] Cleaned stale git index.lock for vault ${vaultId}`);
-        return true;
-      }
-    }
-  } catch {}
-  return false;
-}
-
 async function withVaultLock(vaultId, fn) {
-  cleanStaleGitLock(vaultId);
   const current = vaultLocks.get(vaultId) || Promise.resolve();
   let release;
   const next = new Promise((resolve) => { release = resolve; });
-  vaultLocks.set(vaultId, current.then(() => next, () => next));
+  const queued = current.then(() => next, () => next);
+  vaultLocks.set(vaultId, queued);
 
   try {
     await current;
-    cleanStaleGitLock(vaultId);
     return await fn();
   } finally {
     release();
-    if (vaultLocks.get(vaultId) === next) {
+    if (vaultLocks.get(vaultId) === queued) {
       vaultLocks.delete(vaultId);
     }
   }
@@ -138,14 +121,7 @@ function execGitRaw(vaultId, args, env = {}) {
 }
 
 async function execGit(vaultId, args, env = {}) {
-  let res = await execGitRaw(vaultId, args, env);
-  if (!res.success && res.stderr && res.stderr.includes('index.lock')) {
-    if (cleanStaleGitLock(vaultId)) {
-      // Retry once after successfully unlinking the stale lock file
-      res = await execGitRaw(vaultId, args, env);
-    }
-  }
-  return res;
+  return execGitRaw(vaultId, args, env);
 }
 
 function formatCommitMessage(template, filesCount) {
@@ -470,10 +446,6 @@ async function pull(vaultId) {
     return { ok: false, error: '未配置远端 Git 仓库地址' };
   }
 
-  const storage = require('./storage');
-  const deltaSync = require('./deltaSync');
-  const beforeManifest = { ...((await storage.getManifestAsync(vaultId)) || {}) };
-
   await updateRemoteUrl(vaultId, config);
   const branch = config.branch || 'main';
 
@@ -482,56 +454,72 @@ async function pull(vaultId) {
     return { ok: false, error: maskSecrets(pullRes.stderr || pullRes.stdout) };
   }
 
-  // 远端拉取成功后，比对前后 Manifest 差集，刷新缓存、写入 deltaSync 增量日志、更新倒排索引并广播变更
+  // 远端拉取成功后，刷新 Manifest 缓存、倒排索引并向所有在线客户端广播变更
+  const changedPaths = [];
   try {
-    storage.invalidateManifestCache(vaultId);
-    const newManifest = (await storage.getManifestAsync(vaultId, true)) || {};
-    const allPaths = new Set([...Object.keys(beforeManifest), ...Object.keys(newManifest)]);
-    const deltaChanges = [];
-    const wsChanges = [];
+    const storage = require('./storage');
+    const deltaSync = require('./deltaSync');
 
-    for (const relPath of allPaths) {
-      const prev = beforeManifest[relPath];
-      const next = newManifest[relPath];
-      if (prev && !next) {
-        storage.invalidateContentCacheEntry(vaultId, relPath);
-        deltaChanges.push({
-          path: relPath,
-          action: 'DELETE',
-          size: 0,
-          mtime: Date.now(),
-        });
-        wsChanges.push({ action: 'delete', path: relPath });
-      } else if (next && (!prev || prev.hash !== next.hash)) {
-        storage.invalidateContentCacheEntry(vaultId, relPath);
-        deltaChanges.push({
-          path: relPath,
-          action: 'UPSERT',
-          size: next.size,
-          mtime: next.mtime,
-          hash: next.hash,
-        });
-        wsChanges.push({
-          action: prev ? 'update' : 'create',
-          path: relPath,
-          size: next.size,
-          mtime: next.mtime,
-          hash: next.hash,
-        });
+    // 🛡️ 记录 git pull 引入的文件变更：旧实现完全旁路 deltaSync，游标不推进，
+    // 增量终端（/changes）将永久漏掉这批变更，直到下次全量对账。
+    const diffRes = await execGit(vaultId, ['diff', '--name-status', 'ORIG_HEAD', 'HEAD']);
+    const upsertChanges = [];
+    if (diffRes.success && diffRes.stdout) {
+      for (const line of diffRes.stdout.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const parts = trimmed.split('\t');
+        const status = (parts[0] || '').charAt(0).toUpperCase();
+        const filePath = parts[parts.length - 1];
+        if (!filePath) continue;
+        const rel = filePath.replace(/\\/g, '/');
+        if (status === 'D' && parts.length === 2) {
+          upsertChanges.push({ path: rel, action: 'DELETE', size: 0, mtime: Date.now(), hash: '' });
+          continue;
+        }
+        if (parts.length >= 3 && (status === 'R' || status === 'C')) {
+          // R100/Copy 重命名：diff 只报告新路径，旧路径"消失"需要补一条 DELETE
+          upsertChanges.push({ path: parts[1].replace(/\\/g, '/'), action: 'DELETE', size: 0, mtime: Date.now(), hash: '' });
+        }
+        upsertChanges.push({ path: rel, action: 'UPSERT', size: 0, mtime: Date.now(), hash: '' });
+        changedPaths.push(rel);
       }
     }
 
-    if (deltaChanges.length > 0) {
-      await deltaSync.recordBatchChanges(vaultId, deltaChanges).catch(() => {});
+    storage.invalidateManifestCache(vaultId);
+    const newManifest = await storage.getManifestAsync(vaultId, true);
+
+    // 为 UPSERT 补齐 manifest 里的精确元数据（size/mtime/hash）
+    const finalChanges = [];
+    for (const ch of upsertChanges) {
+      const meta = newManifest[ch.path];
+      if (ch.action === 'UPSERT' && meta) {
+        finalChanges.push({ path: ch.path, action: 'UPSERT', size: meta.size, mtime: meta.mtime, hash: meta.hash });
+      } else {
+        finalChanges.push(ch);
+      }
     }
 
-    const ftsEngine = require('./ftsEngine');
-    if (ftsEngine && typeof ftsEngine.rebuildVaultIndex === 'function') {
-      ftsEngine.rebuildVaultIndex(vaultId).catch(() => {});
+    if (finalChanges.length > 0) {
+      try {
+        await deltaSync.recordBatchChanges(vaultId, finalChanges);
+        console.log(`[GitSync] 已将 git pull 引入的 ${finalChanges.length} 条文件变更写入增量记录`);
+      } catch (err) {
+        console.error(`[GitSync] git pull 变更写入增量记录失败 (${vaultId})，增量终端可能漏拉，建议执行一次全量同步对账:`, err);
+      }
     }
+
+    // FTS 倒排索引：使用实际存在的 buildVaultIndexAsync（此前的 rebuildVaultIndex 根本不存在，
+    // typeof 判断让它被静默跳过，FTS 索引在 pull 后一直是过期状态）
+    const ftsEngine = require('./ftsEngine');
+    if (ftsEngine && typeof ftsEngine.buildVaultIndexAsync === 'function') {
+      ftsEngine.buildVaultIndexAsync(vaultId, newManifest, (p) => storage.readFile(vaultId, p)).catch(() => {});
+    }
+
     const wsHub = require('./wsHub');
-    if (wsHub && wsChanges.length > 0 && typeof wsHub.broadcastBatchChanges === 'function') {
-      wsHub.broadcastBatchChanges(vaultId, wsChanges, null, null);
+    if (wsHub && typeof wsHub.broadcastBatchFileChange === 'function' && changedPaths.length > 0) {
+      // 只广播本次 pull 真正变更的路径，而不是全库所有文件
+      wsHub.broadcastBatchFileChange(vaultId, changedPaths, null, null);
     }
   } catch (err) {
     console.error(`[GitSync] 远端拉取后刷新缓存/广播失败: ${vaultId}`, err);

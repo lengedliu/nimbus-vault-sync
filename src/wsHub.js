@@ -164,7 +164,11 @@ class FnsHub {
       const noManifest = query.noManifest === '1' || query.noManifest === 'true' || deviceId === 'Web-Dashboard';
 
       this.wss.handleUpgrade(req, socket, head, (ws) => {
-        this._onConnection(ws, user, vaultId, { deviceId, deviceName, clientId, token, tokenPayload: payload, clientCursor, noManifest }, permission);
+        this._onConnection(ws, user, vaultId, { deviceId, deviceName, clientId, token, tokenPayload: payload, clientCursor, noManifest }, permission)
+          .catch((err) => {
+            console.error('[WS] Failed to initialize client connection:', err);
+            ws.close(1011, 'connection initialization failed');
+          });
       });
     });
   }
@@ -328,7 +332,9 @@ class FnsHub {
 
     try {
       const devicesStore = require('./devices');
-      devicesStore.recordActivity(deviceId, { deviceName });
+      devicesStore.recordActivity(deviceId, { deviceName }).catch((err) => {
+        console.error('[WS] Failed to persist device activity:', err.message);
+      });
     } catch {}
 
     ws.on('pong', () => {
@@ -403,10 +409,11 @@ class FnsHub {
       }
 
       if (msg.type === 'get_manifest') {
+        const manifest = await storage.getManifestAsync(vaultId);
         const rules = syncRules.getRules(vaultId);
         return this._send(client.ws, {
           type: 'manifest',
-          manifest: storage.getManifest(vaultId),
+          manifest,
           cursor: deltaSync.getLatestCursor(vaultId),
           ignorePatterns: rules && Array.isArray(rules.ignorePatterns) ? rules.ignorePatterns : [],
         });
@@ -414,7 +421,7 @@ class FnsHub {
 
       if (msg.type === 'pull') {
         // ⚡ 性能优化：直接使用 O(1) 单文件元数据读取，避免全库 manifest 对象的无谓复制与 GC 停顿
-        const meta = storage.getManifestEntry(vaultId, msg.path);
+        const meta = await storage.getManifestEntryAsync(vaultId, msg.path);
         if (meta && meta.size > MAX_WS_INLINE_BYTES) {
           syncLogger.recordLog({
             vaultId,
@@ -467,7 +474,8 @@ class FnsHub {
             type: 'pull_stream',
             path: msg.path,
             size: buf.length,
-            mtime: meta?.mtime || msg.mtime || Date.now(),
+            // 🛡️ mtime 用服务端清单权威值；客户端自报的 msg.mtime 不可信，仅作元数据缺失时的兜底
+            mtime: (meta && meta.mtime) || msg.mtime || Date.now(),
             hash: storage.sha256(buf),
           });
         }
@@ -488,7 +496,8 @@ class FnsHub {
           type: 'file',
           path: msg.path,
           content: buf.toString('base64'),
-          mtime: meta?.mtime || msg.mtime || Date.now(),
+          // 🛡️ 同上：服务端清单权威 mtime 优先
+          mtime: (meta && meta.mtime) || msg.mtime || Date.now(),
           hash: storage.sha256(buf),
         });
       }
@@ -521,12 +530,21 @@ class FnsHub {
           }
         } catch {}
 
-        const result = await storage.withFileLock(vaultId, msg.path, async () => {
-          return storage.writeFileAsync(vaultId, msg.path, buffer, {
-            mtime: msg.mtime,
-            baseHash: msg.baseHash,
+        let result;
+        try {
+          result = await storage.withFileLock(vaultId, msg.path, async () => {
+            // 🛡️ 使用 async 版本：变更记录与游标持久化完成前，绝不 ack 成功
+            return storage.writeFileAsync(vaultId, msg.path, buffer, {
+              mtime: msg.mtime,
+              baseHash: msg.baseHash,
+            });
           });
-        });
+        } catch (err) {
+          // 文件可能已落盘，但 deltaSync 变更记录/游标持久化失败——
+          // 增量终端将永远看不到这次变更，必须拒绝 ack 成功让客户端重试
+          console.error('[WsHub] 文件写入持久化失败:', vaultId, msg.path, (err && err.message) || err);
+          return this._send(client.ws, { type: 'error', message: '服务端变更记录持久化失败，请重试', path: msg.path });
+        }
 
         if (!result.written && result.serverWin) {
           this._logActivity(vaultId, { type: 'conflict', path: msg.path, serverWin: true, userId: client.userId });
@@ -622,9 +640,27 @@ class FnsHub {
           return this._send(client.ws, { type: 'error', message: '只读权限，禁止删除文件', path: msg.path });
         }
 
+        // 🛡️ 与 push 同一黑名单语义：同步域之外的路径不产生删除变更记录、不广播。
+        // 客户端会收到 ignored 终态确认并照常清理本地基线（该路径本就不在同步域内）。
+        if (syncRules.isPathIgnored(vaultId, msg.path)) {
+          syncLogger.recordLog({
+            vaultId,
+            userId: client.userId,
+            username: client.username,
+            deviceName: client.deviceName,
+            action: 'ignore',
+            path: msg.path,
+            status: 'ignored',
+            detail: '命中同步黑名单/忽略规则 (delete)',
+          });
+          return this._send(client.ws, { type: 'ack', action: 'delete', path: msg.path, deleted: true, ignored: true });
+        }
+
         const ok = await storage.withFileLock(vaultId, msg.path, async () => {
+          // 🛡️ async 版本：DELETE 变更记录与游标持久化完成后再回 ack
           return storage.deleteFileAsync(vaultId, msg.path);
         });
+        const completed = ok || !await storage.getManifestEntryAsync(vaultId, msg.path);
         this._logActivity(vaultId, { type: 'delete', path: msg.path, userId: client.userId });
         syncLogger.recordLog({
           vaultId,
@@ -644,7 +680,7 @@ class FnsHub {
           cursor: deltaSync.getLatestCursor(vaultId),
         });
         this.broadcastFileDelete(vaultId, msg.path, client.userId, client.ws);
-        return;
+        return this._send(client.ws, { type: 'ack', action: 'delete', path: msg.path, deleted: completed });
       }
 
       if (msg.type === 'rename' || msg.type === 'move') {
@@ -836,10 +872,10 @@ class FnsHub {
     const room = this.rooms.get(vaultId);
     if (!room || room.size === 0) return;
 
-    // Check size from manifest first to avoid loading huge buffer into memory
-    const manifest = storage.getManifest(vaultId);
-    const meta = manifest[relPath];
-    const fileSize = meta?.size;
+    // Use metadata supplied by the write path. Falling back to a synchronous
+    // manifest scan here can block the event loop when the cache is cold.
+    const meta = { size: result?.size, mtime: result?.mtime, hash: result?.currentHash };
+    const fileSize = meta.size;
 
     if (fileSize !== undefined && fileSize > MAX_WS_INLINE_BYTES) {
       // Large file: broadcast metadata notification so clients stream via HTTP
@@ -849,7 +885,7 @@ class FnsHub {
         cursor: deltaSync.getLatestCursor(vaultId),
         size: fileSize,
         mtime: meta?.mtime,
-        hash: result?.currentHash || meta?.hash,
+        hash: result?.currentHash || meta.hash,
         pullRequired: true,
       };
       const json = JSON.stringify(payload);
@@ -908,10 +944,8 @@ class FnsHub {
     if (!room || room.size === 0) return;
 
     if (relPaths.length <= 10) {
-      const manifest = storage.getManifest(vaultId);
       for (const p of relPaths) {
-        const meta = manifest ? manifest[p] : null;
-        this.broadcastFileChange(vaultId, p, { currentHash: meta?.hash }, fromUserId, excludeWs);
+        this.broadcastFileChange(vaultId, p, {}, fromUserId, excludeWs);
       }
       return;
     }

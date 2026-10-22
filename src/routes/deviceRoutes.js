@@ -2,6 +2,7 @@ const express = require('express');
 const { requireAuth } = require('../auth');
 const devicesStore = require('../devices');
 const users = require('../users');
+const { asyncHandler } = require('../utils/asyncHandler');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -23,7 +24,7 @@ function getClientIp(req) {
 }
 
 // GET /api/devices - List devices for current user (or all if admin)
-router.get('/', (req, res) => {
+router.get('/', asyncHandler(async (req, res) => {
   const isAdmin = req.user.role === 'admin';
   const { all } = req.query;
 
@@ -36,8 +37,8 @@ router.get('/', (req, res) => {
   if (list.length === 0) {
     const platform = detectPlatform(userAgent);
     const platformName = platform === 'macos' ? 'MacBook / macOS' : platform === 'windows' ? 'Windows PC' : platform === 'ios' ? 'iPhone' : platform === 'android' ? 'Android Device' : platform === 'linux' ? 'Linux Workstation' : (platform === 'app' || platform === '应用') ? '应用客户端 (App)' : '主工作台终端';
-    const initialDev = devicesStore.generateDeviceToken(req.user, `${platformName} (默认设备)`, platform);
-    devicesStore.recordActivity(initialDev.id, { clientIp, userAgent, deviceName: initialDev.deviceName });
+    const initialDev = await devicesStore.generateDeviceToken(req.user, `${platformName} (默认设备)`, platform);
+    await devicesStore.recordActivity(initialDev.id, { clientIp, userAgent, deviceName: initialDev.deviceName });
     list = isAdmin && all === 'true' ? devicesStore.listAll() : devicesStore.listForUser(req.user.id);
   }
 
@@ -93,10 +94,10 @@ router.get('/', (req, res) => {
   });
 
   res.json({ devices: enriched, activeWsClients });
-});
+}));
 
 // POST /api/devices - Generate a dedicated device token
-router.post('/', (req, res) => {
+router.post('/', asyncHandler(async (req, res) => {
   const name = req.body.name || req.body.deviceName || req.body.label;
   const platform = req.body.platform || detectPlatform(req.headers['user-agent'] || '');
   const expiresInDays = req.body.expiresInDays ? parseInt(req.body.expiresInDays, 10) : 365;
@@ -105,9 +106,9 @@ router.post('/', (req, res) => {
     return res.status(400).json({ error: '请输入设备名称 (例如: iPhone 15 Pro, MacBook M3)' });
   }
 
-  const record = devicesStore.generateDeviceToken(req.user, name.trim(), platform, expiresInDays);
+  const record = await devicesStore.generateDeviceToken(req.user, name.trim(), platform, expiresInDays);
   const clientIp = getClientIp(req);
-  devicesStore.recordActivity(record.id, { clientIp, userAgent: req.headers['user-agent'] || '', deviceName: record.deviceName });
+  await devicesStore.recordActivity(record.id, { clientIp, userAgent: req.headers['user-agent'] || '', deviceName: record.deviceName });
 
   res.json({
     ok: true,
@@ -122,12 +123,12 @@ router.post('/', (req, res) => {
     },
     message: '设备令牌创建成功',
   });
-});
+}));
 
 // DELETE /api/devices/:deviceId - Revoke device token
-router.delete('/:deviceId', (req, res) => {
+router.delete('/:deviceId', asyncHandler(async (req, res) => {
   const isAdmin = req.user.role === 'admin';
-  const ok = devicesStore.revokeDevice(req.params.deviceId, req.user.id, isAdmin);
+  const ok = await devicesStore.revokeDevice(req.params.deviceId, req.user.id, isAdmin);
 
   // Disconnect WebSocket if connected
   const fnsHub = req.app.get('fnsHub');
@@ -144,7 +145,7 @@ router.delete('/:deviceId', (req, res) => {
   }
 
   res.json({ ok, message: ok ? '设备已注销并吊销令牌' : '设备未找到' });
-});
+}));
 
 module.exports = router;
 

@@ -52,14 +52,14 @@ router.post('/test', requireAuth, asyncHandler(async (req, res) => {
   try {
     if (provider === 's3') {
       const s3Input = { ...(current.s3 || {}), ...(s3 || {}) };
-      if (s3Input.secretAccessKey === '********') {
+      if (s3Input.secretAccessKey === '********' || !s3Input.secretAccessKey) {
         s3Input.secretAccessKey = current.s3?.secretAccessKey || '';
       }
       const result = await cloudBackup.testS3Config(s3Input);
       return res.json(result);
     } else if (provider === 'webdav') {
       const webdavInput = { ...(current.webdav || {}), ...(webdav || {}) };
-      if (webdavInput.password === '********') {
+      if (webdavInput.password === '********' || !webdavInput.password) {
         webdavInput.password = current.webdav?.password || '';
       }
       const result = await cloudBackup.testWebDAVConfig(webdavInput);

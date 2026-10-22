@@ -16,6 +16,17 @@ class DeltaSyncService {
     this.vaultState = new Map();
     this.jsonStores = new Map();
     this.initPromises = new Map();
+    this.writeQueues = new Map();
+  }
+
+  _enqueueWrite(vaultId, task) {
+    const previous = this.writeQueues.get(vaultId) || Promise.resolve();
+    const current = previous.catch(() => {}).then(task);
+    const tracked = current.finally(() => {
+      if (this.writeQueues.get(vaultId) === tracked) this.writeQueues.delete(vaultId);
+    });
+    this.writeQueues.set(vaultId, tracked);
+    return tracked;
   }
 
   _getJsonStore(vaultId) {
@@ -104,6 +115,15 @@ class DeltaSyncService {
     return st ? st.latestCursor : 0;
   }
 
+  async waitForPendingWrites(vaultId) {
+    if (!this.vaultState.has(vaultId)) await this.initVault(vaultId);
+    // A write may enqueue another write while this snapshot is settling.
+    // Loop until the queue is empty so callers get a durable barrier.
+    while (this.writeQueues.has(vaultId)) {
+      await this.writeQueues.get(vaultId);
+    }
+  }
+
   async recordChange(vaultId, { path: relPath, action, size = 0, mtime = Date.now(), hash = '' }) {
     if (!relPath) return 0;
     const norm = String(relPath).replace(/\\/g, '/').replace(/^\/+/, '');
@@ -122,41 +142,35 @@ class DeltaSyncService {
     if (!this.vaultState.has(vaultId)) {
       await this.initVault(vaultId);
     }
-    const st = this.vaultState.get(vaultId);
-    st.latestCursor += 1;
-    const cursor = st.latestCursor;
-    const createdAt = Date.now();
+    return this._enqueueWrite(vaultId, async () => {
+      // 🛡️ 状态可能在排队期间被并发清理（级联删除/缓存清理），此时安全重建而不是抛 undefined 错误
+      let st = this.vaultState.get(vaultId);
+      if (!st) {
+        await this.initVault(vaultId);
+        st = this.vaultState.get(vaultId);
+        if (!st) throw new Error(`[DeltaSync] vault state unavailable: ${vaultId}`);
+      }
+      const changeItem = {
+        cursor: st.latestCursor + 1,
+        path: relPath,
+        action: action || 'UPSERT',
+        size,
+        mtime,
+        hash,
+        createdAt: Date.now(),
+      };
 
-    const changeItem = {
-      cursor,
-      path: relPath,
-      action: action || 'UPSERT', // 'UPSERT' | 'DELETE'
-      size,
-      mtime,
-      hash,
-      createdAt,
-    };
-
-    st.ring.push(changeItem);
-    if (st.ring.length > MAX_MEMORY_CHANGES_PER_VAULT) {
-      st.ring.splice(0, st.ring.length - MAX_MEMORY_CHANGES_PER_VAULT);
-    }
-
-    // Persist to DB asynchronously
-    this._persistChange(vaultId, changeItem).catch((err) => {
-      console.error('[DeltaSync] Persist error:', err.message);
+      // Only publish a cursor after its change is durable. A failed write must
+      // not leave an in-memory cursor that clients can advance past.
+      await this._persistChange(vaultId, changeItem);
+      st.latestCursor = changeItem.cursor;
+      st.ring.push(changeItem);
+      if (st.ring.length > MAX_MEMORY_CHANGES_PER_VAULT) {
+        st.ring.splice(0, st.ring.length - MAX_MEMORY_CHANGES_PER_VAULT);
+      }
+      this._schedulePrune(vaultId, st, 1);
+      return changeItem.cursor;
     });
-
-    // 增量计数与自动衰减清理调度
-    st.unprunedCount = (st.unprunedCount || 0) + 1;
-    if (st.unprunedCount >= PRUNE_INTERVAL_CHANGES) {
-      st.unprunedCount = 0;
-      this.pruneOldChanges(vaultId).catch((err) => {
-        console.warn('[DeltaSync] Periodic prune error:', err.message);
-      });
-    }
-
-    return cursor;
   }
 
   async recordBatchChanges(vaultId, items) {
@@ -164,43 +178,44 @@ class DeltaSyncService {
     if (!this.vaultState.has(vaultId)) {
       await this.initVault(vaultId);
     }
-    const st = this.vaultState.get(vaultId);
-    const createdAt = Date.now();
-    const changeItems = [];
-
-    for (const item of items) {
-      st.latestCursor += 1;
-      const changeItem = {
-        cursor: st.latestCursor,
+    return this._enqueueWrite(vaultId, async () => {
+      // 🛡️ 与 recordChange 相同：排队期间状态可能被重建，安全兜底
+      let st = this.vaultState.get(vaultId);
+      if (!st) {
+        await this.initVault(vaultId);
+        st = this.vaultState.get(vaultId);
+        if (!st) throw new Error(`[DeltaSync] vault state unavailable: ${vaultId}`);
+      }
+      const createdAt = Date.now();
+      const changeItems = items.map((item, index) => ({
+        cursor: st.latestCursor + index + 1,
         path: item.path,
         action: item.action || 'UPSERT',
         size: item.size || 0,
         mtime: item.mtime || createdAt,
         hash: item.hash || '',
         createdAt,
-      };
-      st.ring.push(changeItem);
-      changeItems.push(changeItem);
-    }
+      }));
 
-    if (st.ring.length > MAX_MEMORY_CHANGES_PER_VAULT) {
-      st.ring.splice(0, st.ring.length - MAX_MEMORY_CHANGES_PER_VAULT);
-    }
-
-    this._persistBatchChanges(vaultId, changeItems).catch((err) => {
-      console.error('[DeltaSync] Persist batch error:', err.message);
+      await this._persistBatchChanges(vaultId, changeItems);
+      st.latestCursor = changeItems[changeItems.length - 1].cursor;
+      st.ring.push(...changeItems);
+      if (st.ring.length > MAX_MEMORY_CHANGES_PER_VAULT) {
+        st.ring.splice(0, st.ring.length - MAX_MEMORY_CHANGES_PER_VAULT);
+      }
+      this._schedulePrune(vaultId, st, changeItems.length);
+      return changeItems;
     });
+  }
 
-    // 批量增量计数与自动衰减清理调度
-    st.unprunedCount = (st.unprunedCount || 0) + changeItems.length;
+  _schedulePrune(vaultId, st, count) {
+    st.unprunedCount = (st.unprunedCount || 0) + count;
     if (st.unprunedCount >= PRUNE_INTERVAL_CHANGES) {
       st.unprunedCount = 0;
       this.pruneOldChanges(vaultId).catch((err) => {
-        console.warn('[DeltaSync] Periodic batch prune error:', err.message);
+        console.warn('[DeltaSync] Periodic prune error:', err.message);
       });
     }
-
-    return changeItems;
   }
 
   async _persistBatchChanges(vaultId, changeItems) {
@@ -216,6 +231,8 @@ class DeltaSyncService {
               `INSERT INTO vault_changes (vault_id, \`cursor\`, path, action, size, mtime, hash, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
             );
+            let rowErrors = 0;
+            let firstRowError = null;
             for (const change of changeItems) {
               stmt.run([
                 vaultId,
@@ -226,11 +243,27 @@ class DeltaSyncService {
                 change.mtime || 0,
                 change.hash || '',
                 change.createdAt || Date.now(),
-              ]);
+              ], (err) => {
+                if (err) {
+                  rowErrors++;
+                  if (!firstRowError) firstRowError = err;
+                }
+              });
             }
             stmt.finalize();
             db.run('COMMIT', (err) => {
-              if (err) return reject(err);
+              // 🛡️ 行级失败尤其不能吞掉：sqlite3 的 stmt.run 无回调时错误完全不可见，
+              // COMMIT 可能照样成功，库里缺行而内存环以为齐全——重启后增量断层直接引发全量重同步。
+              if (rowErrors > 0) {
+                console.error(`[DeltaSync] SQLite 批量持久化失败: ${rowErrors}/${changeItems.length} 行写入异常:`, (firstRowError && firstRowError.message) || '');
+                db.run('ROLLBACK', () => reject(firstRowError || new Error(`${rowErrors} batch rows failed`)));
+                return;
+              }
+              if (err) {
+                console.error('[DeltaSync] SQLite 批量持久化 COMMIT 失败:', err.message);
+                db.run('ROLLBACK', () => reject(err));
+                return;
+              }
               resolve();
             });
           });
@@ -275,8 +308,7 @@ class DeltaSyncService {
 
   async _persistChange(vaultId, change) {
     if (dbManager.type !== 'json') {
-      try {
-        await dbManager.execute(
+      await dbManager.execute(
           `INSERT INTO vault_changes (vault_id, \`cursor\`, path, action, size, mtime, hash, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           [
@@ -290,9 +322,6 @@ class DeltaSyncService {
             change.createdAt || Date.now(),
           ]
         );
-      } catch (err) {
-        console.error('[DeltaSync] SQL DB persist error:', err.message);
-      }
     } else {
       const store = this._getJsonStore(vaultId);
       store.update((data) => {
@@ -567,11 +596,18 @@ class DeltaSyncService {
 
   /**
    * 重置 DeltaSync 内存缓存状态（常用于热切换数据库引擎或重载元数据）
+   * 🛡️ 旧实现不同步等待在途写队列，也不清 writeQueues：
+   * 切换瞬间队列里的闭包读到 undefined 状态直接 reject，且队列引用悬挂。
    */
-  clearCache() {
+  async clearCache() {
+    // 先等所有在途写队列排空（单条失败已被 await 消费，避免 unhandledRejection）
+    for (const promise of Array.from(this.writeQueues.values())) {
+      await promise.catch(() => {});
+    }
     this.vaultState.clear();
     this.jsonStores.clear();
     this.initPromises.clear();
+    this.writeQueues.clear();
   }
 
   /**
@@ -629,30 +665,21 @@ class DeltaSyncService {
   /**
    * 删除指定 Vault 的全部增量同步状态与持久化数据
    */
+  hasVaultState(vaultId) {
+    return this.vaultState.has(vaultId);
+  }
+
   async removeVaultData(vaultId) {
     if (!vaultId) return;
+    if (dbManager.type !== 'json') {
+      await dbManager.execute('DELETE FROM vault_changes WHERE vault_id = ?', [vaultId]);
+    } else {
+      const storePath = path.join(DATA_DIR, 'changes', `changes_${vaultId}.json`);
+      if (fs.existsSync(storePath)) fs.unlinkSync(storePath);
+    }
     this.vaultState.delete(vaultId);
     this.jsonStores.delete(vaultId);
     this.initPromises.delete(vaultId);
-
-    // 删除 JSON 存储文件（如存在）
-    try {
-      const storePath = path.join(DATA_DIR, 'changes', `changes_${vaultId}.json`);
-      if (fs.existsSync(storePath)) {
-        fs.unlinkSync(storePath);
-      }
-    } catch (err) {
-      console.error('[DeltaSync] Failed to delete changes JSON file:', err.message);
-    }
-
-    // 删除 SQL 数据库记录（SQLite / PostgreSQL / MySQL）
-    if (dbManager.type !== 'json') {
-      try {
-        await dbManager.execute('DELETE FROM vault_changes WHERE vault_id = ?', [vaultId]);
-      } catch (err) {
-        console.error('[DeltaSync] Error deleting vault_changes from DB:', err.message);
-      }
-    }
   }
 }
 

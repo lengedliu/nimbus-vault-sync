@@ -36,6 +36,11 @@ router.get('/:vaultId/manifest', asyncHandler(async (req, res) => {
   const { vaultId } = req.params;
   if (!requireReadAccess(req, res)) return;
   const manifest = await storage.getManifestAsync(vaultId);
+  // 🛡️ 冷启动兜底：服务端重启后 vaultState 尚未初始化时 getLatestCursor 返回 0，
+  // 会让客户端误判“游标断层”而放弃秒级增量、走全量对账。这里先确保初始化完成。
+  if (!deltaSync.hasVaultState(vaultId)) {
+    await deltaSync.initVault(vaultId);
+  }
   const cursor = deltaSync.getLatestCursor(vaultId);
   const rules = syncRules.getRules(vaultId);
   res.json({

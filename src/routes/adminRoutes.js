@@ -206,7 +206,7 @@ router.delete('/users/:userId', express.json(), asyncHandler(async (req, res) =>
   }
 
   // 2. 撤销该用户所有活跃的设备与 API 令牌
-  devicesStore.revokeAllForUser(userId);
+  await devicesStore.revokeAllForUser(userId);
 
   // 3. 移除该用户在所有库中的成员资格
   await vaultMembers.removeAllForUser(userId);
@@ -223,7 +223,7 @@ router.delete('/users/:userId', express.json(), asyncHandler(async (req, res) =>
   }
 
   // 6. 删除用户账号记录
-  users.remove(userId);
+  await users.remove(userId);
 
   res.json({
     ok: true,
@@ -304,7 +304,8 @@ router.post('/database/switch', asyncHandler(async (req, res) => {
       await devicesStore.loadFromDb();
     }
     if (deltaSync.clearCache) {
-      deltaSync.clearCache();
+      // 🛡️ clearCache 现为 async：等待在途写队列排空后再切换内存状态
+      await deltaSync.clearCache();
     }
 
     res.json({

@@ -2,9 +2,8 @@ const https = require('https');
 const http = require('http');
 const url = require('url');
 const crypto = require('crypto');
-const dns = require('node:dns/promises');
 const settings = require('./settings');
-const { isPrivateOrReservedIp } = require('./utils/ssrfGuard');
+const { resolvePublicAddresses, createPinnedLookup } = require('./utils/ssrfGuard');
 const { encryptField, decryptField } = require('./utils/crypto');
 
 /**
@@ -30,7 +29,7 @@ function getWebhookConfig() {
   return { ...config, secret: decryptField(config.secret) };
 }
 
-function saveWebhookConfig(config) {
+async function saveWebhookConfig(config) {
   const current = getWebhookConfig(); // 已经是解密后的明文
   const updated = {
     ...current,
@@ -42,7 +41,7 @@ function saveWebhookConfig(config) {
     events: Array.isArray(config.events) ? config.events : current.events,
   };
   // 落盘前才加密，返回给调用方的 updated 保持明文。
-  settings.set('webhook_config', { ...updated, secret: encryptField(updated.secret) });
+  await settings.set('webhook_config', { ...updated, secret: encryptField(updated.secret) });
   return updated;
 }
 
@@ -163,22 +162,15 @@ async function sendHttpRequest(targetUrl, payload) {
 
   let addresses;
   try {
-    addresses = await dns.lookup(parsed.hostname, { all: true });
-  } catch (e) {
-    throw new Error(`无法解析 Webhook 主机 "${parsed.hostname}": ${e.message}`);
-  }
-  for (const { address } of addresses) {
-    if (isPrivateOrReservedIp(address)) {
-      throw new Error(
-        `拒绝发送 Webhook 到目标 "${targetUrl}": 域名解析到了私有/保留地址 (${address})。禁止向内网发送 Webhook 请求。`
-      );
-    }
+    addresses = await resolvePublicAddresses(parsed.hostname);
+  } catch (err) {
+    throw new Error(`拒绝发送 Webhook 到目标 "${targetUrl}": ${err.message}`);
   }
 
   return new Promise((resolve, reject) => {
     const postData = JSON.stringify(payload);
     const options = {
-      hostname: parsed.hostname,
+      hostname: parsed.hostname.replace(/^\[|\]$/g, ''),
       port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
       path: parsed.pathname + (parsed.search || ''),
       method: 'POST',
@@ -188,12 +180,22 @@ async function sendHttpRequest(targetUrl, payload) {
         'User-Agent': 'Nimbus-Sync-Server/1.1',
       },
       timeout: 6000,
+      lookup: createPinnedLookup(addresses),
     };
 
     const client = parsed.protocol === 'https:' ? https : http;
     const req = client.request(options, (res) => {
       let body = '';
-      res.on('data', (chunk) => (body += chunk));
+      let bodyBytes = 0;
+      const maxResponseBytes = 16 * 1024;
+      res.on('data', (chunk) => {
+        bodyBytes += chunk.length;
+        if (bodyBytes > maxResponseBytes) {
+          req.destroy(new Error('Webhook response exceeded 16 KB limit'));
+          return;
+        }
+        body += chunk;
+      });
       res.on('end', () => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           resolve({ ok: true, statusCode: res.statusCode, body });

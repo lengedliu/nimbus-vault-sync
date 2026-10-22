@@ -37,12 +37,20 @@ router.post('/:vaultId/history/:versionId/restore', asyncHandler(async (req, res
   const result = storage.readHistoryVersion(vaultId, versionId);
   if (!result) return res.status(404).json({ error: 'Version not found' });
 
-  const writeResult = await storage.withFileLock(vaultId, result.entry.path, async () => {
-    return storage.writeFileAsync(vaultId, result.entry.path, result.buffer, { mtime: Date.now() });
-  });
-  if (writeResult.written) {
-    req.app.get('fnsHub').broadcastFileChange(vaultId, result.entry.path, writeResult, req.user.id, null);
+  // 🛡️ async 版本 + 文件锁：历史恢复同样要等 deltaSync 变更记录持久化完成后再广播/回包
+  let writeResult;
+  try {
+    writeResult = await storage.withFileLock(vaultId, result.entry.path, async () => {
+      return storage.writeFileAsync(vaultId, result.entry.path, result.buffer, { mtime: Date.now() });
+    });
+  } catch (err) {
+    console.error('[HistoryRestore] deltaSync 持久化失败:', (err && err.message) || err);
+    return res.status(500).json({ error: '变更记录持久化失败，请重试' });
   }
+  if (writeResult.written) {
+    req.app.get('fnsHub').broadcastFileChange(vaultId, result.entry.path, writeResult, req.user.id, true);
+  }
+  // changePromise 是内部持久化句柄，不能序列化给客户端（会变成 {}）
   const { changePromise, ...cleanWriteResult } = writeResult;
   res.json({ path: result.entry.path, ...cleanWriteResult });
 }));
@@ -75,7 +83,7 @@ router.post(
       const manifest = await storage.getManifestAsync(vaultId);
       const meta = manifest ? manifest[restoredPath] : null;
       if (meta) {
-        hub.broadcastFileChange(vaultId, restoredPath, { currentHash: meta.hash }, req.user.id, null);
+        hub.broadcastFileChange(vaultId, restoredPath, { currentHash: meta.hash }, req.user.id, true);
       }
     }
     res.json({ restored: restoredPath });
@@ -90,7 +98,7 @@ router.post(
     const result = await storage.restoreAllTrash(vaultId);
     const hub = req.app.get('fnsHub');
     if (hub && result.restoredPaths.length > 0) {
-      hub.broadcastBatchFileChange(vaultId, result.restoredPaths, req.user.id, null);
+      hub.broadcastBatchFileChange(vaultId, result.restoredPaths, req.user.id, true);
     }
     res.json(result);
   })
@@ -108,7 +116,7 @@ router.post(
     const result = await storage.restoreBatchTrash(vaultId, ids);
     const hub = req.app.get('fnsHub');
     if (hub && result.restoredPaths.length > 0) {
-      hub.broadcastBatchFileChange(vaultId, result.restoredPaths, req.user.id, null);
+      hub.broadcastBatchFileChange(vaultId, result.restoredPaths, req.user.id, true);
     }
     res.json(result);
   })
@@ -148,11 +156,11 @@ router.post(
 
 // ---------------------------------- stats & activity -----------------------------
 
-router.get('/:vaultId/stats', (req, res) => {
+router.get('/:vaultId/stats', asyncHandler(async (req, res) => {
   if (!requireReadAccess(req, res)) return;
   const { vaultId } = req.params;
   const hub = req.app.get('fnsHub');
-  const stats = storage.getVaultStats(vaultId);
+  const stats = await storage.getVaultStats(vaultId);
   const activeClients = hub ? hub.getClientCount(vaultId) : 0;
   const connectedDevices = hub ? hub.getClients(vaultId) : [];
   const recentActivity = hub ? hub.getActivityLogs(vaultId) : [];
@@ -165,7 +173,7 @@ router.get('/:vaultId/stats', (req, res) => {
     connectedDevices,
     activity: recentActivity,
   });
-});
+}));
 
 // ---------------------------------- search ---------------------------------------
 
@@ -185,10 +193,11 @@ router.get('/:vaultId/rules', (req, res) => {
   res.json({ rules });
 });
 
-router.put('/:vaultId/rules', (req, res) => {
+router.put('/:vaultId/rules', asyncHandler(async (req, res) => {
   if (!requireWriteAccess(req, res)) return;
   const vaultId = req.params.vaultId;
-  const updated = syncRules.saveRules(vaultId, req.body || {});
+  const updated = await syncRules.saveRules(vaultId, req.body || {});
+  // 规则变更实时下发：此前只在客户端重连/定时同步时才生效
   const hub = req.app.get('fnsHub');
   if (hub && hub.rooms) {
     const room = hub.rooms.get(vaultId);
@@ -203,7 +212,7 @@ router.put('/:vaultId/rules', (req, res) => {
     }
   }
   res.json({ rules: updated });
-});
+}));
 
 const conflicts = require('../conflicts');
 const backups = require('../backups');

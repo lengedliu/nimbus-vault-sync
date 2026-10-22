@@ -449,9 +449,16 @@ class DatabaseManager {
         label TEXT NOT NULL,
         token TEXT NOT NULL,
         created_at INTEGER NOT NULL,
-        last_used_at INTEGER
+        last_used_at INTEGER,
+        platform TEXT,
+        client_ip TEXT,
+        user_agent TEXT
       );
     `);
+    for (const [column, type] of [['platform', 'TEXT'], ['client_ip', 'TEXT'], ['user_agent', 'TEXT']]) {
+      try { await run(`ALTER TABLE api_tokens ADD COLUMN ${column} ${type}`); }
+      catch (err) { if (!/duplicate column name/i.test(err.message)) throw err; }
+    }
     await run(`
       CREATE TABLE IF NOT EXISTS sync_logs (
         id TEXT PRIMARY KEY,
@@ -547,8 +554,14 @@ class DatabaseManager {
         label VARCHAR(128) NOT NULL,
         token TEXT NOT NULL,
         created_at BIGINT NOT NULL,
-        last_used_at BIGINT
+        last_used_at BIGINT,
+        platform VARCHAR(32),
+        client_ip VARCHAR(64),
+        user_agent TEXT
       );
+      ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS platform VARCHAR(32);
+      ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS client_ip VARCHAR(64);
+      ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS user_agent TEXT;
       CREATE TABLE IF NOT EXISTS sync_logs (
         id VARCHAR(64) PRIMARY KEY,
         vault_id VARCHAR(64) NOT NULL,
@@ -642,9 +655,16 @@ class DatabaseManager {
         label VARCHAR(128) NOT NULL,
         token TEXT NOT NULL,
         created_at BIGINT NOT NULL,
-        last_used_at BIGINT
+        last_used_at BIGINT,
+        platform VARCHAR(32),
+        client_ip VARCHAR(64),
+        user_agent TEXT
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
+    for (const [column, type] of [['platform', 'VARCHAR(32)'], ['client_ip', 'VARCHAR(64)'], ['user_agent', 'TEXT']]) {
+      try { await this.mysqlPool.query(`ALTER TABLE api_tokens ADD COLUMN ${column} ${type} NULL`); }
+      catch (err) { if (err.code !== 'ER_DUP_FIELDNAME') throw err; }
+    }
     await this.mysqlPool.query(`
       CREATE TABLE IF NOT EXISTS sync_logs (
         id VARCHAR(64) PRIMARY KEY,
