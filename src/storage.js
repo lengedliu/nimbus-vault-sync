@@ -1364,7 +1364,10 @@ function writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, { mtime
       if (mtime) {
         touchMtime(full, mtime);
         try {
-
+          // 🛡️ 修复：touch 之后重新 stat 取真实 size/mtime。
+          // 旧代码引用了未定义的 st，每次都 ReferenceError 且被空 catch 吞掉，
+          // manifest 的 mtime/ctime 长期陈旧，下载响应的 X-File-Mtime 随之失真。
+          const st = fs.statSync(full);
           updateManifestEntry(vaultId, normRel, { size: st.size, mtime: st.mtimeMs, ctime: st.birthtimeMs || st.ctimeMs || st.mtimeMs, hash: incomingHash });
         } catch {}
       }
