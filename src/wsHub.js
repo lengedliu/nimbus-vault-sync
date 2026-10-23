@@ -909,7 +909,31 @@ class FnsHub {
 
     // Use metadata supplied by the write path. Falling back to a synchronous
     // manifest scan here can block the event loop when the cache is cold.
-    const meta = { size: result?.size, mtime: result?.mtime, hash: result?.currentHash };
+    let meta = { size: result?.size, mtime: result?.mtime, hash: result?.currentHash };
+
+    // 🛡️ C-3：事件循环上绝不为判断大小而同步整读大文件。旧实现在调用方没带
+    // size 时直接 storage.readFile 整读文件再判断是否超阈值——冲突广播
+    // （conflicts.js / MCP 只传 currentHash）和批量恢复（传 {}）对大附件会
+    // 把整个文件读进内存并阻塞事件循环。按代价递增取元数据：
+    // 1) result 显式元数据（正常写路径）→ 2) 内存 manifest 条目（O(1)，
+    //    写路径都先更新 manifest，git pull 恢复等也各自刷新）→
+    // 3) statFile（只取 size/mtimeMs，不读内容）→ 都拿不到（路径不存在）
+    //    → 与旧实现语义一致地静默返回。
+    if (meta.size === undefined) {
+      const entry = storage.getManifestEntry(vaultId, relPath);
+      if (entry) {
+        meta.size = entry.size;
+        meta.mtime = meta.mtime ?? entry.mtime;
+        meta.hash = meta.hash || entry.hash;
+      }
+    }
+    if (meta.size === undefined) {
+      const st = typeof storage.statFile === 'function' ? storage.statFile(vaultId, relPath) : null;
+      if (st) {
+        meta.size = st.size;
+        meta.mtime = meta.mtime ?? Math.round(st.mtimeMs);
+      }
+    }
     const fileSize = meta.size;
 
     if (fileSize !== undefined && fileSize > MAX_WS_INLINE_BYTES) {

@@ -436,6 +436,66 @@ async function commitAndPush(vaultId, { customMessage, author } = {}) {
 /**
  * Pull latest changes from remote
  */
+/**
+ * git pull 后的 durable 段（W-8）：diff ORIG_HEAD..HEAD → 重建 manifest →
+ * 把变更写入 deltaSync 增量日志。任何一步失败都向上抛出（调用方拿到真实
+ * 失败并重试），绝不再吞错静默「成功」。
+ */
+async function recordPulledChanges(vaultId) {
+  const changedPaths = [];
+  const storage = require('./storage');
+  const deltaSync = require('./deltaSync');
+
+  // 🛡️ 记录 git pull 引入的文件变更：旧实现完全旁路 deltaSync，游标不推进，
+  // 增量终端（/changes）将永久漏掉这批变更，直到下次全量对账。
+  const diffRes = await execGit(vaultId, ['diff', '--name-status', 'ORIG_HEAD', 'HEAD']);
+  const upsertChanges = [];
+  if (diffRes.success && diffRes.stdout) {
+    for (const line of diffRes.stdout.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const parts = trimmed.split('\t');
+      const status = (parts[0] || '').charAt(0).toUpperCase();
+      const filePath = parts[parts.length - 1];
+      if (!filePath) continue;
+      const rel = filePath.replace(/\\/g, '/');
+      if (status === 'D' && parts.length === 2) {
+        upsertChanges.push({ path: rel, action: 'DELETE', size: 0, mtime: Date.now(), hash: '' });
+        continue;
+      }
+      if (parts.length >= 3 && (status === 'R' || status === 'C')) {
+        // R100/Copy 重命名：diff 只报告新路径，旧路径"消失"需要补一条 DELETE
+        upsertChanges.push({ path: parts[1].replace(/\\/g, '/'), action: 'DELETE', size: 0, mtime: Date.now(), hash: '' });
+      }
+      upsertChanges.push({ path: rel, action: 'UPSERT', size: 0, mtime: Date.now(), hash: '' });
+      changedPaths.push(rel);
+    }
+  }
+
+  storage.invalidateManifestCache(vaultId);
+  const newManifest = await storage.getManifestAsync(vaultId, true);
+
+  // 为 UPSERT 补齐 manifest 里的精确元数据（size/mtime/hash）
+  const finalChanges = [];
+  for (const ch of upsertChanges) {
+    const meta = newManifest[ch.path];
+    if (ch.action === 'UPSERT' && meta) {
+      finalChanges.push({ path: ch.path, action: 'UPSERT', size: meta.size, mtime: meta.mtime, hash: meta.hash });
+    } else {
+      finalChanges.push(ch);
+    }
+  }
+
+  if (finalChanges.length > 0) {
+    // 🛡️ durable 语义（W-8）：失败上抛而非吞错继续。游标只在 durable 后推进的
+    // 全局合约由这里维持；重试幂等由 ORIG_HEAD 语义保证（无新提交时不移动）。
+    await deltaSync.recordBatchChanges(vaultId, finalChanges);
+    console.log(`[GitSync] 已将 git pull 引入的 ${finalChanges.length} 条文件变更写入增量记录`);
+  }
+
+  return { changedPaths, manifest: newManifest };
+}
+
 async function pull(vaultId) {
   if (!isGitRepo(vaultId)) {
     await initRepo(vaultId);
@@ -454,61 +514,19 @@ async function pull(vaultId) {
     return { ok: false, error: maskSecrets(pullRes.stderr || pullRes.stdout) };
   }
 
-  // 远端拉取成功后，刷新 Manifest 缓存、倒排索引并向所有在线客户端广播变更
-  const changedPaths = [];
+  // 远端拉取成功后：先走 durable 段（manifest 重建 + delta 记录，失败上抛），
+  // 再走 best-effort 段（FTS/广播，失败仅降级）。
+  // 🛡️ W-8：durable 段失败必须让调用方感知（HTTP 5xx / MCP 工具错误 / 调度器
+  // catch 警告）。旧实现整段吞错继续返回「拉取成功」——git 已把远端提交写到
+  // Vault 磁盘，但 manifest/增量日志/游标都不认识这批文件，delta-only 客户端
+  // 永远漏拉，只能等手动全量对账。重试安全：已拉取的重跑 pull() 是 no-op，
+  // ORIG_HEAD 在无新提交时不移动，diff 仍能重放同一批变更（与 restore 路径
+  // W-7 同型契约）。
+  const { changedPaths, manifest: newManifest } = await recordPulledChanges(vaultId);
+
+  // —— best-effort 段：FTS 与广播失败仅降级，不影响 pull 的成功语义 ——
   try {
     const storage = require('./storage');
-    const deltaSync = require('./deltaSync');
-
-    // 🛡️ 记录 git pull 引入的文件变更：旧实现完全旁路 deltaSync，游标不推进，
-    // 增量终端（/changes）将永久漏掉这批变更，直到下次全量对账。
-    const diffRes = await execGit(vaultId, ['diff', '--name-status', 'ORIG_HEAD', 'HEAD']);
-    const upsertChanges = [];
-    if (diffRes.success && diffRes.stdout) {
-      for (const line of diffRes.stdout.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        const parts = trimmed.split('\t');
-        const status = (parts[0] || '').charAt(0).toUpperCase();
-        const filePath = parts[parts.length - 1];
-        if (!filePath) continue;
-        const rel = filePath.replace(/\\/g, '/');
-        if (status === 'D' && parts.length === 2) {
-          upsertChanges.push({ path: rel, action: 'DELETE', size: 0, mtime: Date.now(), hash: '' });
-          continue;
-        }
-        if (parts.length >= 3 && (status === 'R' || status === 'C')) {
-          // R100/Copy 重命名：diff 只报告新路径，旧路径"消失"需要补一条 DELETE
-          upsertChanges.push({ path: parts[1].replace(/\\/g, '/'), action: 'DELETE', size: 0, mtime: Date.now(), hash: '' });
-        }
-        upsertChanges.push({ path: rel, action: 'UPSERT', size: 0, mtime: Date.now(), hash: '' });
-        changedPaths.push(rel);
-      }
-    }
-
-    storage.invalidateManifestCache(vaultId);
-    const newManifest = await storage.getManifestAsync(vaultId, true);
-
-    // 为 UPSERT 补齐 manifest 里的精确元数据（size/mtime/hash）
-    const finalChanges = [];
-    for (const ch of upsertChanges) {
-      const meta = newManifest[ch.path];
-      if (ch.action === 'UPSERT' && meta) {
-        finalChanges.push({ path: ch.path, action: 'UPSERT', size: meta.size, mtime: meta.mtime, hash: meta.hash });
-      } else {
-        finalChanges.push(ch);
-      }
-    }
-
-    if (finalChanges.length > 0) {
-      try {
-        await deltaSync.recordBatchChanges(vaultId, finalChanges);
-        console.log(`[GitSync] 已将 git pull 引入的 ${finalChanges.length} 条文件变更写入增量记录`);
-      } catch (err) {
-        console.error(`[GitSync] git pull 变更写入增量记录失败 (${vaultId})，增量终端可能漏拉，建议执行一次全量同步对账:`, err);
-      }
-    }
-
     // FTS 倒排索引：使用实际存在的 buildVaultIndexAsync（此前的 rebuildVaultIndex 根本不存在，
     // typeof 判断让它被静默跳过，FTS 索引在 pull 后一直是过期状态）
     const ftsEngine = require('./ftsEngine');
@@ -636,6 +654,7 @@ module.exports = {
   loadConfig,
   saveConfig,
   isGitRepo,
+  recordPulledChanges,
   initRepo: (vaultId) => withVaultLock(vaultId, () => initRepo(vaultId)),
   getStatus: (vaultId) => withVaultLock(vaultId, () => getStatus(vaultId)),
   testConnection: (vaultId, testParams) => withVaultLock(vaultId, () => testConnection(vaultId, testParams)),
