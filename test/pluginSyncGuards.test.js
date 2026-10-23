@@ -675,6 +675,25 @@ test('插件：基线条目保留 ignored 标记 (W-9)', async (t) => {
   });
 });
 
+test('插件：serverWin 终态 ack 立即终结推送等待 (D-2)', async () => {
+  const plugin = makePlugin();
+  plugin.pendingSyncAcks = new Map();
+
+  // sendWsMessageAndWait 的真实等待面：pending 注册后由服务端消息终结
+  const waiter = new Promise((resolve) => {
+    plugin.pendingSyncAcks.set('push:p.md', { resolve: (ok, msg) => resolve(ok ? msg : false) });
+  });
+
+  // 服务端顺序：conflict 通知(serverWin) + D-2 新增的终态 ack（不带 hash）
+  await plugin.handleServerMessage({ type: 'conflict', path: 'p.md', serverWin: true, currentHash: 'srv' });
+  await plugin.handleServerMessage({ type: 'ack', action: 'push', path: 'p.md', conflict: true, currentHash: 'srv', cursor: 11 });
+
+  const result = await Promise.race([waiter, new Promise((r) => setTimeout(() => r(null), 200))]);
+  assert.ok(result, 'serverWin 的终态 ack 应立即终结推送等待（不白等 15s）');
+  assert.equal(result.conflict, true, 'pushLocalFile 依赖 result.conflict 判定终态（不进补推队列）');
+  assert.equal(plugin._lastServerCursorSeen['vault-test'], 11);
+});
+
 test('插件：3-Way 冲突备份的后透传语义——仅成功路径带 backupDone (A2)', async (t) => {
   const remoteManifest = { 'c.md': { size: 3, mtime: 7, hash: 'remote-hash' } };
 

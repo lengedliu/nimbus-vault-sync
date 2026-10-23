@@ -571,6 +571,19 @@ class FnsHub {
             serverWin: true,
             currentHash: result.currentHash,
           });
+          // 🛡️ 冲突终态 ack（D-2，与 conflict-copy 分支同纪律）：客户端的
+          // sendWsMessageAndWait 只认 ack——旧实现 serverWin 分支只发 conflict
+          // 通知，推送方固定白等 15s 超时并进补推队列，重连 flush 重推又再次
+          // 撞 serverWin。ack 不带 hash（不能把云端胜出版本打进“云端主路径内容”
+          // 的通用 ack 语义——本端本地文件仍是旧内容，等 case 'conflict' 的
+          // 受保护拉取完成收敛后基线自然对齐）。
+          this._send(client.ws, {
+            type: 'ack',
+            action: 'push',
+            path: msg.path,
+            conflict: true,
+            cursor: deltaSync.getLatestCursor(vaultId),
+          });
           return;
         }
 
