@@ -563,6 +563,19 @@ function readFile(vaultId, relPath) {
   return fs.readFileSync(full);
 }
 
+/** 只取文件的元数据（size/mtimeMs），绝不把内容读进内存（C-3 配套）。 */
+function statFile(vaultId, relPath) {
+  try {
+    const full = safeJoin(vaultFilesRoot(vaultId), relPath);
+    const st = fs.statSync(full);
+    if (!st.isFile()) return null;
+    return { size: st.size, mtimeMs: st.mtimeMs };
+  } catch {
+    // safeJoin 对越界/.git 路径抛错、文件不存在等各种情况统一按「无元数据」处理
+    return null;
+  }
+}
+
 /**
  * 拿一个可读流用于下载，而不是把整份文件读进内存再 res.send(buf)。
  * 对大附件（视频、PDF、压缩包……）来说，流式传输能显著降低单次请求的内存占用，
@@ -1910,6 +1923,7 @@ module.exports = {
   getManifestAsync,
   getManifestEntry,
   getManifestEntryAsync,
+  statFile,
   walkAsync,
   invalidateManifestCache,
   readFile,
