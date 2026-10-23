@@ -49,6 +49,29 @@ test('deleteFileAsync: 成功路径返回 true，DELETE 变更进入增量日志
   );
 });
 
+test('restoreBatchTrash: 黑名单路径不借恢复通道回流同步域 (E-2)', async () => {
+  const syncRules = require('../src/syncRules');
+  syncRules.saveRules(VAULT_ID, { ignorePatterns: ['keep-local*'] });
+
+  storage.writeFile(VAULT_ID, 'keep-local.md', Buffer.from('ignored file'));
+  await deltaSync.waitForPendingWrites(VAULT_ID);
+  assert.equal(await storage.deleteFileAsync(VAULT_ID, 'keep-local.md'), true);
+  await deltaSync.waitForPendingWrites(VAULT_ID);
+
+  const trash = storage.listTrash(VAULT_ID);
+  const hit = trash.find((t) => t.path === 'keep-local.md');
+  assert.ok(hit, '被忽略文件确实进入过回收站');
+
+  await deltaSync.waitForPendingWrites(VAULT_ID);
+  const cursorBefore = deltaSync.getLatestCursor(VAULT_ID);
+
+  const result = await storage.restoreBatchTrash(VAULT_ID, [hit.id]);
+  assert.deepEqual(result.restoredPaths, [], '黑名单路径不得恢复落盘');
+  assert.deepEqual(result.ignoredSkipped, ['keep-local.md']);
+  assert.equal(deltaSync.getLatestCursor(VAULT_ID), cursorBefore, '恢复被跳过：不产生 UPSERT 记录、游标不推进');
+  assert.equal(storage.statFile(VAULT_ID, 'keep-local.md'), null, '文件未写回磁盘');
+});
+
 test('restoreBatchTrash: 变更记录持久化失败必须上抛且回收站可重试 (W-7)', async () => {
   storage.writeFile(VAULT_ID, 'r.md', Buffer.from('restorable'));
   await deltaSync.waitForPendingWrites(VAULT_ID);

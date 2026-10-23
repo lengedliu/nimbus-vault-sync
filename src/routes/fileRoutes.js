@@ -267,6 +267,27 @@ router.delete('/:vaultId/files/*', asyncHandler(async (req, res) => {
   const deviceName = safeDecodeHeader(req.headers['x-device-name'], 'REST / Web Client');
   const rawDeviceId = req.headers['x-device-id'] || req.headers['x-client-id'] || null;
   const clientDeviceId = rawDeviceId ? safeDecodeHeader(rawDeviceId) : null;
+
+  // 🛡️ E-2：黑名单路径不在同步域内——删除不产生变更记录、不广播（与 WS delete
+  // 的 ignored ack 一致：deleted:true + ignored:true，无 cursor 语义变化）。
+  // 否则 web 用户删除被服务端忽略规则排除的路径，会把其他设备上
+  // 「保留不同步」的本地副本真实删掉，与插件端 deleteRemoteFile 对 ignored
+  // 的拒绝语义矛盾。
+  if (syncRules.isPathIgnored(vaultId, relPath)) {
+    syncLogger.recordLog({
+      vaultId,
+      userId: req.user.id,
+      username: req.user.username,
+      deviceName,
+      clientIp: req.ip || req.connection.remoteAddress,
+      action: 'ignore',
+      path: relPath,
+      status: 'ignored',
+      detail: '命中同步黑名单/忽略规则 (delete)',
+    });
+    return res.json({ deleted: true, ignored: true, cursor: deltaSync.getLatestCursor(vaultId) });
+  }
+
   const ok = await storage.withFileLock(vaultId, relPath, async () => {
     // 🛡️ async 版本：DELETE 变更记录持久化完成后再回包
     return storage.deleteFileAsync(vaultId, relPath);
@@ -315,6 +336,12 @@ router.post('/:vaultId/batch/delete', express.json(), asyncHandler(async (req, r
   for (const rawPath of paths) {
     if (!rawPath || typeof rawPath !== 'string') continue;
     const relPath = rawPath.replace(/\\/g, '/');
+    // 🛡️ E-2：黑名单路径不参与删除通道（无变更记录、无广播，语义与单条 DELETE 的
+    // ignored 响应一致——该路径本就不在同步域内，deleted:true + ignored:true）
+    if (syncRules.isPathIgnored(vaultId, relPath)) {
+      results.push({ path: relPath, success: true, ignored: true });
+      continue;
+    }
     const ok = await storage.withFileLock(vaultId, relPath, async () => {
       // 🛡️ async 版本：逐条等待 DELETE 变更记录持久化完成
       return storage.deleteFileAsync(vaultId, relPath);

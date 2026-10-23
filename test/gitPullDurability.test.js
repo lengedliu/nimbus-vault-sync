@@ -28,6 +28,57 @@ function gitRun(cwd, args) {
   }).toString().trim();
 }
 
+test('gitSync.recordPulledChanges: 删除路径进 deletePaths 并广播 deleted、黑名单路径被过滤 (E-1/E-2)', async () => {
+  const vaults = require('../src/vaults');
+  const syncRules = require('../src/syncRules');
+  const hub = require('../src/wsHub');
+  const VAULT2 = 'gitpull-delete-vault';
+
+  await gitSync.initRepo(VAULT2);
+  const repoDir = vaults.vaultFilesRoot(VAULT2);
+
+  storage.writeFile(VAULT2, 'gone.md', Buffer.from('to be removed'));
+  storage.writeFile(VAULT2, 'secret.md', Buffer.from('never synced'));
+  gitRun(repoDir, ['add', '-A']);
+  gitRun(repoDir, ['commit', '-m', 'v1']);
+
+  // v2：删除 gone.md、新增 secret2.md（命中黑名单，diff 会同时出现 A/D 两类）
+  syncRules.saveRules(VAULT2, { ignorePatterns: ['secret2.md'] });
+  fs.unlinkSync(path.join(repoDir, 'gone.md'));
+  fs.writeFileSync(path.join(repoDir, 'secret2.md'), Buffer.from('ignored by rules'));
+  gitRun(repoDir, ['add', '-A']);
+  gitRun(repoDir, ['commit', '-m', 'v2']);
+
+  // ORIG_HEAD=v1（模拟 pull 把 HEAD 从 v1 推进到 v2）
+  gitRun(repoDir, ['update-ref', 'ORIG_HEAD', 'HEAD~1']);
+
+  await deltaSync.waitForPendingWrites(VAULT2);
+  const cursorBefore = deltaSync.getLatestCursor(VAULT2);
+
+  const res = await gitSync.recordPulledChanges(VAULT2);
+  assert.deepEqual(res.deletePaths, ['gone.md'], '删除路径必须进 deletePaths（E-1）');
+  assert.deepEqual(res.changedPaths, [], 'secret2.md 命中黑名单不得进入同步域（E-2）');
+
+  await deltaSync.waitForPendingWrites(VAULT2);
+  const data = await deltaSync.getChanges(VAULT2, Math.max(cursorBefore, 1), 500);
+  assert.ok((data.deletes || []).some((d) => d.path === 'gone.md'), 'DELETE 变更 durable 且可重放');
+  assert.ok(!(data.updates || []).some((u) => u.path === 'secret2.md'), '黑名单新增不得记录 delta');
+
+  // E-1 广播契约：UPSERT 走 change/deleted 各自通道，删除路径必须产生 'deleted' 事件
+  const sents = [];
+  const client = { ws: { readyState: 1, OPEN: 1, send: (s) => sents.push(JSON.parse(s)) }, userId: 1 };
+  hub.rooms.set(VAULT2, new Set([client]));
+  try {
+    gitSync.broadcastPulledChanges(VAULT2, res);
+    const deletedMsg = sents.find((m) => m.type === 'deleted' && m.path === 'gone.md');
+    assert.ok(deletedMsg, '删除路径必须广播 deleted（否则在线客户端游标越过未应用删除）');
+    assert.equal(typeof deletedMsg.cursor, 'number');
+    assert.ok(!sents.some((m) => m.type === 'change' && m.path === 'secret2.md'), '黑名单路径不得广播 change');
+  } finally {
+    hub.rooms.delete(VAULT2);
+  }
+});
+
 test('gitSync.recordPulledChanges: 变更记录持久化失败必须上抛，重试可补录 (W-8)', async () => {
   // Vault 本地仓库（initRepo 负责 git init + 用户身份 + .gitignore）
   await gitSync.initRepo(VAULT);

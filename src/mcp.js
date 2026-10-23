@@ -1135,6 +1135,12 @@ function buildMcpServer(user, defaultVaultId) {
     async ({ vaultId, path: notePath }) => {
       const id = resolveWritableVaultId(vaultId);
       const cleanPath = normalizeVaultPath(notePath);
+      // 🛡️ E-2：黑名单路径不在同步域内——MCP 删除请求直接明确拒绝（不产生
+      // 变更记录、不广播），避免用户误会为「已删除」。其他设备上「保留不同步」
+      // 的本地副本也因插件端 applyRemoteDelete 的黑名单防线而免于误删。
+      if (syncRules.isPathIgnored(id, cleanPath)) {
+        return textResult(`"${cleanPath}" 命中该 Vault 的同步黑名单/忽略规则，已拒绝删除（该文件不参与同步，其他设备的本地副本也会保留）。`);
+      }
       const ok = await storage.withFileLock(id, cleanPath, async () => {
         return storage.deleteFileAsync(id, cleanPath);
       });
