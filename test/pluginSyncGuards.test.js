@@ -360,7 +360,8 @@ function makeVaultStub(plugin, buffers) {
     readBinary: async (f) => buffers[f.path] || new ArrayBuffer(0),
     createBinary: async (p, buf) => { buffers[p] = buf; },
     modifyBinary: async (f, buf) => { buffers[f.path] = buf; },
-    delete: async () => {},
+    // 与真实 Obsidian 行为一致：删除一个 TFile 后缓冲区里不再有该路径
+    delete: async (target) => { if (target && target.path) delete buffers[target.path]; },
     writeBinary: async (p, buf) => { buffers[p] = buf; },
   };
   return { created, modified, buffers, fileFor };
@@ -673,6 +674,69 @@ test('插件：基线条目保留 ignored 标记 (W-9)', async (t) => {
     assert.equal(entry.ignored, undefined);
     assert.equal(entry.hash, 'h2');
   });
+});
+
+test('插件：applyRemoteDelete 黑名单路径本地保留 (E-2)', async (t) => {
+  await t.test('命中 remoteIgnorePatterns 的路径远端删除不执行，仅清理同步状态', async () => {
+    const plugin = makePlugin();
+    const enc = new TextEncoder();
+    const buffers = { 'secret.md': enc.encode('precious').buffer.slice(0) };
+    const vault = makeVaultStub(plugin, buffers);
+    plugin.remoteIgnorePatterns = ['secret.md'];
+    plugin.updateBaselineEntry('vault-test', 'secret.md', { hash: 'bbb', mtime: 1, size: 8 });
+
+    const ok = await plugin.applyRemoteDelete('secret.md', true);
+    assert.equal(ok, true);
+    assert.ok(buffers['secret.md'], '黑名单文件本地保留，绝不物理删除');
+    assert.equal(plugin.getBaselineEntry('vault-test', 'secret.md'), null, '基线清理等价于 WS ignored ack');
+  });
+
+  await t.test('非黑名单路径的远端删除照常执行（对照语义不变）', async () => {
+    const plugin = makePlugin();
+    const enc = new TextEncoder();
+    const buffers = { 'normal.md': enc.encode('deletable').buffer.slice(0) };
+    makeVaultStub(plugin, buffers);
+    plugin.remoteIgnorePatterns = ['secret.md'];
+
+    const ok = await plugin.applyRemoteDelete('normal.md', true);
+    assert.equal(ok, true);
+    assert.equal(buffers['normal.md'], undefined, '非黑名单文件照常本地删除');
+    assert.equal(plugin.getBaselineEntry('vault-test', 'normal.md'), null);
+  });
+});
+
+test('插件：0 字节远端内容的 WS file 通道接受 (E-3)', async () => {
+  const plugin = makePlugin();
+  const buffers = {};
+  makeVaultStub(plugin, buffers);
+  const sha = (b) => require('node:crypto').createHash('sha256').update(Buffer.from(b)).digest('hex');
+
+  // 情况 1：远端把已有文件清空（modifyBinary 到空 buffer）。
+  // 基线对齐当前内容，避免进入「离线修改备份→补推等待」分支（那是 15s 超时慢路径）。
+  buffers['empty.md'] = new TextEncoder().encode('was content').buffer.slice(0);
+  plugin.updateBaselineEntry('vault-test', 'empty.md', { hash: sha('was content'), mtime: 1, size: 11 });
+  const sha256Empty = sha('');
+  const ok1 = await plugin.applyRemoteChange('empty.md', '', 5, sha256Empty);
+  assert.equal(ok1, true, '空 base64 是合法内容，不得误判失败');
+  assert.equal(buffers['empty.md'].byteLength, 0, '0 字节内容已落盘');
+  let entry = plugin.getBaselineEntry('vault-test', 'empty.md');
+  assert.equal(entry.hash, sha256Empty, '基线对齐空文件');
+
+  // 情况 2：远端新建一个空文件（createBinary 空内容）
+  const ok2 = await plugin.applyRemoteChange('fresh-empty.md', '', 5, sha256Empty);
+  assert.equal(ok2, true);
+  assert.ok(buffers['fresh-empty.md'], '新建空文件也必须落地');
+  assert.equal(buffers['fresh-empty.md'].byteLength, 0);
+});
+
+test('插件：serverWin 冲突通知文案不再误报 conflictPath (E-4)', async () => {
+  const plugin = makePlugin();
+  await plugin.handleServerMessage({ type: 'conflict', path: 'p.md', serverWin: true, currentHash: 'h' });
+  assert.ok(!obsidianStub.lastNotice.includes('undefined'), 'serverWin 无 conflictPath，不得把 undefined 打给用户');
+  assert.ok(obsidianStub.lastNotice.includes('云端优先'), 'serverWin 使用专属文案');
+
+  await plugin.handleServerMessage({ type: 'conflict', path: 'p.md', conflictPath: 'p.conflict-x.md', currentHash: 'h' });
+  assert.ok(obsidianStub.lastNotice.includes('p.conflict-x.md'), 'conflict-copy 文案保持不变');
 });
 
 test('插件：_conflictRestorePaths 一次性期待集的消费纪律 (R-B)', async (t) => {
