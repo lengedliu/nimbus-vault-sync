@@ -28,12 +28,20 @@ test('deleteFileAsync: 变更记录持久化失败必须向上抛出（durable �
     deltaSync.recordChange = original;
   }
 
-  // 文件本身的删除动作已发生（回收站 + manifest 清理）：
-  // 幂等重试收敛由 wsHub 的 completed = ok || !manifestEntry 保证（此处返回 false）
-  assert.equal(await storage.deleteFileAsync(VAULT_ID, 'x.md'), false);
+  // 🛡️ H-2 新语义：文件已不在但 delta 缺 DELETE → 按最近 durable 记录去重后
+  // 补记并返回 true（取代旧实现的 return false + wsHub completed=ok||!manifestEntry
+  // 终态 ack——那会让 DELETE 永不进增量日志，断线设备的 replay 永远漏此删除）
+  assert.equal(await storage.deleteFileAsync(VAULT_ID, 'x.md'), true);
+  await deltaSync.waitForPendingWrites(VAULT_ID);
+  assert.ok(deltaSync.getLatestCursor(VAULT_ID) > baseCursor, '重试补记 DELETE 后游标推进');
+  const data = await deltaSync.getChanges(VAULT_ID, baseCursor, 100);
+  assert.ok((data.deletes || []).some((d) => d.path === 'x.md'), '补录的 DELETE 可从增量通道重放');
 
-  // recordChange 抛出即未 durable：游标不得推进内存态
-  assert.equal(deltaSync.getLatestCursor(VAULT_ID), baseCursor);
+  // 再次重试：最近记录已是 DELETE → 幂等跳过（不新增记录、游标不动）
+  const afterRepair = deltaSync.getLatestCursor(VAULT_ID);
+  assert.equal(await storage.deleteFileAsync(VAULT_ID, 'x.md'), true);
+  await deltaSync.waitForPendingWrites(VAULT_ID);
+  assert.equal(deltaSync.getLatestCursor(VAULT_ID), afterRepair, 'dedupeLatest 幂等：重复删除不新增记录');
 });
 
 test('deleteFileAsync: 成功路径返回 true，DELETE 变更进入增量日志', async () => {

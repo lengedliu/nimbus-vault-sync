@@ -124,7 +124,7 @@ class DeltaSyncService {
     }
   }
 
-  async recordChange(vaultId, { path: relPath, action, size = 0, mtime = Date.now(), hash = '' }) {
+  async recordChange(vaultId, { path: relPath, action, size = 0, mtime = Date.now(), hash = '' }, options = {}) {
     if (!relPath) return 0;
     const norm = String(relPath).replace(/\\/g, '/').replace(/^\/+/, '');
     if (/^\.git(\/|$)/i.test(norm) ||
@@ -151,6 +151,29 @@ class DeltaSyncService {
         st = this.vaultState.get(vaultId);
         if (!st) throw new Error(`[DeltaSync] vault state unavailable: ${vaultId}`);
       }
+      // 🛡️ dedupeLatest（H-2 重试补录的幂等闸）：ring 只含已 durable 的记录
+      //（st.ring.push 发生在 _persistChange 成功之后），所以这里查到的一定是
+      // 持久化成功过的历史，不存在「把失败当成功跳过」的方向。
+      // 若该路径最近一条 durable 记录与本次完全相同，直接返回当前游标、
+      // 不新增记录——补录场景（首次尝试持久化失败后审相同内容重试）依赖
+      // 「最近记录与本次不同」这一判断正确落新记录。
+      // 注：ring 启动只装载最近 500 条，路径的最后一条记录可能早于窗口被
+      // 截断——此时查不到 prior 会保守地多记一条（至多重复、绝不漏记）。
+      if (options.dedupeLatest) {
+        const normPath = (p) => String(p || '').replace(/\\/g, '/').replace(/^\/+/, '');
+        const targetPath = normPath(relPath);
+        for (let i = st.ring.length - 1; i >= 0; i--) {
+          const r = st.ring[i];
+          if (normPath(r.path) !== targetPath) continue;
+          const actionName = action || 'UPSERT';
+          const isDup = actionName === 'UPSERT'
+            ? (r.action === 'UPSERT' && String(r.hash || '') === String(hash || ''))
+            : r.action === actionName;
+          if (isDup) return st.latestCursor;
+          break;
+        }
+      }
+
       const changeItem = {
         cursor: st.latestCursor + 1,
         path: relPath,
