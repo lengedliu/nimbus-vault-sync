@@ -675,6 +675,54 @@ test('插件：基线条目保留 ignored 标记 (W-9)', async (t) => {
   });
 });
 
+test('插件：_conflictRestorePaths 一次性期待集的消费纪律 (R-B)', async (t) => {
+  const crypto = require('node:crypto');
+  const sha = (buf) => crypto.createHash('sha256').update(Buffer.from(buf)).digest('hex');
+  const enc = new TextEncoder();
+
+  await t.test('backupDone=true 不再把标记泄漏到未来无关的同路径拉取', async () => {
+    const plugin = makePlugin();
+    const buffers = { 'p.md': enc.encode('local unsynced edit').buffer.slice(0) };
+    makeVaultStub(plugin, buffers);
+    plugin._conflictRestorePaths = new Set(['p.md']);
+
+    const incoming = enc.encode('cloud version one');
+    const ok = await plugin.applyRemoteBinaryChange('p.md', incoming.buffer.slice(0), 5, sha(incoming), { backupDone: true });
+    assert.equal(ok, true);
+    // 🛡️ 旧实现在 TFile 分支 backupDone===true 短路，标记从不被消费——
+    // 残留到未来某次无关的同路径拉取会让那次的覆盖防护被静默跳过
+    assert.equal(plugin._conflictRestorePaths.size, 0, 'backupDone 短路也必须消费一次性标记');
+  });
+
+  await t.test('非 TFile 分支（adapter-only）同样消费标记', async () => {
+    const plugin = makePlugin();
+    makeVaultStub(plugin, {});
+    plugin.app.vault.adapter = {
+      exists: async (p) => p === '.obsidian/app.json',
+      writeBinary: async () => {},
+    };
+    plugin._conflictRestorePaths = new Set(['.obsidian/app.json']);
+
+    const content = enc.encode('{}');
+    const ok = await plugin.applyRemoteBinaryChange('.obsidian/app.json', content.buffer.slice(0), 1, sha(content), {});
+    assert.equal(ok, true);
+    assert.equal(plugin._conflictRestorePaths.size, 0, 'adapter 分支不应泄漏标记');
+  });
+
+  await t.test('内容哈希校验拒绝写入时保留标记（重试拉取仍带完整防护）', async () => {
+    const plugin = makePlugin();
+    const buffers = { 'p.md': enc.encode('local unsynced edit').buffer.slice(0) };
+    makeVaultStub(plugin, buffers);
+    plugin._conflictRestorePaths = new Set(['p.md']);
+
+    const tampered = enc.encode('tampered payload');
+    const ok = await plugin.applyRemoteBinaryChange('p.md', tampered.buffer.slice(0), 5, 'not-the-real-hash', {});
+    assert.equal(ok, false);
+    assert.equal(plugin._conflictRestorePaths.size, 1, '校验失败不得消费标记');
+    assert.equal(buffers['p.md'].byteLength, enc.encode('local unsynced edit').buffer.byteLength, '未触碰磁盘');
+  });
+});
+
 test('插件：serverWin 终态 ack 立即终结推送等待 (D-2)', async () => {
   const plugin = makePlugin();
   plugin.pendingSyncAcks = new Map();

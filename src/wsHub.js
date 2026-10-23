@@ -702,14 +702,20 @@ class FnsHub {
           detail: ok ? '移入回收站' : '文件不存在',
         });
 
+        // 🛡️ 单一终态 ack（C-1）：旧实现先发一个**缺 deleted 字段**的 ack（705 处），
+        // 再在 broadcast 后补发带 deleted 的终态 ack——插件侧判定是
+        // `msg.deleted !== false`，首个 ack 会把 deleted=false（服务端本就无此文件）
+        // 误读成成功并提前终结 sendWsMessageAndWait，第二个 ack 到达时 pending
+        // 已被消费、终态语义丢失。现在合并为一条：deleted + cursor 同时就位，
+        // 「cursor 只在 durable 后推进、ack 即终态」的合约一次满足。
         this._send(client.ws, {
           type: 'ack',
           action: 'delete',
           path: msg.path,
+          deleted: completed,
           cursor: deltaSync.getLatestCursor(vaultId),
         });
         this.broadcastFileDelete(vaultId, msg.path, client.userId, client.ws);
-        return this._send(client.ws, { type: 'ack', action: 'delete', path: msg.path, deleted: completed });
       }
 
       if (msg.type === 'rename' || msg.type === 'move') {

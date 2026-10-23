@@ -1716,6 +1716,19 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       console.error(`[Nimbus] 拉取内容与其声明哈希不一致，拒绝写入: ${cleanPath} expected=${hash} actual=${actualHash}`);
       return false;
     }
+    // 🛡️ R-B：一次性期待集的正确消费点位。_conflictRestorePaths 里的标记语义是
+    // 「本次拉取的内容已在别处备份（3-Way 冲突备份），覆盖防护不必再生成副本」——
+    // 它只为**这一次**写入有效。旧实现在 TFile 分支内部才 delete：
+    // 1) options.backupDone === true 短路时标记根本不被消费，残留到未来某次
+    //    无关的同路径拉取上，会让那次覆盖防护被静默跳过；
+    // 2) 非 TFile 分支（adapter/新建）走到也不清理，同样泄漏。
+    // 现在校验通过后即无条件消费（哈希不符的拒绝写入返回 false 例外：标记保留，
+    // 让重试拉取仍带完整防护）。后续任何提前 return 的失败路径（备份失败等）
+    // 拒绝写盘、基线未变，重试时防护会按基线重算，安全。
+    let conflictRestorePending = false;
+    if (this._conflictRestorePaths instanceof Set) {
+      conflictRestorePending = this._conflictRestorePaths.delete(cleanPath);
+    }
     if (!this.applyingRemotePaths) this.applyingRemotePaths = new Set();
     // 先拿路径锁，再标记「远端写入中」：
     // 否则等待锁期间设置 applyingRemotePaths 会让持有锁的本地推送被误判为“远端回声”而静默丢弃
@@ -1736,9 +1749,8 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         // protectModified 语义一致），备份失败则拒绝本次覆盖；否则本地离线编辑
         // 会被增量/实时远端版本悄悄抹掉且基线随后更新为远端 hash，任何兜底都救不回。
         // 已显式做过备份的调用方（3-Way toLocalConflictBackup）与冲突自恢复拉取
-        // 传 backupDone / 一次性期待集，避免为同一内容生成重复副本。
-        const backupDone = options.backupDone === true ||
-          (this._conflictRestorePaths instanceof Set && this._conflictRestorePaths.delete(cleanPath));
+        // 传 backupDone / 一次性期待集（消费在函数入口，见上方 R-B 注释）。
+        const backupDone = options.backupDone === true || conflictRestorePending;
         if (!backupDone) {
           const baseMeta = this.getBaselineEntry(this.settings.vaultId, cleanPath);
           const lastKnown = (baseMeta && baseMeta.hash) || this.fileHashes.get(cleanPath) || null;
