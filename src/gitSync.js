@@ -437,20 +437,44 @@ async function commitAndPush(vaultId, { customMessage, author } = {}) {
  * Pull latest changes from remote
  */
 /**
- * git pull 后的 durable 段（W-8）：diff ORIG_HEAD..HEAD → 重建 manifest →
+ * git pull 后的 durable 段（W-8）：diff <base>..HEAD → 重建 manifest →
  * 把变更写入 deltaSync 增量日志。任何一步失败都向上抛出（调用方拿到真实
  * 失败并重试），绝不再吞错静默「成功」。
+ *
+ * 🛡️ H-2：diff 基准由调用方显式传入（pull() 用 pull 前固化的 prePullHead），
+ * 不再依赖 ORIG_HEAD——实测现代 git 连「已是最新」的 pull 都会把 ORIG_HEAD
+ * 重写为当前 HEAD，旧代码注释声称的「重试幂等（无新提交时不移动）」不成立。
+ * 未传 diffBase 时回退 ORIG_HEAD（兼容既有调用与测试注入场景）。
  */
-async function recordPulledChanges(vaultId) {
+async function recordPulledChanges(vaultId, { diffBase = null } = {}) {
+  const diffRes = await execGit(vaultId, ['diff', '--name-status', diffBase || 'ORIG_HEAD', 'HEAD']);
+  const { changedPaths, deletePaths, manifest: newManifest, finalChanges } = await recordNameStatusDiff(vaultId, diffRes);
+
+  if (finalChanges.length > 0) {
+    // 🛡️ durable 语义（W-8）：失败上抛而非吞错继续。游标只在 durable 后推进的
+    // 全局合约由这里维持；持久化失败后的重试补放由 pull() 固化的 {base, head}
+    // 区间标记（markPendingPulledRange → replayPendingPulledChanges）保障——
+    // ORIG_HEAD 在现代 git「已是最新」的 pull 中同样会被重写，不能作为重试基准。
+    const deltaSync = require('./deltaSync');
+    await deltaSync.recordBatchChanges(vaultId, finalChanges);
+    console.log(`[GitSync] 已将 git pull 引入的 ${finalChanges.length} 条文件变更写入增量记录`);
+  }
+
+  return { changedPaths, deletePaths, manifest: newManifest };
+}
+
+/**
+ * 解析 --name-status diff 并生成待记录的变更集（H-2 抽取：区间重放与
+ * recordPulledChanges 共用同一套解析/黑名单过滤/元数据补齐逻辑）。
+ */
+async function recordNameStatusDiff(vaultId, diffRes) {
   const changedPaths = [];
   const deletePaths = [];
   const storage = require('./storage');
-  const deltaSync = require('./deltaSync');
   const syncRules = require('./syncRules');
 
   // 🛡️ 记录 git pull 引入的文件变更：旧实现完全旁路 deltaSync，游标不推进，
   // 增量终端（/changes）将永久漏掉这批变更，直到下次全量对账。
-  const diffRes = await execGit(vaultId, ['diff', '--name-status', 'ORIG_HEAD', 'HEAD']);
   const upsertChanges = [];
   if (diffRes.success && diffRes.stdout) {
     for (const line of diffRes.stdout.split('\n')) {
@@ -498,14 +522,7 @@ async function recordPulledChanges(vaultId) {
     }
   }
 
-  if (finalChanges.length > 0) {
-    // 🛡️ durable 语义（W-8）：失败上抛而非吞错继续。游标只在 durable 后推进的
-    // 全局合约由这里维持；重试幂等由 ORIG_HEAD 语义保证（无新提交时不移动）。
-    await deltaSync.recordBatchChanges(vaultId, finalChanges);
-    console.log(`[GitSync] 已将 git pull 引入的 ${finalChanges.length} 条文件变更写入增量记录`);
-  }
-
-  return { changedPaths, deletePaths, manifest: newManifest };
+  return { changedPaths, deletePaths, manifest: newManifest, finalChanges };
 }
 
 /**
@@ -530,6 +547,69 @@ function broadcastPulledChanges(vaultId, { changedPaths = [], deletePaths = [] }
   }
 }
 
+/**
+ * 🛡️ H-2：git pull 的 durable 重试区间固化。
+ *
+ * 背景（实测）：现代 git 连「已是最新」的 pull 都会把 ORIG_HEAD 重写为当前
+ * HEAD。若 pull 后 delta 记录持久化失败，下次 pull 的 ORIG_HEAD..HEAD diff
+ * 已经为空，重试只能静默吞掉这批变更。
+ *
+ * 机制：pull 前固化 prePullHead（rev-parse HEAD），pull 后 durable 段失败时
+ * 把 {base: prePullHead, head: pull 后 HEAD} 写进 sidecar
+ *（git-sync-pending.json，位于 vaultRoot——files/ git 仓库工作树之外，不进
+ * git 仓库、不会被 pull 往返）；下一次 pull() 开头按保存区间 diff 补放，
+ * 与本次 pull 的变更区间天然不重叠。base 提交被历史重写/GC 时 diff 失败
+ * → 弃用并清除标记（此时靠 3-Way 全量对账兜底）。
+ */
+function pendingReplayFile(vaultId) {
+  return path.join(vaultRoot(vaultId), 'git-sync-pending.json');
+}
+
+function gitHeadSha(vaultId) {
+  const res = execGit(vaultId, ['rev-parse', 'HEAD']);
+  return res.success ? String(res.stdout || '').trim() : null;
+}
+
+function markPendingPulledRange(vaultId, base, head) {
+  try {
+    fs.writeFileSync(pendingReplayFile(vaultId), JSON.stringify({ base, head, markedAt: Date.now() }));
+    console.warn(`[GitSync] 已固化未持久化的 pull 变更区间，等待下次 pull 时补放: ${String(base).slice(0, 7)}..${String(head).slice(0, 7)}`);
+  } catch (err) {
+    console.error('[GitSync] 区间重放标记写入失败（只能依赖 3-Way 全量对账兜底）:', (err && err.message) || err);
+  }
+}
+
+async function replayPendingPulledChanges(vaultId) {
+  const file = pendingReplayFile(vaultId);
+  if (!fs.existsSync(file)) return { replayed: 0 };
+  let marker = null;
+  try { marker = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+  const base = marker && String(marker.base || '');
+  const head = marker && String(marker.head || '');
+  const clearMarker = () => { try { fs.unlinkSync(file); } catch {} };
+  if (!base || !head || base === head) {
+    clearMarker();
+    return { replayed: 0 };
+  }
+
+  const diffRes = await execGit(vaultId, ['diff', '--name-status', base, head]);
+  if (!diffRes.success) {
+    console.warn(`[GitSync] 固化区间 ${base.slice(0, 7)}..${head.slice(0, 7)} 已不可 diff（历史被重写/GC），弃用重放标记，依赖 3-Way 全量对账兜底`);
+    clearMarker();
+    return { replayed: 0, dropped: true };
+  }
+  const { changedPaths, deletePaths, finalChanges } = await recordNameStatusDiff(vaultId, diffRes);
+  if (finalChanges.length > 0) {
+    // 失败上抛：标记保留，下次 pull 再试这段区间
+    const deltaSync = require('./deltaSync');
+    await deltaSync.recordBatchChanges(vaultId, finalChanges);
+    console.log(`[GitSync] 已按固化区间补放 ${finalChanges.length} 条 git pull 变更记录`);
+  }
+  clearMarker();
+  broadcastPulledChanges(vaultId, { changedPaths, deletePaths });
+  return { replayed: finalChanges.length };
+}
+
 async function pull(vaultId) {
   if (!isGitRepo(vaultId)) {
     await initRepo(vaultId);
@@ -539,6 +619,17 @@ async function pull(vaultId) {
   if (!config.remoteUrl) {
     return { ok: false, error: '未配置远端 Git 仓库地址' };
   }
+
+  // 🛡️ H-2：先把此前 durable 失败留下的区间重放补上（与本次 pull 的区间不重叠）
+  try {
+    await replayPendingPulledChanges(vaultId);
+  } catch (err) {
+    console.error(`[GitSync] 补放固化区间失败（标记保留，下次 pull 再试）: ${vaultId}`, (err && err.message) || err);
+  }
+
+  // 🛡️ H-2：pull 前固化 HEAD——ORIG_HEAD 在「已是最新」的 pull 中也会被重写（实测），
+  // 不能作为 diff 基准。
+  const prePullHead = gitHeadSha(vaultId);
 
   await updateRemoteUrl(vaultId, config);
   const branch = config.branch || 'main';
@@ -553,10 +644,20 @@ async function pull(vaultId) {
   // 🛡️ W-8：durable 段失败必须让调用方感知（HTTP 5xx / MCP 工具错误 / 调度器
   // catch 警告）。旧实现整段吞错继续返回「拉取成功」——git 已把远端提交写到
   // Vault 磁盘，但 manifest/增量日志/游标都不认识这批文件，delta-only 客户端
-  // 永远漏拉，只能等手动全量对账。重试安全：已拉取的重跑 pull() 是 no-op，
-  // ORIG_HEAD 在无新提交时不移动，diff 仍能重放同一批变更（与 restore 路径
-  // W-7 同型契约）。
-  const { changedPaths, deletePaths, manifest: newManifest } = await recordPulledChanges(vaultId);
+  // 永远漏拉，只能等手动全量对账。
+  // 🛡️ H-2：durable 段失败时用固化区间 {prePullHead, headAfterPull} 留下补放
+  // 标记（ORIG_HEAD 已被 pull 重写并不可靠）。
+  const headAfterPull = gitHeadSha(vaultId);
+  let recordRes;
+  try {
+    recordRes = await recordPulledChanges(vaultId, { diffBase: prePullHead });
+  } catch (err) {
+    if (prePullHead && headAfterPull && prePullHead !== headAfterPull) {
+      markPendingPulledRange(vaultId, prePullHead, headAfterPull);
+    }
+    throw err;
+  }
+  const { changedPaths, deletePaths, manifest: newManifest } = recordRes;
 
   // —— best-effort 段：FTS 与广播失败仅降级，不影响 pull 的成功语义 ——
   try {
@@ -690,6 +791,9 @@ module.exports = {
   isGitRepo,
   recordPulledChanges,
   broadcastPulledChanges,
+  // 🛡️ H-2 区间固化补放（测试与排障用；pull() 内部走未包装的原始实现）
+  markPendingPulledRange,
+  replayPendingPulledChanges,
   initRepo: (vaultId) => withVaultLock(vaultId, () => initRepo(vaultId)),
   getStatus: (vaultId) => withVaultLock(vaultId, () => getStatus(vaultId)),
   testConnection: (vaultId, testParams) => withVaultLock(vaultId, () => testConnection(vaultId, testParams)),

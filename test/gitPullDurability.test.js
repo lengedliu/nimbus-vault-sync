@@ -79,6 +79,75 @@ test('gitSync.recordPulledChanges: 删除路径进 deletePaths 并广播 deleted
   }
 });
 
+test('H-2: recordPulledChanges 支持显式 diffBase；durable 失败可按固化区间补放', async () => {
+  const VAULT3 = 'gitpull-replay-vault';
+  await gitSync.initRepo(VAULT3);
+  const repoDir = vaults.vaultFilesRoot(VAULT3);
+  const markerPath = path.join(repoDir, '..', 'git-sync-pending.json');
+  const shaOf = (txt) => require('node:crypto').createHash('sha256').update(Buffer.from(txt)).digest('hex');
+
+  storage.writeFile(VAULT3, 'p.md', Buffer.from('p0'));
+  gitRun(repoDir, ['add', '-A']);
+  gitRun(repoDir, ['commit', '-m', 'c0']);
+  const prePullHead = gitRun(repoDir, ['rev-parse', 'HEAD']);
+
+  // c1（模拟 pull 引入的变更：p.md 更新为 p1）
+  storage.writeFile(VAULT3, 'p.md', Buffer.from('p1'));
+  gitRun(repoDir, ['add', '-A']);
+  gitRun(repoDir, ['commit', '-m', 'c1']);
+
+  let failing = true;
+  const realRecordBatch = deltaSync.recordBatchChanges.bind(deltaSync);
+  deltaSync.recordBatchChanges = async (v, items) => {
+    if (failing) throw new Error('delta down');
+    return realRecordBatch(v, items);
+  };
+  try {
+    // 1) 显式 diffBase 的记录失败 → 必须上抛
+    try {
+      await gitSync.recordPulledChanges(VAULT3, { diffBase: prePullHead });
+      assert.fail('recordPulledChanges 失败必须上抛');
+    } catch (err) {
+      assert.ok(/delta down/.test(String(err.message)));
+    }
+
+    // 2) 固化区间；模拟 ORIG_HEAD 被 pull 重写（实测「已是最新」的 pull 也会重写）
+    gitSync.markPendingPulledRange(VAULT3, prePullHead, gitRun(repoDir, ['rev-parse', 'HEAD']));
+    assert.ok(fs.existsSync(markerPath), '固化标记写入 vaultRoot（files/ git 工作树之外）');
+    gitRun(repoDir, ['update-ref', 'ORIG_HEAD', 'HEAD']);
+
+    // 3) 按 ORIG_HEAD 的重放已不可能（diff 为空——与线上实测一致），
+    //    但按固化区间补放成功、标记清除、记录可从增量通道重放
+    failing = false;
+    const rep = await gitSync.replayPendingPulledChanges(VAULT3);
+    assert.ok(rep.replayed >= 1, '固化区间重放必须产生记录');
+    assert.ok(!fs.existsSync(markerPath), '补放 durable 成功后标记必须清除');
+    await deltaSync.waitForPendingWrites(VAULT3);
+    const data = await deltaSync.getChanges(VAULT3, 1, 200);
+    const p1 = shaOf('p1');
+    assert.ok((data.updates || []).some((u) => u.path === 'p.md' && u.hash === p1), '缺失的 c1 变更已补进增量日志');
+  } finally {
+    deltaSync.recordBatchChanges = realRecordBatch;
+    if (fs.existsSync(markerPath)) fs.unlinkSync(markerPath);
+  }
+});
+
+test('H-2: 固化区间 base 不可解析时弃用标记（3-Way 全量对账兜底）', async () => {
+  const VAULT4 = 'gitpull-replay-drop-vault';
+  await gitSync.initRepo(VAULT4);
+  const repoDir = vaults.vaultFilesRoot(VAULT4);
+  const markerPath = path.join(repoDir, '..', 'git-sync-pending.json');
+  storage.writeFile(VAULT4, 'z.md', Buffer.from('z'));
+  gitRun(repoDir, ['add', '-A']);
+  gitRun(repoDir, ['commit', '-m', 'c0']);
+  gitSync.markPendingPulledRange(VAULT4, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', gitRun(repoDir, ['rev-parse', 'HEAD']));
+  assert.ok(fs.existsSync(markerPath));
+  const rep = await gitSync.replayPendingPulledChanges(VAULT4);
+  assert.equal(rep.replayed, 0);
+  assert.equal(rep.dropped, true);
+  assert.ok(!fs.existsSync(markerPath), '不可解析区间必须清除标记，避免永久卡死');
+});
+
 test('gitSync.recordPulledChanges: 变更记录持久化失败必须上抛，重试可补录 (W-8)', async () => {
   // Vault 本地仓库（initRepo 负责 git init + 用户身份 + .gitignore）
   await gitSync.initRepo(VAULT);

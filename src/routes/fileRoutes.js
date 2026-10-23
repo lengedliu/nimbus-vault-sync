@@ -42,6 +42,7 @@ let activeUploads = 0;
 // GET file content — 流式下载，不再把整个文件先读进内存。
 router.get('/:vaultId/files/*', (req, res) => {
   if (!requireReadAccess(req, res)) return;
+  const vaultId = req.params.vaultId;
   let relPath = req.params[0] || '';
   try {
     relPath = decodeURIComponent(relPath);

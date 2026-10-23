@@ -1290,6 +1290,17 @@ function writeFile(vaultId, relPath, buffer, { mtime, baseHash } = {}) {
       if (mtime) {
         touchMtime(full, mtime);
       }
+      // 🛡️ H-2：内容相同分支不再「静默不记」——这是 durable 重试链的关键一环：
+      // 首次保存的 UPSERT 持久化失败（磁盘/DB 抖动）时，磁盘内容已在但增量日志
+      // 缺记录，客户端会以相同内容重试到这里。dedupeLatest 按该路径最近一条
+      // durable 记录判断：不是相同内容的 UPSERT（缺失/是 DELETE/是旧内容）→
+      // 补记；已有相同记录 → 幂等跳过、不污染增量日志。changePromise 交给
+      // writeFileAsync 等待，保证「回执成功」与「delta 记录存在」同序。
+      const changePromise = trackRecordChange(vaultId, normRel, deltaSync.recordChange(
+        vaultId,
+        { path: normRel, action: 'UPSERT', size: buffer.length, mtime: mtime || Date.now(), hash: incomingHash },
+        { dedupeLatest: true }
+      ));
       // 内容未变也要把真实 mtime 刷进清单：否则客户端续传/去重时看到的是旧 mtime
       try {
         const st = fs.statSync(full);
@@ -1297,7 +1308,7 @@ function writeFile(vaultId, relPath, buffer, { mtime, baseHash } = {}) {
         const ctimeVal = (st.birthtimeMs && st.birthtimeMs > 0) ? st.birthtimeMs : (st.ctimeMs || mtimeVal);
         updateManifestEntry(vaultId, normRel, { size: buffer.length, mtime: mtimeVal, ctime: ctimeVal, hash: incomingHash });
       } catch {}
-      return { written: true, conflict: null, currentHash: incomingHash, size: buffer.length, mtime: mtime || fs.statSync(full).mtimeMs };
+      return { written: true, conflict: null, currentHash: incomingHash, size: buffer.length, mtime: mtime || fs.statSync(full).mtimeMs, changePromise };
     }
 
     if (baseHash && existingHash !== baseHash) {
@@ -1403,6 +1414,14 @@ function writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, { mtime
     if (existingHash && existingHash === incomingHash) {
       // 内容没有实际变化，丢弃临时文件，只在需要时touch一下 mtime。
       try { fs.unlinkSync(tempFilePath); } catch {}
+      // 🛡️ H-2：与 writeFile 同内容分支同型——补录持久化断层的 UPSERT
+      //（首次尝试记录失败后，客户端以相同内容重试到这里），dedupeLatest 保证
+      // 真正未变的内容不会重复入日志。
+      const changePromise = trackRecordChange(vaultId, normRel, deltaSync.recordChange(
+        vaultId,
+        { path: normRel, action: 'UPSERT', size: existingStat.size, mtime: mtime || Date.now(), hash: incomingHash },
+        { dedupeLatest: true }
+      ));
       if (mtime) {
         touchMtime(full, mtime);
         try {
@@ -1413,7 +1432,7 @@ function writeFileFromPath(vaultId, relPath, tempFilePath, incomingHash, { mtime
           updateManifestEntry(vaultId, normRel, { size: st.size, mtime: st.mtimeMs, ctime: st.birthtimeMs || st.ctimeMs || st.mtimeMs, hash: incomingHash });
         } catch {}
       }
-      return { written: true, conflict: null, currentHash: incomingHash, identical: true };
+      return { written: true, conflict: null, currentHash: incomingHash, identical: true, changePromise };
     }
 
     if (baseHash && existingHash && existingHash !== baseHash) {
@@ -1530,7 +1549,20 @@ function deleteFile(vaultId, relPath) {
 async function deleteFileAsync(vaultId, relPath) {
   const normRel = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
   const full = safeJoin(vaultFilesRoot(vaultId), normRel);
-  if (!fs.existsSync(full)) return false;
+  if (!fs.existsSync(full)) {
+    // 🛡️ H-2：重试补录通道。旧实现直接 return false——首次删除在「移入回收站
+    // + 清 manifest」之后、delta 记录持久化之前失败/崩溃时，重试走到这里，
+    // WS 侧 completed=ok||!manifestEntry 仍回 deleted:true 终态 ack，DELETE
+    // 却永远不进增量日志，断线设备的 replay 永远漏此删除。
+    // 现在按最近 durable 记录去重补记：
+    //  - 最近记录已是 DELETE → 幂等跳过（不新增记录）
+    //  - 最近记录缺失/是旧 UPSERT → 补一条 DELETE
+    // 顺带把可能残留的 manifest 条目清干净（crash 可能停在 manifest 更新之前）。
+    updateManifestEntry(vaultId, normRel, null);
+    invalidateContentCacheEntry(vaultId, normRel);
+    await deltaSync.recordChange(vaultId, { path: normRel, action: 'DELETE', size: 0, mtime: Date.now() }, { dedupeLatest: true });
+    return true;
+  }
 
   fs.mkdirSync(trashDir(vaultId), { recursive: true });
   const id = randomId();
