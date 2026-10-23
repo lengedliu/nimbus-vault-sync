@@ -48,3 +48,37 @@ test('deleteFileAsync: 成功路径返回 true，DELETE 变更进入增量日志
     'DELETE 变更记录应已持久化并可从增量通道重放'
   );
 });
+
+test('restoreBatchTrash: 变更记录持久化失败必须上抛且回收站可重试 (W-7)', async () => {
+  storage.writeFile(VAULT_ID, 'r.md', Buffer.from('restorable'));
+  await deltaSync.waitForPendingWrites(VAULT_ID);
+  assert.equal(await storage.deleteFileAsync(VAULT_ID, 'r.md'), true);
+  await deltaSync.waitForPendingWrites(VAULT_ID);
+
+  const trash = storage.listTrash(VAULT_ID);
+  const hit = trash.find((t) => t.path === 'r.md');
+  assert.ok(hit, '删除的文件应存在于回收站索引');
+  const cursorBeforeRestore = deltaSync.getLatestCursor(VAULT_ID);
+
+  const original = deltaSync.recordBatchChanges;
+  deltaSync.recordBatchChanges = async () => {
+    throw new Error('db down');
+  };
+  try {
+    await assert.rejects(() => storage.restoreBatchTrash(VAULT_ID, [hit.id]), /db down/);
+  } finally {
+    deltaSync.recordBatchChanges = original;
+  }
+
+  // UPSERT 记录先于清索引持久化：失败时回收站条目仍完好，重试完整恢复
+  const result = await storage.restoreBatchTrash(VAULT_ID, [hit.id]);
+  assert.equal(result.restoredCount, 1);
+  assert.deepEqual(result.restoredPaths, ['r.md']);
+
+  // 恢复的 UPSERT 可从增量通道重放（delta-only 客户端不再依赖手动全量对账）
+  const data = await deltaSync.getChanges(VAULT_ID, Math.max(cursorBeforeRestore, 1), 500);
+  assert.ok(
+    (data.updates || []).some((u) => u.path === 'r.md'),
+    '恢复的 UPSERT 应持久化并可重放'
+  );
+});

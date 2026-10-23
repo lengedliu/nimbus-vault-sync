@@ -1070,7 +1070,9 @@ async function restoreBatchTrash(vaultId, trashIds) {
 
           await fs.promises.mkdir(path.dirname(destFull), { recursive: true });
           await fs.promises.writeFile(destFull, buffer);
-          try { await fs.promises.unlink(trashFull); } catch {}
+          // 🛡️ W-7：回收站物理文件在 delta 记录 durable 之前不许删除——
+          // 否则 recordBatchChanges 抛错重试时 trash 副本已缺失，恢复永远无法重试。
+          // 副本清理挪到记录持久化成功之后统一执行（见下方清理循环）。
 
           const destStat = await fs.promises.stat(destFull);
           const mtimeVal = destStat.mtimeMs || now;
@@ -1106,14 +1108,23 @@ async function restoreBatchTrash(vaultId, trashIds) {
   }
 
   if (successfullyRestoredIds.size > 0) {
-    mutateIndex(idxPath, (current) => current.filter((e) => !successfullyRestoredIds.has(e.id)));
+    // 🛡️ durable 语义与写/删路径对齐（W-7）：UPSERT 记录先于清回收站索引持久化，
+    // 失败时向上抛出（HTTP 回 5xx）且回收站条目完好，重试可完整重来。
+    // 旧实现吞错继续返回成功——文件已落盘但 delta 日志缺这条 UPSERT、游标未推进，
+    // 下次 init 双方游标相同判定「已对齐」，delta-only 客户端永远收不到恢复的文件，
+    // 直到手动全量对账。
     if (deltaChanges.length > 0) {
-      try {
-        await deltaSync.recordBatchChanges(vaultId, deltaChanges);
-      } catch (err) {
-        console.error('[Storage] 回收站恢复的变更记录持久化失败:', vaultId, (err && err.message) || err);
-      }
+      await deltaSync.recordBatchChanges(vaultId, deltaChanges);
     }
+    // 🛡️ delta 记录 durable 之后才物理清理回收站副本（W-7，次序契约）：
+    // 记录失败 → 上抛 → trash 文件与索引均保持原状，HTTP 回 5xx，重试完整重来。
+    for (const entry of targetEntries) {
+      if (!successfullyRestoredIds.has(entry.id)) continue;
+      try {
+        await fs.promises.unlink(path.join(vTrashDir, entry.id));
+      } catch {}
+    }
+    mutateIndex(idxPath, (current) => current.filter((e) => !successfullyRestoredIds.has(e.id)));
     // 🛡️ 磁盘扫描缓存契约是 { size, mtimeMs, ctimeMs, hash }；manifest 形状（mtime/ctime）
     // 不能直接写入缓存文件，需转换后保存，避免下次全量构建全表 miss。
     const currentManifest = inMemoryManifestCache.get(vaultId)?.manifest || manifest;

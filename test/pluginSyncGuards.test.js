@@ -57,6 +57,7 @@ function makePlugin({ wsReady = true } = {}) {
   plugin.pendingLocalQueueWhileBarrier = new Set();
   plugin.scheduleSaveBaselineCache = () => {};
   plugin.scheduleSaveSettings = () => {};
+  plugin.saveData = async () => {};
   plugin.ws = wsReady ? { readyState: 1, send() {} } : null;
   plugin.app = {
     vault: {
@@ -653,5 +654,198 @@ test('插件：远端覆盖防护在本地存在未推送修改时先备份', as
     assert.equal(ok, false);
     assert.equal(Object.keys(modified).length, 0);
     assert.equal(Object.keys(buffers).some((p) => p.includes('.conflict-offline-')), false);
+  });
+});
+
+test('插件：基线条目保留 ignored 标记 (W-9)', async (t) => {
+  await t.test('ignored 条目不丢标记（3-Way 场景 2 删除判定依赖它）', () => {
+    const plugin = makePlugin();
+    plugin.updateBaselineEntry('vault-test', 'x.md', { hash: 'h', mtime: 1, size: 2, ignored: true });
+    const entry = plugin.getBaselineEntry('vault-test', 'x.md');
+    assert.equal(entry.ignored, true);
+    assert.equal(entry.hash, 'h');
+  });
+
+  await t.test('常规条目保持基线形状干净（不带 ignored 字段）', () => {
+    const plugin = makePlugin();
+    plugin.updateBaselineEntry('vault-test', 'y.md', { hash: 'h2', mtime: 2, size: 3 });
+    const entry = plugin.getBaselineEntry('vault-test', 'y.md');
+    assert.equal(entry.ignored, undefined);
+    assert.equal(entry.hash, 'h2');
+  });
+});
+
+test('插件：_conflictRestorePaths 一次性期待集的消费纪律 (R-B)', async (t) => {
+  const crypto = require('node:crypto');
+  const sha = (buf) => crypto.createHash('sha256').update(Buffer.from(buf)).digest('hex');
+  const enc = new TextEncoder();
+
+  await t.test('backupDone=true 不再把标记泄漏到未来无关的同路径拉取', async () => {
+    const plugin = makePlugin();
+    const buffers = { 'p.md': enc.encode('local unsynced edit').buffer.slice(0) };
+    makeVaultStub(plugin, buffers);
+    plugin._conflictRestorePaths = new Set(['p.md']);
+
+    const incoming = enc.encode('cloud version one');
+    const ok = await plugin.applyRemoteBinaryChange('p.md', incoming.buffer.slice(0), 5, sha(incoming), { backupDone: true });
+    assert.equal(ok, true);
+    // 🛡️ 旧实现在 TFile 分支 backupDone===true 短路，标记从不被消费——
+    // 残留到未来某次无关的同路径拉取会让那次的覆盖防护被静默跳过
+    assert.equal(plugin._conflictRestorePaths.size, 0, 'backupDone 短路也必须消费一次性标记');
+  });
+
+  await t.test('非 TFile 分支（adapter-only）同样消费标记', async () => {
+    const plugin = makePlugin();
+    makeVaultStub(plugin, {});
+    plugin.app.vault.adapter = {
+      exists: async (p) => p === '.obsidian/app.json',
+      writeBinary: async () => {},
+    };
+    plugin._conflictRestorePaths = new Set(['.obsidian/app.json']);
+
+    const content = enc.encode('{}');
+    const ok = await plugin.applyRemoteBinaryChange('.obsidian/app.json', content.buffer.slice(0), 1, sha(content), {});
+    assert.equal(ok, true);
+    assert.equal(plugin._conflictRestorePaths.size, 0, 'adapter 分支不应泄漏标记');
+  });
+
+  await t.test('内容哈希校验拒绝写入时保留标记（重试拉取仍带完整防护）', async () => {
+    const plugin = makePlugin();
+    const buffers = { 'p.md': enc.encode('local unsynced edit').buffer.slice(0) };
+    makeVaultStub(plugin, buffers);
+    plugin._conflictRestorePaths = new Set(['p.md']);
+
+    const tampered = enc.encode('tampered payload');
+    const ok = await plugin.applyRemoteBinaryChange('p.md', tampered.buffer.slice(0), 5, 'not-the-real-hash', {});
+    assert.equal(ok, false);
+    assert.equal(plugin._conflictRestorePaths.size, 1, '校验失败不得消费标记');
+    assert.equal(buffers['p.md'].byteLength, enc.encode('local unsynced edit').buffer.byteLength, '未触碰磁盘');
+  });
+});
+
+test('插件：serverWin 终态 ack 立即终结推送等待 (D-2)', async () => {
+  const plugin = makePlugin();
+  plugin.pendingSyncAcks = new Map();
+
+  // sendWsMessageAndWait 的真实等待面：pending 注册后由服务端消息终结
+  const waiter = new Promise((resolve) => {
+    plugin.pendingSyncAcks.set('push:p.md', { resolve: (ok, msg) => resolve(ok ? msg : false) });
+  });
+
+  // 服务端顺序：conflict 通知(serverWin) + D-2 新增的终态 ack（不带 hash）
+  await plugin.handleServerMessage({ type: 'conflict', path: 'p.md', serverWin: true, currentHash: 'srv' });
+  await plugin.handleServerMessage({ type: 'ack', action: 'push', path: 'p.md', conflict: true, currentHash: 'srv', cursor: 11 });
+
+  const result = await Promise.race([waiter, new Promise((r) => setTimeout(() => r(null), 200))]);
+  assert.ok(result, 'serverWin 的终态 ack 应立即终结推送等待（不白等 15s）');
+  assert.equal(result.conflict, true, 'pushLocalFile 依赖 result.conflict 判定终态（不进补推队列）');
+  assert.equal(plugin._lastServerCursorSeen['vault-test'], 11);
+});
+
+test('插件：3-Way 冲突备份的后透传语义——仅成功路径带 backupDone (A2)', async (t) => {
+  const remoteManifest = { 'c.md': { size: 3, mtime: 7, hash: 'remote-hash' } };
+
+  async function runSyncLocalConflict(backupResult) {
+    const plugin = makePlugin();
+    const localBytes = new TextEncoder().encode('local offline edit');
+    makeVaultStub(plugin, { 'c.md': localBytes.buffer.slice(0) });
+    // 基线：本地相对基线有修改，云端同时改动 → 进入「两端均修改」真并发冲突分支
+    plugin.updateBaselineEntry('vault-test', 'c.md', { hash: 'base-hash', mtime: 1, size: 4 });
+
+    plugin.backupLocalConflictFile = async () => backupResult;
+
+    let pullOpts = null;
+    plugin.pullRemoteFileViaHttp = async (p, mtime, hash, options) => {
+      pullOpts = options;
+      return true;
+    };
+
+    await plugin.syncManifest(remoteManifest, 10);
+    return pullOpts;
+  }
+
+  await t.test('备份失败（返回 null）：绝不能带 backupDone=true 裸拉取', async () => {
+    const pullOpts = await runSyncLocalConflict(null);
+    assert.ok(pullOpts, '本地并发修改路径应当触发拉取');
+    assert.notEqual(pullOpts.backupDone, true, '备份失败的路径必须交回 applyRemoteBinaryChange 的覆盖防护，不得透传 backupDone');
+  });
+
+  await t.test('备份成功：带上 backupDone 避免重复副本', async () => {
+    const pullOpts = await runSyncLocalConflict('c.md.conflict-offline-1.md');
+    assert.ok(pullOpts, '本地并发修改路径应当触发拉取');
+    assert.equal(pullOpts.backupDone, true);
+  });
+});
+
+test('插件：HTTP 推送冲突协议三分类——serverWin/conflict 受保护拉取，ignored 维持原语义 (D-1)', async (t) => {
+  const crypto = require('node:crypto');
+  const sha = (buf) => crypto.createHash('sha256').update(Buffer.from(buf)).digest('hex');
+
+  const makeBig = () => new Uint8Array(2 * 1024 * 1024 + 32); // >2MB 强制走 HTTP PUT 通道
+  const serverContent = new TextEncoder().encode('server wins entirely');
+  const serverHash = sha(serverContent);
+
+  async function runScenario(body, { expectPull = true } = {}) {
+    const plugin = makePlugin();
+    const big = makeBig();
+    const buffers = { 'big.md': big.buffer.slice(0) };
+    makeVaultStub(plugin, buffers);
+
+    const calls = [];
+    let putCount = 0;
+    await withFetch(async (url, opts) => {
+      const method = (opts && opts.method) || 'GET';
+      calls.push({ method, url: String(url) });
+      if (method === 'PUT') {
+        // 仅本地首次主动推送返回冲突体（真实服务端语义：备份副本推送 baseHash 为空，不会触发冲突）
+        putCount++;
+        return { ok: true, status: 200, json: async () => (putCount === 1 ? body : { written: true, currentHash: 'pushed-' + putCount }) };
+      }
+      // GET：受保护拉取，云端胜出版本
+      return { ok: true, status: 200, arrayBuffer: async () => serverContent.buffer.slice(0) };
+    }, async () => plugin.pushLocalFile(Object.assign(new obsidianStub.TFile(), {
+      path: 'big.md', extension: 'md', stat: { mtime: 1, size: big.byteLength },
+    })));
+
+    const baselineBase = plugin.getBaselineEntry('vault-test', 'big.md');
+    return { plugin, calls, buffers, serverHash, baselineBase, serverContent };
+  }
+
+  await t.test('serverWin 响应：不伪造 ignored 基线，触发受保护拉取并落基线', async () => {
+    const { plugin, calls, buffers, baselineBase } = await runScenario({ written: false, serverWin: true, conflict: null, currentHash: serverHash });
+    // 序列：PUT(main) → GET(protected pull) → PUT(本地备份副本推送)
+    assert.equal(calls[0].method, 'PUT');
+    assert.equal(calls[1].method, 'GET');
+    assert.ok(calls[2] && calls[2].method === 'PUT', '本地备份副本应被推送参与同步');
+    // 基线以云端胜出版本为准（旧实现会写入本地旧内容 hash + ignored:true）
+    assert.equal(baselineBase.hash, serverHash);
+    assert.equal(baselineBase.ignored, undefined);
+    // 本地文件已被云端胜出版本收敛，且存在 .conflict-offline-* 备份
+    const pulledText = Buffer.from(buffers['big.md']).toString();
+    assert.equal(pulledText, 'server wins entirely');
+    assert.ok(Object.keys(buffers).some((p) => p.includes('.conflict-offline-')), '本地修改应有 .conflict-offline-* 备份');
+    // 不进补推队列
+    assert.equal(plugin.pendingLocalQueueWhileBarrier.size, 0);
+  });
+
+  await t.test('conflict 响应：同样受保护拉取（不再落入黑名单分支）', async () => {
+    const { plugin, calls, buffers, baselineBase } = await runScenario({
+      written: false, conflict: 'big.conflict-stamp.md', currentHash: serverHash,
+    });
+    assert.equal(calls[1].method, 'GET');
+    assert.equal(baselineBase.hash, serverHash);
+    assert.equal(baselineBase.ignored, undefined);
+    // 受保护拉取只针对主路径；服务端冲突副本不重复物化到本地
+    assert.equal(buffers['big.conflict-stamp.md'], undefined);
+    assert.equal(plugin.pendingLocalQueueWhileBarrier.size, 0);
+  });
+
+  await t.test('ignored（真·黑名单）响应：维持既有 ignored 基线语义，不触发拉取', async () => {
+    const localHash = sha(new Uint8Array(2 * 1024 * 1024 + 32));
+    const { calls, buffers, baselineBase } = await runScenario({ written: false, ignored: true, conflict: null, path: 'big.md' });
+    assert.equal(calls.length, 1, '黑名单响应不触发任何 GET 拉取');
+    assert.equal(baselineBase.hash, localHash);
+    assert.equal(baselineBase.ignored, true);
+    assert.equal(buffers['big.md'].byteLength, 2 * 1024 * 1024 + 32, '本地内容原样保留');
   });
 });
