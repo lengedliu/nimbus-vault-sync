@@ -965,7 +965,11 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       }
 
       case 'conflict':
-        new Notice(`⚠️ 检测到并发冲突！已自动创建云端分支副本: ${msg.conflictPath}`);
+        // 🛡️ E-4：serverWin 分支没有 conflictPath，文案按响应类型区分，
+        // 旧实现无论哪种都提示「副本: ${msg.conflictPath}」→ serverWin 下用户看到 undefined
+        new Notice(msg.serverWin
+          ? '⚠️ 并发冲突（云端优先策略）：本地修改已自动备份，正在拉取云端胜出版本'
+          : `⚠️ 检测到并发冲突！已自动创建云端分支副本: ${msg.conflictPath}`);
         // 1. 自动拉取云端新创建的分支副本保存至本地（本端离线编辑的内容终于有了可靠落点）
         if (msg.conflictPath) {
           this.sendWsMessage({ type: 'pull', path: msg.conflictPath });
@@ -1699,7 +1703,10 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   }
 
   async applyRemoteChange(filePath, base64Content, mtime, hash) {
-    if (!filePath || !base64Content) return false;
+    // 🛡️ E-3：0 字节文件的 base64 是 ''（合法内容而非失败）。旧实现的 !base64 把
+    // 空 file 响应误判为失败——WS 'file' 通道上空文件永不落地、游标被冻结到下次
+    // init（HTTP 通道因 ArrayBuffer 恒 truthy 而无此洞）。只拒绝真正的缺参。
+    if (!filePath || base64Content == null) return false;
     const buffer = base64ToArrayBuffer(base64Content);
     return this.applyRemoteBinaryChange(filePath, buffer, mtime, hash);
   }
@@ -1873,6 +1880,16 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   async applyRemoteDelete(filePath, protectModified = false) {
     const cleanPath = String(filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
     if (!cleanPath) return false;
+    // 🛡️ E-2（插件端对称防线的最后一块）：即使删除请求从 web/MCP/git-pull 等
+    // 旁路通道漏进来（服务端各删除通道都有黑名单检查，但纵深防御要求端侧兜底），
+    // 黑名单路径保持「本地保留、不同步」语义：不执行删除，只清理本地同步状态
+    //（基线/文件哈希）——等价于 WS ignored ack 的清理动作。
+    if (this.isIgnoredLocalPath(cleanPath)) {
+      this.fileHashes.delete(cleanPath);
+      this.updateBaselineEntry(this.settings.vaultId, cleanPath, null);
+      console.warn(`[Nimbus] 黑名单路径的远端删除已按「本地保留」处理:`, cleanPath);
+      return true;
+    }
     if (!this.applyingRemotePaths) this.applyingRemotePaths = new Set();
     const releaseLocalLock = await this.acquireLocalFileLock(cleanPath);
     this.applyingRemotePaths.add(cleanPath);

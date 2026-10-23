@@ -443,8 +443,10 @@ async function commitAndPush(vaultId, { customMessage, author } = {}) {
  */
 async function recordPulledChanges(vaultId) {
   const changedPaths = [];
+  const deletePaths = [];
   const storage = require('./storage');
   const deltaSync = require('./deltaSync');
+  const syncRules = require('./syncRules');
 
   // 🛡️ 记录 git pull 引入的文件变更：旧实现完全旁路 deltaSync，游标不推进，
   // 增量终端（/changes）将永久漏掉这批变更，直到下次全量对账。
@@ -459,13 +461,23 @@ async function recordPulledChanges(vaultId) {
       const filePath = parts[parts.length - 1];
       if (!filePath) continue;
       const rel = filePath.replace(/\\/g, '/');
+      // 🛡️ E-2：黑名单路径不进同步域——不记录 delta、不参与广播（与 REST PUT 的
+      // ignored 语义对齐，避免 git pull 借道把 ignores 外的规则目录写回同步域）
+      if (syncRules.isPathIgnored(vaultId, rel)) continue;
       if (status === 'D' && parts.length === 2) {
         upsertChanges.push({ path: rel, action: 'DELETE', size: 0, mtime: Date.now(), hash: '' });
+        // 🛡️ E-1：删除路径必须参与广播（broadcastPulledChanges → 'deleted'），
+        // 否则在线客户端游标会越过从未收到/应用的删除，被删文件在其他设备永久滞留
+        deletePaths.push(rel);
         continue;
       }
       if (parts.length >= 3 && (status === 'R' || status === 'C')) {
         // R100/Copy 重命名：diff 只报告新路径，旧路径"消失"需要补一条 DELETE
-        upsertChanges.push({ path: parts[1].replace(/\\/g, '/'), action: 'DELETE', size: 0, mtime: Date.now(), hash: '' });
+        const oldRel = parts[1].replace(/\\/g, '/');
+        if (!syncRules.isPathIgnored(vaultId, oldRel)) {
+          upsertChanges.push({ path: oldRel, action: 'DELETE', size: 0, mtime: Date.now(), hash: '' });
+          deletePaths.push(oldRel);
+        }
       }
       upsertChanges.push({ path: rel, action: 'UPSERT', size: 0, mtime: Date.now(), hash: '' });
       changedPaths.push(rel);
@@ -493,7 +505,29 @@ async function recordPulledChanges(vaultId) {
     console.log(`[GitSync] 已将 git pull 引入的 ${finalChanges.length} 条文件变更写入增量记录`);
   }
 
-  return { changedPaths, manifest: newManifest };
+  return { changedPaths, deletePaths, manifest: newManifest };
+}
+
+/**
+ * git pull 后的 best-effort 广播（E-1）：UPSERT 路径走批量 change 通知，
+ * DELETE 路径逐个走 'deleted' 通知。旧实现只广播 changedPaths（UPSERT），
+ * 删除路径从不进广播——在线客户端把游标推进到已包含 DELETE 的最新游标、
+ * 却从未收到该删除，被 git pull 删除的文件在其他设备永久滞留。
+ */
+function broadcastPulledChanges(vaultId, { changedPaths = [], deletePaths = [] } = {}) {
+  const wsHub = require('./wsHub');
+  if (!wsHub) return;
+  if (typeof wsHub.broadcastBatchFileChange === 'function' && changedPaths.length > 0) {
+    // 只广播本次 pull 真正变更的路径，而不是全库所有文件
+    wsHub.broadcastBatchFileChange(vaultId, changedPaths, null, null);
+  }
+  if (Array.isArray(deletePaths)) {
+    for (const p of deletePaths) {
+      if (typeof wsHub.broadcastFileDelete === 'function') {
+        wsHub.broadcastFileDelete(vaultId, p, null, null);
+      }
+    }
+  }
 }
 
 async function pull(vaultId) {
@@ -522,7 +556,7 @@ async function pull(vaultId) {
   // 永远漏拉，只能等手动全量对账。重试安全：已拉取的重跑 pull() 是 no-op，
   // ORIG_HEAD 在无新提交时不移动，diff 仍能重放同一批变更（与 restore 路径
   // W-7 同型契约）。
-  const { changedPaths, manifest: newManifest } = await recordPulledChanges(vaultId);
+  const { changedPaths, deletePaths, manifest: newManifest } = await recordPulledChanges(vaultId);
 
   // —— best-effort 段：FTS 与广播失败仅降级，不影响 pull 的成功语义 ——
   try {
@@ -535,9 +569,9 @@ async function pull(vaultId) {
     }
 
     const wsHub = require('./wsHub');
-    if (wsHub && typeof wsHub.broadcastBatchFileChange === 'function' && changedPaths.length > 0) {
-      // 只广播本次 pull 真正变更的路径，而不是全库所有文件
-      wsHub.broadcastBatchFileChange(vaultId, changedPaths, null, null);
+    if (wsHub) {
+      // 🛡️ E-1：删除路径也必须广播（'deleted'），UPSERT 走批量 change
+      broadcastPulledChanges(vaultId, { changedPaths, deletePaths });
     }
   } catch (err) {
     console.error(`[GitSync] 远端拉取后刷新缓存/广播失败: ${vaultId}`, err);
@@ -655,6 +689,7 @@ module.exports = {
   saveConfig,
   isGitRepo,
   recordPulledChanges,
+  broadcastPulledChanges,
   initRepo: (vaultId) => withVaultLock(vaultId, () => initRepo(vaultId)),
   getStatus: (vaultId) => withVaultLock(vaultId, () => getStatus(vaultId)),
   testConnection: (vaultId, testParams) => withVaultLock(vaultId, () => testConnection(vaultId, testParams)),

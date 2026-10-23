@@ -1046,7 +1046,25 @@ async function restoreBatchTrash(vaultId, trashIds) {
   const entries = loadIndex(idxPath);
   const targetEntries = entries.filter((e) => idSet.has(e.id));
   if (targetEntries.length === 0) {
-    return { restoredCount: 0, restoredPaths: [] };
+    return { restoredCount: 0, restoredPaths: [], ignoredSkipped: [] };
+  }
+
+  // 🛡️ E-2：黑名单路径不得借恢复通道回流同步域——不落盘、不记录 delta、
+  // 不广播（用户如有意恢复黑名单文件，可先调整忽略规则再恢复）。
+  const syncRules = require('./syncRules');
+  const restorableEntries = [];
+  const ignoredSkipped = [];
+  for (const entry of targetEntries) {
+    if (syncRules.isPathIgnored(vaultId, entry.path)) {
+      ignoredSkipped.push(entry.path);
+    } else {
+      restorableEntries.push(entry);
+    }
+  }
+  targetEntries.length = 0;
+  targetEntries.push(...restorableEntries);
+  if (targetEntries.length === 0) {
+    return { restoredCount: 0, restoredPaths: [], ignoredSkipped };
   }
 
   const restoredPaths = [];
@@ -1160,7 +1178,7 @@ async function restoreBatchTrash(vaultId, trashIds) {
     } catch {}
   }
 
-  return { restoredCount: restoredPaths.length, restoredPaths };
+  return { restoredCount: restoredPaths.length, restoredPaths, ignoredSkipped };
 }
 
 /** Restore all items in trash. */
