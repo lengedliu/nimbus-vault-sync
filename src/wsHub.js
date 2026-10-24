@@ -796,7 +796,8 @@ class FnsHub {
         const oldPath = String(msg.oldPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
         const newPath = String(msg.newPath || msg.path || '').replace(/\\/g, '/').replace(/^\/+/, '');
         if (!oldPath || !newPath) {
-          return this._send(client.ws, { type: 'error', message: 'oldPath and newPath required' });
+          const errPath = newPath || oldPath || (msg && msg.path) || undefined;
+          return this._send(client.ws, { type: 'error', message: 'oldPath and newPath required', ...(errPath ? { path: errPath } : {}) });
         }
         if (client.permission === 'read-only') {
           return this._send(client.ws, { type: 'error', message: '只读权限，禁止重命名文件', path: newPath });
@@ -912,17 +913,19 @@ class FnsHub {
 
       this._send(client.ws, { type: 'error', message: `unknown message type: ${msg.type}` });
     } catch (e) {
+      const rawErrPath = msg && (msg.path || msg.newPath || msg.oldPath);
+      const errPath = rawErrPath ? String(rawErrPath).replace(/\\/g, '/').replace(/^\/+/, '') : undefined;
       syncLogger.recordLog({
         vaultId,
         userId: client.userId,
         username: client.username,
         deviceName: client.deviceName,
         action: 'error',
-        path: msg.path || 'unknown',
+        path: errPath || 'unknown',
         status: 'error',
         detail: e.message,
       });
-      this._send(client.ws, { type: 'error', message: e.message });
+      this._send(client.ws, { type: 'error', message: e.message, ...(errPath ? { path: errPath } : {}) });
     }
   }
 

@@ -158,7 +158,7 @@ export async function renderConflictsSubtab(vaultId, container) {
               <span style="font-size:12.5px;font-weight:600;color:var(--text);margin-right:4px;">⚡ 快速解决策略:</span>
               <button class="secondary act-keep-current" title="丢弃冲突副本，维持服务端现有文件">🛡️ 保留当前版本</button>
               <button class="secondary act-keep-conflict" title="使用客户端冲突副本覆盖现有文件">⚡ 采纳冲突版本</button>
-              <button class="btn-primary act-merge-both" title="将两份笔记内容按标记合并至同一文件中">🔀 智能合并两者 (带标记)</button>
+              <button class="btn-primary act-merge-both" title="将两份笔记内容携带 <<<<<<< / >>>>>>> 冲突标记拼接写回原文件并同步至所有设备，供后续手动整编">🔀 拼接合并两者 (含冲突标记写回正文)</button>
               <button class="secondary act-custom-edit" title="在网页上直接编辑最终合并内容">✍️ 手动编辑合并</button>
             </div>
 
@@ -197,7 +197,7 @@ export async function renderConflictsSubtab(vaultId, container) {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ conflictPath: item.conflictPath, resolution: 'merge-both' }),
             });
-            toast('已解决：已将两份笔记内容合并保存');
+            toast('已解决：两份版本已带 <<<<<<< 冲突标记写回主笔记并同步各端，请及时在编辑器中清理标记');
             renderConflictsSubtab(vaultId, container);
           };
 

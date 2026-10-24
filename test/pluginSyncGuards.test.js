@@ -1332,5 +1332,208 @@ test('Round 7：在线重命名文件夹走 renameRemoteFile 原子移动而非 
   ]);
 });
 
+// ---------------------------------------------------------------------------
+// PR #10 轻量批回归测试：L1 空父目录剪枝 / L4 error 清 rename / L6 首同步免重复清单 / L7 批量删除隔离与广播
+// ---------------------------------------------------------------------------
+
+test('PR #10 L1：deleteFileAsync 与 moveVaultFileAsync 自动向上递归清理空父目录', async () => {
+  const fs = require('node:fs');
+  const storage = require('../src/storage');
+  const { vaultFilesRoot } = require('../src/vaults');
+  const vaultId = `test-l1-prune-${Date.now()}`;
+
+  try {
+    await storage.writeFileAsync(vaultId, 'a/b/c/deep.md', Buffer.from('hello'));
+    const root = vaultFilesRoot(vaultId);
+    assert.equal(fs.existsSync(path.join(root, 'a/b/c')), true);
+
+    const delOk = await storage.deleteFileAsync(vaultId, 'a/b/c/deep.md');
+    assert.equal(delOk, true);
+    assert.equal(fs.existsSync(path.join(root, 'a')), false, 'deleteFileAsync 删除最后一个文件后应向上清理全部空父目录');
+    assert.equal(fs.existsSync(root), true, 'files 根目录自身必须保留');
+
+    // 验证 moveVaultFileAsync 移走最后一个文件后同样清理源空目录
+    await storage.writeFileAsync(vaultId, 'srcDir/sub/note.md', Buffer.from('move me'));
+    assert.equal(fs.existsSync(path.join(root, 'srcDir/sub')), true);
+    const moveRes = await storage.moveVaultFileAsync(vaultId, 'srcDir/sub/note.md', 'dstDir/note.md');
+    assert.equal(moveRes.ok, true);
+    assert.equal(fs.existsSync(path.join(root, 'srcDir')), false, 'moveVaultFileAsync 移走最后一个文件后应清理源空父目录');
+    assert.equal(fs.existsSync(path.join(root, 'dstDir/note.md')), true);
+  } finally {
+    try { storage.deleteVaultDirectory(vaultId); } catch {}
+  }
+});
+
+test('PR #10 L4：wsHub 异常捕获回传 error 携带 path/newPath，且客户端立即释放 rename/delete 挂起等待', async () => {
+  const wsHub = require('../src/wsHub');
+  const storage = require('../src/storage');
+  const plugin = makePlugin();
+
+  const sentToClient = [];
+  const fakeClient = {
+    userId: 'u-err',
+    username: 'tester',
+    deviceName: 'Obsidian-Test',
+    permission: 'read-write',
+    ws: {
+      readyState: 1,
+      OPEN: 1,
+      send: (raw) => sentToClient.push(JSON.parse(raw)),
+    },
+  };
+
+  // 注入 moveVaultFileAsync 抛错（模拟 durable 记录持久化失败或路径异常）
+  const origMoveAsync = storage.moveVaultFileAsync;
+  storage.moveVaultFileAsync = async () => {
+    throw new Error('simulated delta persist failure during rename');
+  };
+
+  try {
+    // 客户端注册 rename:new.md 等待
+    plugin.ws = {
+      readyState: 1,
+      send: (raw) => {
+        const payload = JSON.parse(raw);
+        // 驱动服务端 _onMessage，然后将服务端发出的消息泵回客户端 handleServerMessage
+        wsHub._onMessage(fakeClient, 'vault-test', Buffer.from(JSON.stringify({
+          type: 'rename',
+          oldPath: payload.oldPath,
+          newPath: payload.newPath,
+          // 即使不传顶层 path 字段，wsHub catch 也应从 newPath 提取并回传 path
+        }))).then(() => {
+          for (const msg of sentToClient) {
+            plugin.handleServerMessage(msg);
+          }
+        });
+      },
+    };
+
+    const start = Date.now();
+    const ack = await plugin.sendWsMessageAndWait({
+      type: 'rename',
+      oldPath: 'old.md',
+      newPath: 'new.md',
+      path: 'new.md',
+    }, 5000);
+    const elapsed = Date.now() - start;
+
+    assert.equal(ack, false, '收到 error 后 sendWsMessageAndWait 应立即解析为 false');
+    assert.ok(elapsed < 1000, `不应苦等超时 (耗时 ${elapsed}ms)`);
+    assert.equal(sentToClient.length, 1);
+    assert.equal(sentToClient[0].type, 'error');
+    assert.equal(sentToClient[0].path, 'new.md', 'wsHub 外层 catch 必须在 error 帧中附带 path');
+  } finally {
+    storage.moveVaultFileAsync = origMoveAsync;
+  }
+});
+
+test('PR #10 L6：首次同步 (localCursor === 0) 收到带 manifest 的 WS init 时不再重复请求 /changes?since=0', async () => {
+  const plugin = makePlugin();
+  plugin.setVaultCursor('vault-test', 0);
+
+  let deltaCalled = false;
+  let syncedManifest = null;
+  let syncedCursor = null;
+
+  plugin.syncDeltaChanges = async () => {
+    deltaCalled = true;
+    return true;
+  };
+  plugin.syncManifest = async (manifest, cursor) => {
+    syncedManifest = manifest;
+    syncedCursor = cursor;
+  };
+  plugin.flushPendingLocalChangesAfterBarrier = async () => {};
+
+  const initManifest = {
+    'welcome.md': { hash: 'h-welcome', mtime: 100, size: 12 },
+  };
+  await plugin.handleServerMessage({
+    type: 'init',
+    cursor: 8,
+    manifest: initManifest,
+    ignorePatterns: [],
+  });
+
+  assert.equal(deltaCalled, false, 'localCursor=0 首同步不得再调用 syncDeltaChanges(0) 二次拉取全量清单');
+  assert.deepEqual(syncedManifest, initManifest, '应直接复用 WS init 帧携带的 manifest 执行 3-Way 对账');
+  assert.equal(syncedCursor, 8);
+});
+
+test('PR #10 L7：批量删除单条异常隔离，且已成功删除项必在 finally 中广播', async () => {
+  const express = require('express');
+  const http = require('node:http');
+  const vaults = require('../src/vaults');
+  const storage = require('../src/storage');
+  const auth = require('../src/auth');
+  const origRequireAuth = auth.requireAuth;
+  auth.requireAuth = (_req, _res, next) => next();
+  delete require.cache[require.resolve('../src/routes/fileRoutes')];
+  const fileRoutes = require('../src/routes/fileRoutes');
+  auth.requireAuth = origRequireAuth;
+
+  const vault = await vaults.create('u-batch', `BatchL7-${Date.now()}`);
+  const vaultId = vault.id;
+  await storage.writeFileAsync(vaultId, 'ok1.md', Buffer.from('1'));
+  await storage.writeFileAsync(vaultId, 'fail2.md', Buffer.from('2'));
+  await storage.writeFileAsync(vaultId, 'ok3.md', Buffer.from('3'));
+
+  const broadcastedSingle = [];
+  const broadcastedBatch = [];
+  const fnsHub = {
+    broadcastFileDelete: (v, p, u) => broadcastedSingle.push({ v, p, u }),
+    broadcastBatchChanges: (v, changes, u) => broadcastedBatch.push({ v, changes, u }),
+  };
+
+  const origDeleteAsync = storage.deleteFileAsync;
+  storage.deleteFileAsync = async (v, relPath) => {
+    if (relPath === 'fail2.md') {
+      throw new Error('simulated durable delta failure on fail2.md');
+    }
+    return origDeleteAsync(v, relPath);
+  };
+
+  const app = express();
+  app.set('fnsHub', fnsHub);
+  app.use((req, _res, next) => {
+    req.user = { id: 'u-batch', username: 'admin', role: 'admin' };
+    next();
+  });
+  app.use('/api/vaults', fileRoutes);
+
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/vaults/${encodeURIComponent(vaultId)}/batch/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: ['ok1.md', 'fail2.md', 'ok3.md'] }),
+    });
+    assert.equal(res.status, 200, '单条持久化抛错不应导致整个批量路由崩溃为 500');
+    const body = await res.json();
+    assert.equal(body.success, false);
+    assert.equal(body.partial, true);
+    assert.equal(body.count, 2, 'ok1.md 与 ok3.md 应正常完成删除');
+    assert.equal(body.failedCount, 1);
+
+    const failItem = body.results.find((r) => r.path === 'fail2.md');
+    assert.equal(failItem.success, false);
+    assert.match(failItem.error, /simulated durable delta failure/);
+
+    assert.equal(broadcastedBatch.length, 1, '已删除成功的 2 个文件必须通过 finally 发出批量广播');
+    assert.deepEqual(
+      broadcastedBatch[0].changes.map((c) => c.path),
+      ['ok1.md', 'ok3.md']
+    );
+  } finally {
+    storage.deleteFileAsync = origDeleteAsync;
+    await new Promise((resolve) => server.close(resolve));
+    try { storage.deleteVaultDirectory(vaultId); } catch {}
+  }
+});
+
+
 
 

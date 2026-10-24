@@ -339,38 +339,53 @@ router.post('/:vaultId/batch/delete', express.json(), asyncHandler(async (req, r
   const results = [];
   const deletedChanges = [];
   let successCount = 0;
+  let failedCount = 0;
 
-  for (const rawPath of paths) {
-    if (!rawPath || typeof rawPath !== 'string') continue;
-    const relPath = rawPath.replace(/\\/g, '/');
-    // 🛡️ E-2：黑名单路径不参与删除通道（无变更记录、无广播，语义与单条 DELETE 的
-    // ignored 响应一致——该路径本就不在同步域内，deleted:true + ignored:true）
-    if (syncRules.isPathIgnored(vaultId, relPath)) {
-      results.push({ path: relPath, success: true, ignored: true });
-      continue;
+  try {
+    for (const rawPath of paths) {
+      if (!rawPath || typeof rawPath !== 'string') continue;
+      const relPath = rawPath.replace(/\\/g, '/');
+      // 🛡️ E-2：黑名单路径不参与删除通道（无变更记录、无广播，语义与单条 DELETE 的
+      // ignored 响应一致——该路径本就不在同步域内，deleted:true + ignored:true）
+      if (syncRules.isPathIgnored(vaultId, relPath)) {
+        results.push({ path: relPath, success: true, ignored: true });
+        continue;
+      }
+      try {
+        const ok = await storage.withFileLock(vaultId, relPath, async () => {
+          // 🛡️ async 版本：逐条等待 DELETE 变更记录持久化完成
+          return storage.deleteFileAsync(vaultId, relPath);
+        });
+        if (ok) {
+          successCount++;
+          deletedChanges.push({ action: 'delete', path: relPath });
+          webhooks.trigger('file.deleted', {
+            vaultId,
+            path: relPath,
+            userId: req.user.id,
+            username: req.user.username,
+          }).catch(() => {});
+        } else {
+          failedCount++;
+        }
+        results.push({ path: relPath, success: ok });
+      } catch (err) {
+        // 🛡️ L7：单条持久化或路径异常不中断后续项，避免前序已删文件丢失结果与广播
+        failedCount++;
+        results.push({
+          path: relPath,
+          success: false,
+          error: (err && err.message) || '删除失败',
+        });
+      }
     }
-    const ok = await storage.withFileLock(vaultId, relPath, async () => {
-      // 🛡️ async 版本：逐条等待 DELETE 变更记录持久化完成
-      return storage.deleteFileAsync(vaultId, relPath);
-    });
-    if (ok) {
-      successCount++;
-      deletedChanges.push({ action: 'delete', path: relPath });
-      webhooks.trigger('file.deleted', {
-        vaultId,
-        path: relPath,
-        userId: req.user.id,
-        username: req.user.username,
-      }).catch(() => {});
-    }
-    results.push({ path: relPath, success: ok });
-  }
-
-  if (fnsHub && deletedChanges.length > 0) {
-    if (deletedChanges.length === 1) {
-      fnsHub.broadcastFileDelete(vaultId, deletedChanges[0].path, req.user.id);
-    } else {
-      fnsHub.broadcastBatchChanges(vaultId, deletedChanges, req.user.id);
+  } finally {
+    if (fnsHub && deletedChanges.length > 0) {
+      if (deletedChanges.length === 1) {
+        fnsHub.broadcastFileDelete(vaultId, deletedChanges[0].path, req.user.id);
+      } else {
+        fnsHub.broadcastBatchChanges(vaultId, deletedChanges, req.user.id);
+      }
     }
   }
 
@@ -382,12 +397,21 @@ router.post('/:vaultId/batch/delete', express.json(), asyncHandler(async (req, r
     clientIp: req.ip || req.connection.remoteAddress,
     action: 'delete',
     path: `批量删除 (${successCount}/${paths.length} 项)`,
-    status: successCount > 0 ? 'success' : 'error',
-    detail: `批量移入回收站: ${successCount} 个文件成功`,
+    status: failedCount === 0 && successCount > 0 ? 'success' : (successCount > 0 ? 'warning' : 'error'),
+    detail: failedCount > 0
+      ? `批量移入回收站: ${successCount} 个成功, ${failedCount} 个失败`
+      : `批量移入回收站: ${successCount} 个文件成功`,
   });
 
   // 🛡️ 项 3：top-level 为兼容位；逐条游标由各 delete/move 记录自身携带（batch/move 内部已处理）
-  res.json({ success: true, count: successCount, results, cursor: deltaSync.getLatestCursor(vaultId) });
+  res.json({
+    success: failedCount === 0,
+    partial: failedCount > 0 && successCount > 0,
+    count: successCount,
+    failedCount,
+    results,
+    cursor: deltaSync.getLatestCursor(vaultId),
+  });
 }));
 
 // POST batch move files to target folder (or rename single file via newName)
@@ -411,50 +435,66 @@ router.post('/:vaultId/batch/move', express.json(), asyncHandler(async (req, res
   const results = [];
   const batchChanges = [];
   let successCount = 0;
+  let failedCount = 0;
 
-  for (const rawPath of paths) {
-    if (!rawPath || typeof rawPath !== 'string') continue;
-    const relPath = rawPath.replace(/\\/g, '/');
-    const filename = customFileName || relPath.split('/').pop();
-    const newRelPath = targetDir ? `${targetDir}/${filename}` : filename;
-    if (newRelPath === relPath) {
-      results.push({ path: relPath, newPath: newRelPath, success: true, unchanged: true });
-      continue;
-    }
+  try {
+    for (const rawPath of paths) {
+      if (!rawPath || typeof rawPath !== 'string') continue;
+      const relPath = rawPath.replace(/\\/g, '/');
+      const filename = customFileName || relPath.split('/').pop();
+      const newRelPath = targetDir ? `${targetDir}/${filename}` : filename;
+      if (newRelPath === relPath) {
+        results.push({ path: relPath, newPath: newRelPath, success: true, unchanged: true });
+        continue;
+      }
 
-    if (syncRules.isPathIgnored(vaultId, newRelPath)) {
-      results.push({ path: relPath, newPath: newRelPath, success: false, error: '目标路径命中黑名单忽略规则' });
-      continue;
-    }
+      if (syncRules.isPathIgnored(vaultId, newRelPath)) {
+        failedCount++;
+        results.push({ path: relPath, newPath: newRelPath, success: false, error: '目标路径命中黑名单忽略规则' });
+        continue;
+      }
 
-    const moveRes = await storage.withDualFileLock(vaultId, relPath, newRelPath, async () => {
-      // 🛡️ 批量移动也纳入双路径文件锁：与并发 PUT/DELETE 对同一文件的写路径互斥
-      return storage.moveVaultFileAsync(vaultId, relPath, newRelPath);
-    });
-    if (moveRes.ok) {
-      successCount++;
-      batchChanges.push({ action: 'delete', path: relPath });
-      if (moveRes.written === false && moveRes.conflict) {
-        const conflictMeta = await storage.getManifestEntryAsync(vaultId, moveRes.conflict);
-        batchChanges.push({ action: 'update', path: moveRes.conflict, ...conflictMeta });
-      } else if (moveRes.written !== false) {
-        const newMeta = await storage.getManifestEntryAsync(vaultId, newRelPath);
-        batchChanges.push({ action: 'update', path: newRelPath, ...newMeta });
+      try {
+        const moveRes = await storage.withDualFileLock(vaultId, relPath, newRelPath, async () => {
+          // 🛡️ 批量移动也纳入双路径文件锁：与并发 PUT/DELETE 对同一文件的写路径互斥
+          return storage.moveVaultFileAsync(vaultId, relPath, newRelPath);
+        });
+        if (moveRes.ok) {
+          successCount++;
+          batchChanges.push({ action: 'delete', path: relPath });
+          if (moveRes.written === false && moveRes.conflict) {
+            const conflictMeta = await storage.getManifestEntryAsync(vaultId, moveRes.conflict);
+            batchChanges.push({ action: 'update', path: moveRes.conflict, ...conflictMeta });
+          } else if (moveRes.written !== false) {
+            const newMeta = await storage.getManifestEntryAsync(vaultId, newRelPath);
+            batchChanges.push({ action: 'update', path: newRelPath, ...newMeta });
+          }
+        } else {
+          failedCount++;
+        }
+        results.push({
+          path: relPath,
+          newPath: newRelPath,
+          success: moveRes.ok,
+          written: moveRes.written,
+          conflict: moveRes.conflict,
+          serverWin: moveRes.serverWin,
+          error: moveRes.error,
+        });
+      } catch (err) {
+        failedCount++;
+        results.push({
+          path: relPath,
+          newPath: newRelPath,
+          success: false,
+          error: (err && err.message) || '移动失败',
+        });
       }
     }
-    results.push({
-      path: relPath,
-      newPath: newRelPath,
-      success: moveRes.ok,
-      written: moveRes.written,
-      conflict: moveRes.conflict,
-      serverWin: moveRes.serverWin,
-      error: moveRes.error,
-    });
-  }
-
-  if (fnsHub && batchChanges.length > 0) {
-    fnsHub.broadcastBatchChanges(vaultId, batchChanges, req.user.id);
+  } finally {
+    if (fnsHub && batchChanges.length > 0) {
+      fnsHub.broadcastBatchChanges(vaultId, batchChanges, req.user.id);
+    }
   }
 
   syncLogger.recordLog({
@@ -465,11 +505,20 @@ router.post('/:vaultId/batch/move', express.json(), asyncHandler(async (req, res
     clientIp: req.ip || req.connection.remoteAddress,
     action: 'update',
     path: `批量移动 (${successCount} 项 -> /${targetDir})`,
-    status: successCount > 0 ? 'success' : 'error',
-    detail: `批量移动至目录「/${targetDir}」: ${successCount} 个文件成功`,
+    status: failedCount === 0 && successCount > 0 ? 'success' : (successCount > 0 ? 'warning' : 'error'),
+    detail: failedCount > 0
+      ? `批量移动至目录「/${targetDir}」: ${successCount} 个成功, ${failedCount} 个失败`
+      : `批量移动至目录「/${targetDir}」: ${successCount} 个文件成功`,
   });
 
-  res.json({ success: true, count: successCount, results, cursor: deltaSync.getLatestCursor(vaultId) });
+  res.json({
+    success: failedCount === 0,
+    partial: failedCount > 0 && successCount > 0,
+    count: successCount,
+    failedCount,
+    results,
+    cursor: deltaSync.getLatestCursor(vaultId),
+  });
 }));
 
 // GET tags overview for vault

@@ -1504,6 +1504,20 @@ async function writeFileFromPathAsync(vaultId, relPath, tempFilePath, incomingHa
   return result;
 }
 
+/** 同步清单只记录文件；删除或移走最后一个文件后向上递归清理空父目录，避免服务端遗留空目录树。 */
+function pruneEmptyParentDirs(vaultId, fullFilePath) {
+  const filesRoot = path.resolve(vaultFilesRoot(vaultId));
+  let parentDir = path.dirname(path.resolve(fullFilePath));
+  while (parentDir !== filesRoot && parentDir.startsWith(filesRoot + path.sep)) {
+    try {
+      fs.rmdirSync(parentDir);
+      parentDir = path.dirname(parentDir);
+    } catch {
+      break; // 目录仍有文件、子目录或当前进程无权删除时保留
+    }
+  }
+}
+
 /** Soft-delete: move the file into trash/ instead of unlinking it outright. */
 function deleteFile(vaultId, relPath, options = {}) {
   const normRel = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
@@ -1513,18 +1527,7 @@ function deleteFile(vaultId, relPath, options = {}) {
   fs.mkdirSync(trashDir(vaultId), { recursive: true });
   const id = randomId();
   fs.renameSync(full, path.join(trashDir(vaultId), id));
-
-  // 同步清单只记录文件；删除最后一个文件后清理空父目录，避免服务端遗留旧目录树。
-  const filesRoot = path.resolve(vaultFilesRoot(vaultId));
-  let parentDir = path.dirname(full);
-  while (parentDir !== filesRoot && parentDir.startsWith(filesRoot + path.sep)) {
-    try {
-      fs.rmdirSync(parentDir);
-      parentDir = path.dirname(parentDir);
-    } catch {
-      break; // 目录仍有文件、子目录或当前进程无权删除时保留
-    }
-  }
+  pruneEmptyParentDirs(vaultId, full);
 
   const idxPath = trashIndexPath(vaultId);
   const size = fs.statSync(path.join(trashDir(vaultId), id)).size;
@@ -1560,7 +1563,8 @@ async function deleteFileAsync(vaultId, relPath) {
     // 现在按最近 durable 记录去重补记：
     //  - 最近记录已是 DELETE → 幂等跳过（不新增记录）
     //  - 最近记录缺失/是旧 UPSERT → 补一条 DELETE
-    // 顺带把可能残留的 manifest 条目清干净（crash 可能停在 manifest 更新之前）。
+    // 顺带把可能残留的 manifest 条目与空父目录清干净。
+    pruneEmptyParentDirs(vaultId, full);
     updateManifestEntry(vaultId, normRel, null);
     invalidateContentCacheEntry(vaultId, normRel);
     await deltaSync.recordChange(vaultId, { path: normRel, action: 'DELETE', size: 0, mtime: Date.now() }, { dedupeLatest: true });
@@ -1570,6 +1574,7 @@ async function deleteFileAsync(vaultId, relPath) {
   fs.mkdirSync(trashDir(vaultId), { recursive: true });
   const id = randomId();
   fs.renameSync(full, path.join(trashDir(vaultId), id));
+  pruneEmptyParentDirs(vaultId, full);
 
   const idxPath = trashIndexPath(vaultId);
   const size = fs.statSync(path.join(trashDir(vaultId), id)).size;
@@ -1872,6 +1877,7 @@ function moveVaultFile(vaultId, oldRelPath, newRelPath, options = {}) {
           const conflictFull = safeJoin(root, conflictRel);
           fs.mkdirSync(path.dirname(conflictFull), { recursive: true });
           moveFile(oldFull, conflictFull);
+          pruneEmptyParentDirs(vaultId, oldFull);
 
           try {
             mutateIndex(historyIndexPath(vaultId), (entries) => {
@@ -1925,6 +1931,7 @@ function moveVaultFile(vaultId, oldRelPath, newRelPath, options = {}) {
 
   fs.mkdirSync(path.dirname(newFull), { recursive: true });
   moveFile(oldFull, newFull);
+  pruneEmptyParentDirs(vaultId, oldFull);
 
   // 更新历史版本索引中的路径，确保重命名后历史版本链路不丢失
   const idxPath = historyIndexPath(vaultId);

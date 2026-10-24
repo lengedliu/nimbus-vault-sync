@@ -278,13 +278,13 @@ function renderSettingsSubTabContent(subTab, settings, tokensList, currentVault,
                 自动生成冲突副本 (conflict_copy - 默认推荐，安全不丢数据)
               </option>
               <option value="overwrite_latest" ${settings.conflictStrategy === 'overwrite_latest' ? 'selected' : ''}>
-                按修改时间覆盖 (overwrite_latest - 最新修改胜出)
+                后到达覆盖 / LWW (overwrite_latest - 以最后提交覆盖，原版本自动留存历史快照)
               </option>
               <option value="server_win" ${settings.conflictStrategy === 'server_win' ? 'selected' : ''}>
                 以服务器为准 (server_win - 服务端版本强制覆盖客户端)
               </option>
             </select>
-            <div class="settings-help">当多台设备同时离线编辑同一篇笔记并上线合并时采取的策略</div>
+            <div class="settings-help">当多台设备同时离线编辑同一篇笔记并上线合并时采取的策略（注：overwrite_latest 为无条件后写覆盖 LWW，不按客户端本地时间戳比新旧，被覆盖内容可在历史快照中找回）</div>
           </label>
 
           <label>

@@ -858,8 +858,11 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         const vaultId = this.settings.vaultId || 'default';
         const localCursor = this.getVaultCursor(vaultId);
 
-        // 如果本地已存在有效游标且服务端游标大于本地游标，优先执行秒级增量追更 (Delta Sync)
-        if (localCursor >= 0 && serverCursor > localCursor) {
+        // 如果本地已存在有效游标 (localCursor > 0) 且服务端游标大于本地游标，优先执行秒级增量追更 (Delta Sync)
+        // 🛡️ L6：首次同步 (localCursor <= 0) 时服务端已在 WS init 帧内附带全量 msg.manifest（见 wsHub needManifest），
+        // 此时不再发起 GET /changes?since=0（该接口对 since<=0 只会返回 fullSyncRequired:true 并二次序列化/传输整份 manifest），
+        // 直接进入下方 3-Way 清单对账，消除首同步双倍全量清单传输。
+        if (localCursor > 0 && serverCursor > localCursor) {
           const deltaOk = await this.syncDeltaChanges(localCursor);
           if (deltaOk) {
             await this.flushPendingLocalChangesAfterBarrier();
@@ -1080,19 +1083,21 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         this.disconnectWebSocket();
         break;
 
-      case 'error':
-        if (msg.path) {
+      case 'error': {
+        const errPaths = Array.from(new Set([msg.path, msg.newPath, msg.oldPath].filter(Boolean)));
+        for (const p of errPaths) {
           if (this._conflictRestorePaths) {
-            this._conflictRestorePaths.delete(msg.path);
+            this._conflictRestorePaths.delete(p);
           }
           if (this.pendingSyncAcks) {
-            this.pendingSyncAcks.get(`push:${msg.path}`)?.resolve(false);
-            this.pendingSyncAcks.get(`delete:${msg.path}`)?.resolve(false);
-            this.pendingSyncAcks.get(`rename:${msg.path}`)?.resolve(false);
+            this.pendingSyncAcks.get(`push:${p}`)?.resolve(false);
+            this.pendingSyncAcks.get(`delete:${p}`)?.resolve(false);
+            this.pendingSyncAcks.get(`rename:${p}`)?.resolve(false);
           }
         }
         console.warn('[Nimbus] 服务器返回错误:', msg.message);
         break;
+      }
     }
   }
 
