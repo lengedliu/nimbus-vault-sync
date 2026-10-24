@@ -230,6 +230,34 @@ class DeltaSyncService {
     });
   }
 
+  /**
+   * 🛡️ 项 3（游标竞态修复）：查询某路径**自身最近一条 durable 变更记录**的游标。
+   *
+   * 背景：广播/ack 旧实现携带 getLatestCursor()（全局最新游标），客户端应用
+   * 本条变更后直接推进到最新——若期间有其他设备的变更已 durable 但其广播
+   * 尚未送达本端（如 socket 在两次广播之间断开），游标就被推进过未应用的
+   * 变更，下次 init 判定「已对齐」，那批变更被永久跳过。
+   * 改为携带本条变更自己的游标后，客户端推进不会越过任何未接收的记录；
+   * 断线缺口由下次 init 从旧游标增量重放补齐。
+   *
+   * ring 只含已 durable 的记录（push 发生在 _persistChange/_persistBatchChanges
+   * 成功之后），因此这里的返回值对应的一定是已持久化的历史；ring 已截断时
+   * 返回 null，调用方应省略 cursor 字段（客户端收到无 cursor 的广播只应用
+   * 内容、不推进游标——保守方向，绝不漏拉）。
+   */
+  getLatestCursorForPath(vaultId, relPath) {
+    const st = this.vaultState.get(vaultId);
+    if (!st || !Array.isArray(st.ring) || st.ring.length === 0) return null;
+    const targetPath = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    for (let i = st.ring.length - 1; i >= 0; i--) {
+      const r = st.ring[i];
+      if (String(r.path || '').replace(/\\/g, '/').replace(/^\/+/, '') === targetPath) {
+        return r.cursor;
+      }
+    }
+    return null;
+  }
+
   _schedulePrune(vaultId, st, count) {
     st.unprunedCount = (st.unprunedCount || 0) + count;
     if (st.unprunedCount >= PRUNE_INTERVAL_CHANGES) {

@@ -941,6 +941,10 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           await this.fullSyncAllFiles();
         } else if (Array.isArray(msg.changes)) {
           let allApplied = true;
+          // 🛡️ 项 3：游标推进基准 = 本批最后一条实际处理的条目自身的游标（服务端
+          // batch 广播每条已带 cursor，且有序交付内单调递增）；旧服务端不带
+          // per-item cursor 时回退 msg.cursor（兼容位）。绝不越过未收到的变更。
+          let lastAppliedCursor = null;
           for (const item of msg.changes) {
             if (!item || !item.path) continue;
             if (item.action === 'delete') {
@@ -948,13 +952,18 @@ module.exports = class NimbusSyncPlugin extends Plugin {
             } else {
               const localHash = this.fileHashes.get(item.path);
               if (item.hash && localHash === item.hash) {
+                if (typeof item.cursor === 'number') lastAppliedCursor = item.cursor;
                 continue;
               }
               allApplied = (await this.pullRemoteFileViaHttp(item.path, item.mtime, item.hash)) && allApplied;
             }
+            if (typeof item.cursor === 'number') lastAppliedCursor = item.cursor;
           }
-          if (allApplied) {
-            this._advanceCursorIfSafe(this.settings.vaultId || 'default', msg.cursor);
+          const advanceTo = lastAppliedCursor !== null
+            ? lastAppliedCursor
+            : (typeof msg.cursor === 'number' ? msg.cursor : null);
+          if (allApplied && advanceTo !== null) {
+            this._advanceCursorIfSafe(this.settings.vaultId || 'default', advanceTo);
           } else {
             this._blockCursorOnFailure();
           }
