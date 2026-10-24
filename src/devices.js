@@ -9,12 +9,37 @@ const webhooks = require('./webhooks');
 const jsonDb = new JsonDb(path.join(DATA_DIR, 'devices.json'), []);
 const revokedJsonDb = new JsonDb(path.join(DATA_DIR, 'revoked_tokens.json'), []);
 
+const legacyTokensJsonDb = new JsonDb(path.join(DATA_DIR, 'api_tokens.json'), []);
+
 let devicesCache = [];
 let revokedTokensSet = new Set();
 
 function refreshCacheFromJson() {
   try {
-    devicesCache = jsonDb.read() || [];
+    const rawDevs = jsonDb.read() || [];
+    const list = Array.isArray(rawDevs) ? [...rawDevs] : [];
+    try {
+      const legacy = legacyTokensJsonDb.read() || [];
+      if (Array.isArray(legacy)) {
+        for (const t of legacy) {
+          if (t && t.id && !list.some((d) => d.id === t.id)) {
+            list.push({
+              id: t.id,
+              userId: t.userId || t.user_id,
+              deviceName: t.deviceName || t.label || 'Obsidian Device',
+              platform: t.platform || 'desktop',
+              clientIp: t.clientIp || t.client_ip || '',
+              userAgent: t.userAgent || t.user_agent || '',
+              token: t.token,
+              createdAt: Number(t.createdAt || t.created_at || Date.now()),
+              lastActiveAt: Number(t.lastActiveAt || t.lastUsedAt || t.last_used_at || t.createdAt || Date.now()),
+              status: t.status || 'active',
+            });
+          }
+        }
+      }
+    } catch {}
+    devicesCache = list;
   } catch {
     devicesCache = [];
   }
@@ -294,13 +319,54 @@ async function revokeAllForUser(userId) {
   devicesCache = devicesCache.filter((d) => d.userId !== userId);
 }
 
+function ensureDeviceRecordFromPayload(token, payload) {
+  if (!token || !payload || !payload.deviceId || !payload.sub) return null;
+  const existing = devicesCache.find((d) => d.id === payload.deviceId);
+  if (existing) return existing;
+
+  const now = Date.now();
+  const createdAt = payload.iat ? payload.iat * 1000 : now;
+  const record = {
+    id: payload.deviceId,
+    userId: payload.sub,
+    deviceName: (payload.deviceName || payload.label || 'Obsidian Device').trim(),
+    platform: payload.platform || 'desktop',
+    clientIp: '',
+    userAgent: '',
+    token,
+    createdAt,
+    lastActiveAt: now,
+    status: 'active',
+  };
+  devicesCache = [record, ...devicesCache];
+  try {
+    if (dbManager.type === 'json') {
+      jsonDb.update((list) => {
+        const arr = Array.isArray(list) ? list : [];
+        if (arr.some((d) => d.id === record.id)) return arr;
+        return [record, ...arr];
+      });
+    } else if (dbManager.initialized) {
+      dbManager.execute(
+        'INSERT INTO api_tokens (id, user_id, label, token, created_at, last_used_at, platform, client_ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [record.id, record.userId, record.deviceName, record.token, record.createdAt, record.lastActiveAt, record.platform, record.clientIp, record.userAgent]
+      ).catch(() => {});
+    }
+  } catch {}
+  return record;
+}
+
 function isTokenRevoked(token, parsedPayload = null) {
   if (!token) return true;
 
   // 1. 显式吊销黑名单检查
   if (revokedTokensSet.has(token)) return true;
 
-  // 2. 检查设备专属令牌状态与轮换一致性
+  // 2. 检查数据库中是否有对应标记为 revoked 的记录
+  const record = devicesCache.find((d) => d.token === token);
+  if (record && record.status === 'revoked') return true;
+
+  // 3. 检查设备专属令牌状态与轮换一致性
   let payload = parsedPayload;
   if (!payload) {
     try {
@@ -310,14 +376,24 @@ function isTokenRevoked(token, parsedPayload = null) {
 
   if (payload && payload.deviceId) {
     const dev = devicesCache.find((d) => d.id === payload.deviceId);
-    // 设备不存在、已注销、或者设备当前存储的最新 token 与此 token 不一致（已被重新生成轮换）
-    if (!dev || dev.status === 'revoked') return true;
-    if (dev.token && dev.token !== token) return true;
+    if (dev) {
+      // 设备已注销，或者设备当前存储的最新 token 与此 token 不一致（已被重新生成/轮换）
+      if (dev.status === 'revoked') return true;
+      if (dev.token && dev.token !== token) return true;
+    } else if (payload.sub) {
+      // 设备记录在缓存中缺失（例如切换数据库引擎或重置了 devices.json），
+      // 但该令牌未进入吊销黑名单：当调用方已校验或当前可用 JWT_SECRET 验签通过时，自动自愈补齐设备记录
+      let verified = parsedPayload;
+      if (!verified) {
+        try {
+          verified = jwt.verify(token, JWT_SECRET);
+        } catch {
+          return true;
+        }
+      }
+      ensureDeviceRecordFromPayload(token, verified);
+    }
   }
-
-  // 3. 兜底检查数据库中是否有对应标记为 revoked 的记录
-  const record = devicesCache.find((d) => d.token === token);
-  if (record && record.status === 'revoked') return true;
 
   return false;
 }
@@ -327,6 +403,7 @@ refreshCacheFromJson();
 module.exports = {
   listForUser,
   listAll,
+  getRawDevices: () => devicesCache,
   generateDeviceToken,
   regenerateDeviceToken,
   extendDeviceToken,

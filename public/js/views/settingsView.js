@@ -679,7 +679,9 @@ function renderSettingsSubTabContent(subTab, settings, tokensList, currentVault,
             vaultId: currentVault.id,
             token: targetToken.token || '',
             authToken: targetToken.token || '',
+            deviceId: devName,
             deviceName: devName,
+            autoSync: true,
             autoSyncOnStartup: true,
           };
 
@@ -695,7 +697,7 @@ function renderSettingsSubTabContent(subTab, settings, tokensList, currentVault,
               <div class="nav-section-title">配置文件 <code>data.json</code></div>
               <pre class="code-snippet" style="max-height:220px;">${escapeHtml(JSON.stringify(cfg, null, 2))}</pre>
               <p style="color:var(--muted);font-size:12px;margin-top:10px;">
-                💡 复制后可直接保存至该设备 Obsidian 库目录 <code>.obsidian/plugins/nimbus/data.json</code>。
+                💡 复制后可在插件设置点击「📋 从剪贴板一键导入」，或直接保存至该设备 Obsidian 库目录 <code>.obsidian/plugins/nimbus-sync/data.json</code>。
               </p>
             </div>
             <div class="modal-footer">

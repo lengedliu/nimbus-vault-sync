@@ -940,7 +940,22 @@ class DatabaseManager {
         fs.writeFileSync(path.join(DATA_DIR, 'vault_members.json'), JSON.stringify({ members: dataset.vaultMembers || [] }, null, 2));
         fs.writeFileSync(path.join(DATA_DIR, 'shares.json'), JSON.stringify(dataset.shares || [], null, 2));
         fs.writeFileSync(path.join(DATA_DIR, 'settings.json'), JSON.stringify(dataset.systemSettings || {}, null, 2));
-        fs.writeFileSync(path.join(DATA_DIR, 'api_tokens.json'), JSON.stringify(dataset.apiTokens || [], null, 2));
+        const normalizedDevices = (dataset.apiTokens || []).map((t) => ({
+          id: t.id,
+          userId: t.userId || t.user_id,
+          deviceName: t.deviceName || t.label || 'Obsidian Device',
+          label: t.label || t.deviceName || 'Obsidian Device',
+          platform: t.platform || 'desktop',
+          clientIp: t.clientIp || t.client_ip || '',
+          userAgent: t.userAgent || t.user_agent || '',
+          token: t.token,
+          createdAt: Number(t.createdAt || t.created_at || Date.now()),
+          lastActiveAt: Number(t.lastActiveAt || t.lastUsedAt || t.last_used_at || t.createdAt || Date.now()),
+          lastUsedAt: Number(t.lastUsedAt || t.lastActiveAt || t.last_used_at || t.createdAt || Date.now()),
+          status: t.status || 'active',
+        }));
+        fs.writeFileSync(path.join(DATA_DIR, 'devices.json'), JSON.stringify(normalizedDevices, null, 2));
+        fs.writeFileSync(path.join(DATA_DIR, 'api_tokens.json'), JSON.stringify(normalizedDevices, null, 2));
         fs.writeFileSync(path.join(DATA_DIR, 'sync_logs.json'), JSON.stringify(dataset.syncLogs || [], null, 2));
 
         // Group changes by vaultId and write to changes/changes_{vaultId}.json
@@ -1056,12 +1071,26 @@ class DatabaseManager {
           }
         }
 
-        // API Tokens
+        // API / Device Tokens
         for (const t of dataset.apiTokens || []) {
+          if (t && t.status === 'revoked') continue;
           try {
+            const label = (t.label || t.deviceName || 'Obsidian Device').trim();
+            const createdAt = Number(t.createdAt || t.created_at || Date.now());
+            const lastUsedAt = Number(t.lastUsedAt || t.lastActiveAt || t.last_used_at || createdAt);
             await this.execute(
-              'INSERT INTO api_tokens (id, user_id, label, token, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?)',
-              [t.id, t.userId, t.label, t.token, t.createdAt, t.lastUsedAt || null]
+              'INSERT INTO api_tokens (id, user_id, label, token, created_at, last_used_at, platform, client_ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              [
+                t.id,
+                t.userId || t.user_id,
+                label,
+                t.token,
+                createdAt,
+                lastUsedAt,
+                t.platform || 'desktop',
+                t.clientIp || t.client_ip || '',
+                t.userAgent || t.user_agent || '',
+              ]
             );
             migratedCounts.apiTokens++;
           } catch (e) {

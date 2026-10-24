@@ -197,7 +197,9 @@ export function showDeviceTokenCreatedModal(device, vault) {
     vaultName,
     token,
     authToken: token,
+    deviceId: deviceName,
     deviceName,
+    autoSync: true,
     autoSyncOnStartup: true,
   };
 
@@ -236,13 +238,13 @@ export function showDeviceTokenCreatedModal(device, vault) {
 
       <div class="nav-section-title" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
         <span>⚡ Obsidian 插件一键配置文件 (<code>data.json</code>)</span>
-        <span style="font-size:11.5px;color:var(--muted)">直接复制覆盖至 <code>.obsidian/plugins/nimbus/data.json</code></span>
+        <span style="font-size:11.5px;color:var(--muted)">可在插件设置点击「📋 从剪贴板一键导入」或覆盖 <code>.obsidian/plugins/nimbus-sync/data.json</code></span>
       </div>
       <pre id="dev-modal-json-snippet" class="code-snippet" style="max-height:180px;font-size:12px;">${escapeHtml(JSON.stringify(pluginConfig, null, 2))}</pre>
 
       <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-top:14px;font-size:12px;color:var(--muted);line-height:1.6;">
         <b>📱 移动端与客户端配置提示：</b><br/>
-        • <b>桌面端</b>：复制上方 JSON 配置文件，保存至对应笔记库的 <code>.obsidian/plugins/nimbus/data.json</code> 文件中重启插件即可。<br/>
+        • <b>桌面端</b>：点击下方「📋 一键复制完整 data.json 配置」，在 Obsidian 的 Nimbus 插件设置中点击「📋 从剪贴板一键导入」即可立即生效（或保存至 <code>.obsidian/plugins/nimbus-sync/data.json</code>）。<br/>
         • <b>手机/平板 (iOS / Android)</b>：在 Obsidian 设置中的 Nimbus 插件界面填入 <b>Server URL</b> (<code>${escapeHtml(serverUrl)}</code>)、<b>Vault ID</b> (<code>${escapeHtml(vaultId)}</code>) 与上方 <b>Token</b>。<br/>
         • <b>应用终端 (App / 扩展)</b>：可直接将专属 Token 填入第三方应用、客户端或脚本的 Bearer 鉴权中。
       </div>

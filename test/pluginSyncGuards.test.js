@@ -1522,7 +1522,7 @@ test('PR #10 L7：批量删除单条异常隔离，且已成功删除项必在 f
     assert.equal(failItem.success, false);
     assert.match(failItem.error, /simulated durable delta failure/);
 
-    assert.equal(broadcastedBatch.length, 1, '已删除成功的 2 个文件必须通过 finally 发出批量广播');
+    assert.equal(broadcastedBatch.length, 1, '已删除成功的 2 个文件必须通过 finally 发出广播');
     assert.deepEqual(
       broadcastedBatch[0].changes.map((c) => c.path),
       ['ok1.md', 'ok3.md']
@@ -1533,6 +1533,68 @@ test('PR #10 L7：批量删除单条异常隔离，且已成功删除项必在 f
     try { storage.deleteVaultDirectory(vaultId); } catch {}
   }
 });
+
+test('插件同步 401 修复：服务端设备令牌自愈与插件 WS 握手 401 熔断防重连风暴', async (t) => {
+  const jwt = require('jsonwebtoken');
+  const config = require('../src/config');
+  const devicesStore = require('../src/devices');
+
+  await t.test('服务端：签名有效且未在黑名单的设备 Token 在 devicesCache 丢失记录时自动自愈，而被显式吊销的设备仍被拒绝', async () => {
+    const devId = `dev-heal-${Date.now()}`;
+    const token = jwt.sign(
+      { sub: 'u-admin', username: 'admin', role: 'admin', deviceId: devId, deviceName: 'Obsidian-Heal', type: 'device' },
+      config.JWT_SECRET
+    );
+    const payload = jwt.verify(token, config.JWT_SECRET);
+
+    // 1. 即使未预先写入 devices.json，只要签名合法且未在吊销集中，isTokenRevoked 应返回 false 并自愈注册
+    assert.equal(devicesStore.isTokenRevoked(token, payload), false, '签名合法且未吊销的设备 Token 不应因存储未命中而误判 401');
+    const healed = devicesStore.getRawDevices().find((d) => d.id === devId);
+    assert.ok(healed, '自愈后设备记录应写回 devicesCache');
+    assert.equal(healed.token, token);
+
+    // 2. 显式吊销该设备后，isTokenRevoked 必须严格返回 true
+    await devicesStore.revokeDevice(devId, 'u-admin');
+    assert.equal(devicesStore.isTokenRevoked(token, payload), true, '显式吊销后的设备 Token 必须被拦截');
+  });
+
+  await t.test('插件端：WS 握手前断开 (code 1006) 探测到 401 时，若磁盘无新令牌则立即熔断停止 5 秒无限重连', async () => {
+    const plugin = makePlugin();
+    plugin.settings.token = 'expired-or-wrong-secret-token';
+    plugin.settings.authToken = 'expired-or-wrong-secret-token';
+    plugin.loadData = async () => ({ token: 'expired-or-wrong-secret-token' });
+    plugin.reconnectTimer = setTimeout(() => {}, 60000);
+
+    await withFetch(async () => ({
+      ok: false,
+      status: 401,
+      json: async () => ({ error: 'Invalid or expired token' }),
+    }), async () => {
+      await plugin._handleWsHandshakeFailure(1006);
+    });
+
+    assert.equal(plugin._wsAuthFailed, true, '确认 401 后必须标记 _wsAuthFailed 熔断');
+    assert.equal(plugin.reconnectTimer, null, '必须清除重连定时器，停止 5 秒重连风暴');
+    assert.ok(obsidianStub.lastNotice.includes('401'), '应向用户弹出明确的 401 诊断通知');
+  });
+
+  await t.test('插件端：遭遇 401 时若检测到磁盘 data.json 已粘贴新令牌，自动热重载令牌并恢复重连', async () => {
+    const plugin = makePlugin();
+    plugin.settings.token = 'old-stale-token';
+    plugin.settings.authToken = 'old-stale-token';
+    plugin.loadData = async () => ({ token: 'fresh-disk-token-from-web' });
+
+    let reconnected = false;
+    plugin.connectWebSocket = () => { reconnected = true; };
+
+    const recovered = await plugin.handleAuthFailure401('GET /api/vaults');
+    assert.equal(recovered, true, '检测到磁盘 data.json 中有新令牌时应自动恢复');
+    assert.equal(plugin.getCleanToken(), 'fresh-disk-token-from-web');
+    assert.equal(plugin._wsAuthFailed, false);
+  });
+});
+
+
 
 
 

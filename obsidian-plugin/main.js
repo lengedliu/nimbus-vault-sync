@@ -134,6 +134,8 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         this.settings.token = token.trim().replace(/^Bearer\s+/i, '');
         this.settings.authToken = this.settings.token;
         this.settings.authMode = 'token';
+        this._wsAuthFailed = false;
+        this._lastFetchVaults401 = false;
         if (vaultId) this.settings.vaultId = vaultId;
         if (vaultName) this.settings.vaultName = vaultName;
         if (device) this.settings.deviceId = device;
@@ -212,11 +214,19 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     const data = (await this.loadData()) || {};
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
 
+    // 兼容网页端导出的 data.json 字段命名 (deviceName / autoSyncOnStartup)
+    if ((!data.deviceId || data.deviceId === 'Obsidian Device') && data.deviceName) {
+      this.settings.deviceId = data.deviceName;
+    }
+    if (data.autoSync === undefined && typeof data.autoSyncOnStartup === 'boolean') {
+      this.settings.autoSync = data.autoSyncOnStartup;
+    }
+
     // 智能双向对齐 token 与 authToken 引用
     if (!this.settings.token && this.settings.authToken) {
       this.settings.token = this.settings.authToken;
     }
-    if (!this.settings.authToken && this.settings.token) {
+    if (this.settings.token) {
       this.settings.authToken = this.settings.token;
     }
 
@@ -234,9 +244,9 @@ module.exports = class NimbusSyncPlugin extends Plugin {
   }
 
   async saveSettings() {
-    if (this.settings.token && !this.settings.authToken) {
+    if (this.settings.token) {
       this.settings.authToken = this.settings.token;
-    } else if (this.settings.authToken && !this.settings.token) {
+    } else if (this.settings.authToken) {
       this.settings.token = this.settings.authToken;
     }
     await this.saveData(this.settings);
@@ -567,13 +577,13 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     if (!this.statusBarItem) return;
     switch (status) {
       case 'syncing':
-        this.statusBarItem.setText('☁️ Nimbus: 正在同步...');
+        this.statusBarItem.setText(customText || '☁️ Nimbus: 正在同步...');
         break;
       case 'connected':
-        this.statusBarItem.setText('☁️ Nimbus: 实时连接中');
+        this.statusBarItem.setText(customText || '☁️ Nimbus: 实时连接中');
         break;
       case 'error':
-        this.statusBarItem.setText('☁️ Nimbus: 同步中断');
+        this.statusBarItem.setText(customText || '☁️ Nimbus: 同步中断');
         break;
       case 'idle':
       default:
@@ -610,11 +620,142 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     return headers;
   }
 
+  /**
+   * 🛡️ 遇到 HTTP 401 或 WebSocket 鉴权握手拒绝时的自愈与熔断处理：
+   * 1. 先检查磁盘 data.json 是否已被用户外部更新了新 Token（用户按网页端指引直接覆盖了 data.json 而未重启插件）；
+   * 2. 若配置了 username + password，自动尝试静默重新登录刷新 Token；
+   * 3. 若均无法恢复，立即熔断 WebSocket 5 秒无限重连风暴，更新状态栏并给出明确修复指引。
+   */
+  async handleAuthFailure401(contextReason = 'HTTP 401') {
+    if (this._authRecoveryPromise) {
+      return this._authRecoveryPromise;
+    }
+    this._authRecoveryPromise = (async () => {
+      try {
+        const prevToken = this.getCleanToken();
+        // 1. 检查磁盘 data.json 是否有用户新写入的不同 Token
+        try {
+          const diskData = (await this.loadData()) || {};
+          const diskRaw = (diskData.token || diskData.authToken || '').trim().replace(/^Bearer\s+/i, '').replace(/[^\x20-\x7E]/g, '').trim();
+          if (diskRaw && diskRaw !== prevToken) {
+            this.settings.token = diskRaw;
+            this.settings.authToken = diskRaw;
+            if (diskData.serverUrl) this.settings.serverUrl = String(diskData.serverUrl).trim().replace(/\/+$/, '');
+            if (diskData.vaultId) this.settings.vaultId = diskData.vaultId;
+            if (diskData.vaultName) this.settings.vaultName = diskData.vaultName;
+            if (diskData.deviceId || diskData.deviceName) this.settings.deviceId = diskData.deviceId || diskData.deviceName;
+            this._wsAuthFailed = false;
+            this._lastFetchVaults401 = false;
+            console.log('[Nimbus] 检测到磁盘 data.json 中的新令牌，已自动热加载恢复');
+            return true;
+          }
+        } catch {}
+
+        // 2. 若存有账号与密码，尝试静默重新登录获取新令牌
+        const baseUrl = this.getCleanServerUrl();
+        if (baseUrl && this.settings.username && this.settings.password) {
+          try {
+            const resp = await fetch(`${baseUrl}/api/auth/login`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                username: this.settings.username,
+                password: this.settings.password,
+              }),
+            });
+            if (resp.ok) {
+              const data = await resp.json();
+              if (data && data.token) {
+                this.settings.token = data.token;
+                this.settings.authToken = data.token;
+                this._wsAuthFailed = false;
+                this._lastFetchVaults401 = false;
+                await this.saveSettings();
+                console.log('[Nimbus] 令牌过期后已通过账号密码自动静默续期成功');
+                new Notice('🔑 Nimbus 登录凭证已自动刷新');
+                return true;
+              }
+            }
+          } catch {}
+        }
+
+        // 3. 无法自愈：彻底停止 WebSocket 重连定时器，防止每 5 秒无限刷屏报错
+        this._wsAuthFailed = true;
+        this._lastFetchVaults401 = true;
+        this.disconnectWebSocket();
+        this.updateStatusBar('error', '☁️ Nimbus: 令牌已失效 (请重新配置)');
+
+        const now = Date.now();
+        if (!this._lastAuthFailNoticeAt || now - this._lastAuthFailNoticeAt > 8000) {
+          this._lastAuthFailNoticeAt = now;
+          new Notice(
+            '❌ Nimbus 同步鉴权失败 (HTTP 401)：当前设备令牌已失效或已在服务端重置。\n请在网页端复制最新「DeepLink / data.json / 设备令牌」，打开插件设置点击「📋 从剪贴板一键导入」或重新登录。',
+            10000
+          );
+        }
+        console.warn(`[Nimbus] 鉴权失败且无法自动恢复 (${contextReason})，已暂停自动重连等待更新令牌`);
+        return false;
+      } finally {
+        this._authRecoveryPromise = null;
+      }
+    })();
+    return this._authRecoveryPromise;
+  }
+
+  /**
+   * 当 WebSocket 在 onopen 之前即被关闭 (code 1006) 时，探测服务端真实原因：
+   * - 若 HTTP 401：触发 handleAuthFailure401 自愈或停止重连风暴；
+   * - 若 HTTP 200 但当前 vaultId 在服务端不存在：自动重新匹配/绑定 Vault 后重连；
+   * - 若网络不通或 5xx：保留常规 5 秒重连。
+   */
+  async _handleWsHandshakeFailure() {
+    const baseUrl = this.getCleanServerUrl();
+    const cleanToken = this.getCleanToken();
+    if (!baseUrl || !cleanToken) return;
+
+    try {
+      const resp = await fetch(`${baseUrl}/api/vaults`, {
+        headers: this.buildAuthHeaders(),
+      });
+      if (resp.status === 401) {
+        const recovered = await this.handleAuthFailure401('WebSocket 握手返回 HTTP 401');
+        if (recovered && this.settings.autoSync) {
+          this.connectWebSocket();
+        }
+        return;
+      }
+      if (resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        const vaults = (data && data.vaults) || [];
+        if (this.settings.vaultId && !vaults.some((v) => v.id === this.settings.vaultId)) {
+          console.warn(`[Nimbus] 当前绑定的 vaultId (${this.settings.vaultId}) 在服务端不存在，正在自动重新匹配知识库...`);
+          const matched = await this.autoMatchOrCreateVault();
+          if (matched && matched.id && this.settings.autoSync) {
+            this.connectWebSocket();
+            return;
+          }
+        }
+      }
+    } catch {
+      // 网络暂时不可达，交由下方常规重连定时器处理
+    }
+
+    if (this.settings.autoSync && !this._wsAuthFailed) {
+      if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = setTimeout(() => this.connectWebSocket(), 5000);
+    }
+  }
+
   // --- API Authentication & Vaults ---
   async autoMatchOrCreateVault() {
-    if (!this.settings.token) return null;
+    if (!this.getCleanToken()) return null;
     const localVaultName = this.app.vault.getName() || 'DefaultVault';
     const vaults = await this.fetchVaults();
+
+    // 🛡️ 若获取 Vault 列表因 401 鉴权失败而返回空数组，绝不能误判为“服务端暂无 Vault”去调 createVault！
+    if (this._lastFetchVaults401) {
+      return null;
+    }
 
     // 1. Check if server already has a vault matching current local vault name
     let targetVault = vaults.find(v => v.name.toLowerCase() === localVaultName.toLowerCase());
@@ -670,6 +811,8 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       const data = await resp.json();
       this.settings.token = data.token;
       this.settings.authToken = data.token;
+      this._wsAuthFailed = false;
+      this._lastFetchVaults401 = false;
       await this.saveSettings();
 
       new Notice('✅ 成功登录到 Nimbus 服务器！');
@@ -694,10 +837,26 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     if (!token) return [];
 
     try {
-      const resp = await fetch(`${baseUrl}/api/vaults`, {
+      this._lastFetchVaults401 = false;
+      let resp = await fetch(`${baseUrl}/api/vaults`, {
         headers: this.buildAuthHeaders()
       });
-      if (!resp.ok) return [];
+      if (resp.status === 401) {
+        const recovered = await this.handleAuthFailure401('获取 Vault 列表返回 HTTP 401');
+        if (recovered) {
+          resp = await fetch(`${baseUrl}/api/vaults`, {
+            headers: this.buildAuthHeaders()
+          });
+        }
+      }
+      if (!resp.ok) {
+        if (resp.status === 401) {
+          this._lastFetchVaults401 = true;
+        }
+        return [];
+      }
+      this._wsAuthFailed = false;
+      this._lastFetchVaults401 = false;
       const data = await resp.json();
       this.availableVaults = data.vaults || [];
       
@@ -727,7 +886,11 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         }),
         body: JSON.stringify({ name })
       });
-      if (!resp.ok) throw new Error('创建失败');
+      if (resp.status === 401) {
+        await this.handleAuthFailure401('创建 Vault 返回 HTTP 401');
+        throw new Error('认证令牌已失效 (HTTP 401)，请重新登录或重新导入令牌');
+      }
+      if (!resp.ok) throw new Error(`创建失败 (HTTP ${resp.status})`);
       const data = await resp.json();
       await this.fetchVaults();
       return data.vault;
@@ -778,10 +941,14 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     this._connectedVaultId = this.settings.vaultId;
 
     try {
+      let hasOpened = false;
       const socket = new WebSocket(wsUrl);
       this.ws = socket;
 
       socket.onopen = () => {
+        hasOpened = true;
+        this._wsAuthFailed = false;
+        this._lastFetchVaults401 = false;
         this.updateStatusBar('connected');
         new Notice('☁️ Nimbus 实时双向同步已连接');
 
@@ -810,12 +977,20 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         if (this.ws !== socket) return;
         if (this.pingTimer) clearInterval(this.pingTimer);
         if (e && (e.code === 4001 || e.code === 4003)) {
-          this.updateStatusBar('error', '☁️ Nimbus: 令牌已失效');
+          this.handleAuthFailure401(`WebSocket 关闭 (${e.code})`).then((recovered) => {
+            if (recovered && this.settings.autoSync) this.connectWebSocket();
+          });
+          return;
+        }
+        // 🛡️ 握手阶段即失败 (未触发过 onopen，浏览器固定返回 1006)：
+        // 先异步探测是否因 HTTP 401 令牌失效或 vaultId 不存在导致，阻止每 5 秒死循环刷屏！
+        if (!hasOpened) {
+          this._handleWsHandshakeFailure();
           return;
         }
         this.updateStatusBar('idle', '☁️ Nimbus: 连接已断开');
         // Auto reconnect
-        if (this.settings.autoSync) {
+        if (this.settings.autoSync && !this._wsAuthFailed) {
           if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
           this.reconnectTimer = setTimeout(() => this.connectWebSocket(), 5000);
         }
@@ -839,8 +1014,11 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     }
     if (this.pingTimer) clearInterval(this.pingTimer);
     if (this.ws) {
-      this.ws.close();
+      const oldWs = this.ws;
       this.ws = null;
+      if (typeof oldWs.close === 'function') {
+        try { oldWs.close(); } catch {}
+      }
     }
   }
 
@@ -1217,9 +1395,17 @@ module.exports = class NimbusSyncPlugin extends Plugin {
       const baseUrl = this.getCleanServerUrl();
       const cleanToken = this.getCleanToken();
       if (!baseUrl || !vaultId || !cleanToken) return null;
-      const res = await fetch(`${baseUrl}/api/vaults/${encodeURIComponent(vaultId)}/manifest`, {
+      let res = await fetch(`${baseUrl}/api/vaults/${encodeURIComponent(vaultId)}/manifest`, {
         headers: this.buildAuthHeaders()
       });
+      if (res.status === 401) {
+        const recovered = await this.handleAuthFailure401('拉取全量清单返回 HTTP 401');
+        if (recovered) {
+          res = await fetch(`${baseUrl}/api/vaults/${encodeURIComponent(this.settings.vaultId || vaultId)}/manifest`, {
+            headers: this.buildAuthHeaders()
+          });
+        }
+      }
       if (!res.ok) return null;
       const data = await res.json();
       return data.manifest || null;
@@ -1779,25 +1965,46 @@ module.exports = class NimbusSyncPlugin extends Plugin {
 
   async fullSyncAllFiles() {
     new Notice('☁️ 开始全量双向同步...');
-    if (!this.settings.token || !this.settings.vaultId) {
+    if (!this.getCleanToken() || !this.settings.vaultId) {
       new Notice('❌ 请先在 Nimbus 设置中完成登录并绑定 Vault');
       return;
     }
 
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      this.connectWebSocket();
-    }
-
     try {
       const baseUrl = this.getCleanServerUrl();
-      const cleanToken = this.getCleanToken();
-      if (!baseUrl || !cleanToken || !this.settings.vaultId) return;
-      const res = await fetch(`${baseUrl}/api/vaults/${encodeURIComponent(this.settings.vaultId)}/manifest`, {
+      if (!baseUrl) return;
+      let res = await fetch(`${baseUrl}/api/vaults/${encodeURIComponent(this.settings.vaultId)}/manifest`, {
         headers: this.buildAuthHeaders()
       });
 
+      if (res.status === 401) {
+        const recovered = await this.handleAuthFailure401('获取云端清单失败 (HTTP 401)');
+        if (!recovered) {
+          return;
+        }
+        res = await fetch(`${baseUrl}/api/vaults/${encodeURIComponent(this.settings.vaultId)}/manifest`, {
+          headers: this.buildAuthHeaders()
+        });
+      }
+
+      if (res.status === 404) {
+        console.warn('[Nimbus] 当前绑定的 vaultId 在云端不存在 (HTTP 404)，正在自动重新匹配 Vault...');
+        const matched = await this.autoMatchOrCreateVault();
+        if (matched && matched.id) {
+          res = await fetch(`${baseUrl}/api/vaults/${encodeURIComponent(this.settings.vaultId)}/manifest`, {
+            headers: this.buildAuthHeaders()
+          });
+        }
+      }
+
       if (!res.ok) {
         throw new Error(`获取云端清单失败 (HTTP ${res.status})`);
+      }
+
+      this._wsAuthFailed = false;
+      this._lastFetchVaults401 = false;
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        this.connectWebSocket();
       }
 
       const data = await res.json();
@@ -2717,6 +2924,8 @@ class NimbusSettingTab extends PluginSettingTab {
               if (vaultName) this.plugin.settings.vaultName = vaultName;
               if (device) this.plugin.settings.deviceId = device;
               this.plugin.settings.authMode = 'token';
+              this.plugin._wsAuthFailed = false;
+              this.plugin._lastFetchVaults401 = false;
 
               await this.plugin.saveSettings();
               new Notice('✅ 成功从剪贴板导入 Nimbus DeepLink 直连配置！');
@@ -2728,16 +2937,19 @@ class NimbusSettingTab extends PluginSettingTab {
             // Case B: JSON format
             if (clipboardText.startsWith('{') && clipboardText.endsWith('}')) {
               const parsed = JSON.parse(clipboardText);
-              if (parsed.serverUrl) this.plugin.settings.serverUrl = parsed.serverUrl.replace(/\/+$/, '');
-              if (parsed.token || parsed.authToken) {
-                const t = parsed.token || parsed.authToken;
+              const payload = (parsed && parsed.data && typeof parsed.data === 'object') ? parsed.data : parsed;
+              if (payload.serverUrl) this.plugin.settings.serverUrl = payload.serverUrl.replace(/\/+$/, '');
+              if (payload.token || payload.authToken) {
+                const t = payload.token || payload.authToken;
                 this.plugin.settings.token = t.trim().replace(/^Bearer\s+/i, '');
                 this.plugin.settings.authToken = this.plugin.settings.token;
               }
-              if (parsed.vaultId) this.plugin.settings.vaultId = parsed.vaultId;
-              if (parsed.vaultName) this.plugin.settings.vaultName = parsed.vaultName;
-              if (parsed.deviceId || parsed.deviceName) this.plugin.settings.deviceId = parsed.deviceId || parsed.deviceName;
+              if (payload.vaultId) this.plugin.settings.vaultId = payload.vaultId;
+              if (payload.vaultName) this.plugin.settings.vaultName = payload.vaultName;
+              if (payload.deviceId || payload.deviceName) this.plugin.settings.deviceId = payload.deviceId || payload.deviceName;
               this.plugin.settings.authMode = 'token';
+              this.plugin._wsAuthFailed = false;
+              this.plugin._lastFetchVaults401 = false;
 
               await this.plugin.saveSettings();
               new Notice('✅ 成功从剪贴板导入 Nimbus JSON 配置！');
@@ -2818,6 +3030,8 @@ class NimbusSettingTab extends PluginSettingTab {
               const clean = val.trim().replace(/^Bearer\s+/i, '').trim();
               this.plugin.settings.token = clean;
               this.plugin.settings.authToken = clean;
+              this.plugin._wsAuthFailed = false;
+              this.plugin._lastFetchVaults401 = false;
               await this.plugin.saveSettings();
             });
         });
@@ -2835,10 +3049,15 @@ class NimbusSettingTab extends PluginSettingTab {
         }));
 
     // 5. Auth Action Button
+    const authStatusSetting = new Setting(containerEl);
     if (currentAuthMode === 'password') {
-      new Setting(containerEl)
+      authStatusSetting
         .setName('身份验证')
-        .setDesc(this.plugin.settings.token ? '✅ 已获取登录凭证' : '尚未登录')
+        .setDesc(
+          this.plugin._lastFetchVaults401
+            ? '❌ 当前登录令牌已失效 (HTTP 401)，请点击右侧「重新登录」刷新凭证'
+            : (this.plugin.settings.token ? '✅ 已获取登录凭证' : '尚未登录')
+        )
         .addButton(btn => btn
           .setButtonText(this.plugin.settings.token ? '重新登录' : '登录验证')
           .setCta()
@@ -2849,9 +3068,13 @@ class NimbusSettingTab extends PluginSettingTab {
             }
           }));
     } else {
-      new Setting(containerEl)
+      authStatusSetting
         .setName('令牌验证与连接')
-        .setDesc(this.plugin.settings.token ? '✅ 已填入令牌' : '请先粘贴设备专属令牌')
+        .setDesc(
+          this.plugin._lastFetchVaults401
+            ? '❌ 当前令牌已失效或已在服务端重置 (HTTP 401)，请重新粘贴令牌或点击上方「📋 从剪贴板一键导入」'
+            : (this.plugin.settings.token ? '✅ 已填入令牌' : '请先粘贴设备专属令牌')
+        )
         .addButton(btn => btn
           .setButtonText('测试并连接')
           .setCta()
@@ -2860,8 +3083,10 @@ class NimbusSettingTab extends PluginSettingTab {
               new Notice('❌ 请先粘贴设备专属令牌');
               return;
             }
+            this.plugin._wsAuthFailed = false;
+            this.plugin._lastFetchVaults401 = false;
             await this.plugin.autoMatchOrCreateVault();
-            if (this.plugin.settings.vaultId) {
+            if (this.plugin.settings.vaultId && !this.plugin._lastFetchVaults401) {
               this.plugin.connectWebSocket();
             }
             await this.display();
@@ -2878,6 +3103,13 @@ class NimbusSettingTab extends PluginSettingTab {
       }
 
       const vaults = await this.plugin.fetchVaults();
+      if (this.plugin._lastFetchVaults401) {
+        authStatusSetting.setDesc(
+          currentAuthMode === 'password'
+            ? '❌ 当前登录令牌已失效 (HTTP 401)，请点击右侧「重新登录」刷新凭证'
+            : '❌ 当前令牌已失效或已在服务端重置 (HTTP 401)，请重新粘贴令牌或点击上方「📋 从剪贴板一键导入」'
+        );
+      }
 
       // Show local Vault notice
       new Setting(containerEl)
@@ -2907,6 +3139,8 @@ class NimbusSettingTab extends PluginSettingTab {
             this.plugin.connectWebSocket();
           });
         });
+      } else if (this.plugin._lastFetchVaults401) {
+        vaultSetting.setDesc('⚠️ 无法加载云端存储库：当前访问令牌鉴权失败 (HTTP 401)，请先重新登录或从网页端重新导入有效令牌');
       } else {
         vaultSetting.setDesc('当前账号下暂无 Vault，系统将自动创建');
       }

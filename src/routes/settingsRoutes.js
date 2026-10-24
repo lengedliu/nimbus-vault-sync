@@ -151,6 +151,16 @@ router.post('/database/switch', asyncHandler(async (req, res) => {
   }
 
   try {
+    const devicesStore = require('../devices');
+    const rawDevices = devicesStore.getRawDevices ? devicesStore.getRawDevices() : (devicesStore.listAll ? devicesStore.listAll() : []);
+    const rawSettingsTokens = settingsManager.getAllTokens ? settingsManager.getAllTokens() : [];
+    const mergedTokensMap = new Map();
+    for (const item of [...rawDevices, ...rawSettingsTokens]) {
+      if (item && item.id && item.status !== 'revoked' && !mergedTokensMap.has(item.id)) {
+        mergedTokensMap.set(item.id, item);
+      }
+    }
+
     // 1. Gather all current in-memory dataset (matching /api/admin/database/switch)
     const dataset = {
       users: users.getRawUsers ? users.getRawUsers() : [],
@@ -159,7 +169,7 @@ router.post('/database/switch', asyncHandler(async (req, res) => {
       shares: sharesStore.getRawShares ? sharesStore.getRawShares() : [],
       syncRules: syncRulesStore.getRawRules ? syncRulesStore.getRawRules() : (syncRulesStore.getAllRules ? syncRulesStore.getAllRules() : {}),
       systemSettings: settingsManager.getSystemSettings ? settingsManager.getSystemSettings() : {},
-      apiTokens: settingsManager.getAllTokens ? settingsManager.getAllTokens() : [],
+      apiTokens: Array.from(mergedTokensMap.values()),
       syncLogs: syncLogger.getRawLogs ? syncLogger.getRawLogs() : [],
       vaultChanges: deltaSync.getAllChangesForMigration ? await deltaSync.getAllChangesForMigration() : [],
     };
@@ -175,7 +185,6 @@ router.post('/database/switch', asyncHandler(async (req, res) => {
     await syncRulesStore.loadFromDb();
     await settingsManager.loadFromDb();
     await syncLogger.loadFromDb();
-    const devicesStore = require('../devices');
     if (devicesStore.loadFromDb) {
       await devicesStore.loadFromDb();
     }

@@ -29,7 +29,10 @@ function requireAuth(req, res, next) {
   if (token && devicesStore.isTokenRevoked(token, payload)) {
     return res.status(401).json({ ok: false, error: '此设备令牌已被注销废除或已重新生成失效', message: '此设备令牌已被注销废除或已重新生成失效', code: 401 });
   }
-  const user = users.findById(payload.sub);
+  let user = users.findById(payload.sub);
+  if (!user && payload.deviceId && payload.username === 'admin') {
+    user = users.findByUsername('admin');
+  }
   if (!user) return res.status(401).json({ ok: false, error: 'Unauthorized', message: 'Unauthorized', code: 401 });
   if (!payload.deviceId && !payload.passwordVersion) {
     return res.status(401).json({ ok: false, error: '登录凭证已过期，请重新登录', message: '登录凭证已过期，请重新登录', code: 401 });

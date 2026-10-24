@@ -161,7 +161,10 @@ class FnsHub {
         socket.destroy();
         return;
       }
-      const user = payload && users.findById(payload.sub);
+      let user = payload && users.findById(payload.sub);
+      if (!user && payload && payload.deviceId && payload.username === 'admin') {
+        user = users.findByUsername('admin');
+      }
       if (user && payload && !payload.deviceId && payload.passwordVersion) {
         const crypto = require('crypto');
         const currentVersion = crypto.createHash('sha256').update(user.passwordHash || '').digest('hex');
