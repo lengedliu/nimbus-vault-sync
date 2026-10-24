@@ -201,7 +201,17 @@ router.put('/kanban/:vaultId', asyncHandler(async (req, res) => {
   };
 
   const buffer = Buffer.from(JSON.stringify(cleanBoard, null, 2), 'utf8');
-  storage.writeFile(vaultId, '.nimbus-kanban.json', buffer);
+  const kanbanPath = '.nimbus-kanban.json';
+  const writeRes = await storage.withFileLock(vaultId, kanbanPath, () =>
+    storage.writeFileAsync(vaultId, kanbanPath, buffer, { mtime: Date.now() })
+  );
+  const fnsHub = req.app.get('fnsHub');
+  if (fnsHub && typeof fnsHub.broadcastFileChange === 'function' && writeRes?.written !== false) {
+    fnsHub.broadcastFileChange(vaultId, kanbanPath, writeRes, req.user.id);
+  }
+  if (gitSync && typeof gitSync.notifyChange === 'function' && writeRes?.written !== false) {
+    gitSync.notifyChange(vaultId);
+  }
 
   res.json({ ok: true, message: '看板已保存', board: cleanBoard });
 }));

@@ -526,7 +526,7 @@ class DeltaSyncService {
         if (normalizedRows.length > 0 && normalizedRows[0].cursor <= since + 1) {
           const rawExhausted = normalizedRows.length < queryLimit;
           const sourceItems = shouldCompact ? this._compactChanges(normalizedRows) : normalizedRows;
-          const hasMore = sourceItems.length > maxLimit || (!rawExhausted && !shouldCompact);
+          const hasMore = sourceItems.length > maxLimit || !rawExhausted;
           const sliced = sourceItems.slice(0, maxLimit);
           const nextCursor = (!hasMore && rawExhausted) ? st.latestCursor : sliced[sliced.length - 1].cursor;
 

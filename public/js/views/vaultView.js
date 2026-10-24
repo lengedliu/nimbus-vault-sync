@@ -42,7 +42,15 @@ export async function syncVaultDelta(vaultId) {
     if (!res.ok) return false;
     const data = await res.json();
     if (data.full || data.fullSyncRequired) {
-      state.manifest = data.manifest;
+      if (data.manifest && Object.keys(data.manifest).length > 0) {
+        state.manifest = data.manifest;
+      } else {
+        const mRes = await api(`/api/vaults/${vaultId}/manifest`);
+        if (mRes.ok) {
+          const mData = await mRes.json();
+          if (mData && mData.manifest) state.manifest = mData.manifest;
+        }
+      }
       state.vaultCursor = data.cursor || data.latestCursor || 0;
       scheduleDebouncedViewUpdate(vaultId);
       return true;
@@ -63,7 +71,11 @@ export async function syncVaultDelta(vaultId) {
           delete state.manifest[d.path];
         }
       }
-      state.vaultCursor = data.cursor || state.vaultCursor;
+      const nextCursor = data.cursor || state.vaultCursor;
+      state.vaultCursor = nextCursor;
+      if (data.hasMore && nextCursor > since) {
+        await syncVaultDelta(vaultId);
+      }
       scheduleDebouncedViewUpdate(vaultId);
       return true;
     }
@@ -107,6 +119,11 @@ export function connectVaultWs(vaultId) {
           toast(`检测到并发冲突，已创建分支副本: ${msg.conflictPath}`, 'warning');
           return;
         }
+        if ((msg.type === 'batch_file_change' || msg.type === 'batch_change') && msg.pullRequired) {
+          // 大批量变更（>10 篇）不内联 changes，须先以旧 vaultCursor 拉取增量后再推进游标
+          syncVaultDelta(vaultId);
+          return;
+        }
         if (msg.cursor) {
           state.vaultCursor = Math.max(state.vaultCursor || 0, msg.cursor);
         }
@@ -128,7 +145,7 @@ export function connectVaultWs(vaultId) {
             delete state.manifest[msg.path];
             scheduleDebouncedViewUpdate(vaultId);
           }
-        } else if (msg.type === 'batch_file_change' && Array.isArray(msg.changes)) {
+        } else if ((msg.type === 'batch_file_change' || msg.type === 'batch_change') && Array.isArray(msg.changes)) {
           if (!state.manifest) state.manifest = {};
           for (const c of msg.changes) {
             if (c.action === 'delete') {

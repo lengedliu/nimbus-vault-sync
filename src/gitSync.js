@@ -380,9 +380,40 @@ async function commitAndPush(vaultId, { customMessage, author } = {}) {
   if (config.remoteUrl) {
     // Optional pull rebase before pushing
     if (config.pullBeforePush) {
+      try {
+        await replayPendingPulledChanges(vaultId);
+      } catch (err) {
+        console.error(`[GitSync] 推送前补放固化区间失败（标记保留）: ${vaultId}`, (err && err.message) || err);
+      }
+      const prePullHead = gitHeadSha(vaultId);
       const pullRes = await execGit(vaultId, ['pull', '--rebase', 'origin', branch]);
       if (!pullRes.success && !pullRes.stderr.includes('Couldn\'t find remote ref')) {
         // Log warning but try push or return
+      } else if (pullRes.success) {
+        const headAfterPull = gitHeadSha(vaultId);
+        if (headAfterPull && headAfterPull !== prePullHead) {
+          commitHash = headAfterPull;
+          let recordRes;
+          try {
+            recordRes = await recordPulledChanges(vaultId, { diffBase: prePullHead });
+          } catch (err) {
+            if (prePullHead && headAfterPull && prePullHead !== headAfterPull) {
+              markPendingPulledRange(vaultId, prePullHead, headAfterPull);
+            }
+            throw err;
+          }
+          const { changedPaths, deletePaths, manifest: newManifest } = recordRes;
+          try {
+            const storage = require('./storage');
+            const ftsEngine = require('./ftsEngine');
+            if (ftsEngine && typeof ftsEngine.buildVaultIndexAsync === 'function') {
+              ftsEngine.buildVaultIndexAsync(vaultId, newManifest, (p) => storage.readFile(vaultId, p)).catch(() => {});
+            }
+            broadcastPulledChanges(vaultId, { changedPaths, deletePaths });
+          } catch (err) {
+            console.error(`[GitSync] pullBeforePush 后刷新索引/广播失败: ${vaultId}`, err);
+          }
+        }
       }
     }
 

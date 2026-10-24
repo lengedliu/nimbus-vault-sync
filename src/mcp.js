@@ -257,7 +257,7 @@ function buildMcpServer(user, defaultVaultId) {
     'List all Obsidian vaults available to this user account with ID, name, file count, and permissions.',
     {},
     async () => {
-      const vaults = await Promise.all(vaultsStore.listForUser(user.id).map(async (v) => {
+      const vaults = await Promise.all(vaultsStore.listForUser(user.id, user.role === 'admin').map(async (v) => {
         const manifest = await storage.getManifestAsync(v.id) || {};
         const paths = Object.keys(manifest);
         return {
@@ -282,7 +282,7 @@ function buildMcpServer(user, defaultVaultId) {
     },
     async ({ vaultId }) => {
       const id = resolveVaultId(vaultId);
-      const vault = vaultsStore.listForUser(user.id).find((v) => v.id === id);
+      const vault = vaultsStore.listForUser(user.id, user.role === 'admin').find((v) => v.id === id);
       const manifest = await storage.getManifestAsync(id) || {};
       const paths = Object.keys(manifest);
 

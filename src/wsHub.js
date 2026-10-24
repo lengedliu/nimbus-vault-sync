@@ -68,6 +68,7 @@ class FnsHub {
     if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
     this.heartbeatInterval = setInterval(() => {
       const devicesStore = require('./devices');
+      const crypto = require('crypto');
       for (const [vaultId, room] of this.rooms.entries()) {
         for (const client of Array.from(room)) {
           // Check if token was revoked during active session
@@ -82,6 +83,26 @@ class FnsHub {
             } catch {}
             room.delete(client);
             continue;
+          }
+
+          // Check if non-device web session passwordVersion was invalidated by a password change
+          if (client.tokenPayload && !client.tokenPayload.deviceId && client.tokenPayload.passwordVersion) {
+            const currentUser = users.findById(client.userId);
+            const currentVersion = currentUser && currentUser.passwordHash
+              ? crypto.createHash('sha256').update(currentUser.passwordHash).digest('hex')
+              : null;
+            if (!currentUser || client.tokenPayload.passwordVersion !== currentVersion) {
+              try {
+                this._send(client.ws, {
+                  type: 'auth_revoked',
+                  reason: 'password_changed',
+                  message: 'Your account password has been changed. Please log in again.',
+                });
+                client.ws.close(4001, 'Password changed');
+              } catch {}
+              room.delete(client);
+              continue;
+            }
           }
 
           if (client.isAlive === false) {
@@ -141,6 +162,15 @@ class FnsHub {
         return;
       }
       const user = payload && users.findById(payload.sub);
+      if (user && payload && !payload.deviceId && payload.passwordVersion) {
+        const crypto = require('crypto');
+        const currentVersion = crypto.createHash('sha256').update(user.passwordHash || '').digest('hex');
+        if (payload.passwordVersion !== currentVersion) {
+          socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+      }
       const vaultId = query.vaultId;
       const vault = vaultId && vaults.getById(vaultId);
 
@@ -231,7 +261,7 @@ class FnsHub {
   }
 
   /**
-   * Kick out all active WebSocket sessions for a specific user ID (e.g. on password change or account disable)
+   * Kick out all active WebSocket sessions for a specific user ID (e.g. on account deletion or disable)
    */
   disconnectUser(userId, reason = 'user_revoked') {
     if (!userId) return 0;
@@ -246,6 +276,31 @@ class FnsHub {
               message: 'Your account credentials have been changed or revoked. Please log in again.',
             });
             client.ws.close(4001, 'User revoked');
+          } catch {}
+          room.delete(client);
+          count++;
+        }
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Kick out non-device web login WebSocket sessions for a user when their password changes
+   */
+  disconnectWebSessions(userId, reason = 'password_changed') {
+    if (!userId) return 0;
+    let count = 0;
+    for (const [vaultId, room] of this.rooms.entries()) {
+      for (const client of Array.from(room)) {
+        if (client.userId === userId && (!client.tokenPayload || !client.tokenPayload.deviceId)) {
+          try {
+            this._send(client.ws, {
+              type: 'auth_revoked',
+              reason,
+              message: 'Your account password has been changed. Please log in again.',
+            });
+            client.ws.close(4001, 'Password changed');
           } catch {}
           room.delete(client);
           count++;
@@ -744,7 +799,7 @@ class FnsHub {
         }
 
         const moveRes = await storage.withDualFileLock(vaultId, oldPath, newPath, async () => {
-          return storage.moveVaultFileAsync(vaultId, oldPath, newPath, { overwrite: true });
+          return storage.moveVaultFileAsync(vaultId, oldPath, newPath, { overwrite: true, conflictSafe: true });
         });
 
         if (!moveRes.ok) {
@@ -754,6 +809,51 @@ class FnsHub {
             oldPath,
             path: newPath,
           });
+        }
+
+        if (moveRes.written === false && (moveRes.conflict || moveRes.serverWin)) {
+          this._logActivity(vaultId, {
+            type: 'conflict',
+            path: newPath,
+            conflictPath: moveRes.conflict || null,
+            userId: client.userId,
+          });
+          syncLogger.recordLog({
+            vaultId,
+            userId: client.userId,
+            username: client.username,
+            deviceName: client.deviceName,
+            action: 'conflict',
+            path: newPath,
+            size: moveRes.conflictSize || moveRes.size || 0,
+            hash: moveRes.currentHash,
+            status: 'conflict',
+            detail: moveRes.serverWin
+              ? `重命名目标冲突 (server_win): ${oldPath} -> ${newPath}`
+              : `重命名目标冲突，已创建分支副本: ${moveRes.conflict}`,
+          });
+
+          this._send(client.ws, {
+            type: 'conflict',
+            path: newPath,
+            conflictPath: moveRes.conflict || undefined,
+            serverWin: moveRes.serverWin || undefined,
+            currentHash: moveRes.currentHash,
+            conflictHash: moveRes.conflictHash,
+          });
+          this._send(client.ws, {
+            type: 'ack',
+            action: 'rename',
+            oldPath,
+            path: newPath,
+            conflict: moveRes.conflict || true,
+            cursor: deltaSync.getLatestCursor(vaultId),
+          });
+          this.broadcastFileDelete(vaultId, oldPath, client.userId, client.ws);
+          if (moveRes.conflict) {
+            this.broadcastFileChange(vaultId, moveRes.conflict, { currentHash: moveRes.conflictHash }, client.userId, client.ws);
+          }
+          return;
         }
 
         this._logActivity(vaultId, { type: 'change', path: `${oldPath} -> ${newPath}`, userId: client.userId });

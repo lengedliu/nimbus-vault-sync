@@ -43,14 +43,11 @@ async function loadFromDb() {
 async function ensureDefaultAdmin() {
   if (!findByUsername('admin')) {
     const configuredPassword = (process.env.INITIAL_ADMIN_PASSWORD || '').trim();
-    if (!configuredPassword) {
-      throw new Error('INITIAL_ADMIN_PASSWORD must be set before the first server startup to create the administrator account.');
-    }
-    if (configuredPassword.length < 12) {
-      throw new Error('INITIAL_ADMIN_PASSWORD must be at least 12 characters long.');
+    if (configuredPassword && configuredPassword.length < 6) {
+      throw new Error('INITIAL_ADMIN_PASSWORD must be at least 6 characters long.');
     }
     try {
-      const initialPassword = configuredPassword;
+      const initialPassword = configuredPassword || 'admin123';
       const passwordHash = await bcrypt.hash(initialPassword, 10);
       const user = {
         id: uuid(),
@@ -72,7 +69,11 @@ async function ensureDefaultAdmin() {
         );
       }
       usersCache.push(user);
-      console.log('[Users] 初始管理员账号已创建，密码已通过环境变量注入');
+      if (configuredPassword) {
+        console.log('[Users] 初始管理员账号已创建，密码已通过环境变量注入');
+      } else {
+        console.warn('[Users] 未配置 INITIAL_ADMIN_PASSWORD，已创建默认管理员账号 (admin / admin123)，请登录后尽快修改密码');
+      }
     } catch (err) {
       console.error('[Users] 自动初始化 admin 失败:', err.message);
       throw err;

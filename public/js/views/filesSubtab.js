@@ -170,7 +170,7 @@ export function showMoveFileModal(vaultId, currentPath, callbacks = {}) {
         const res = await api(`/api/vaults/${vaultId}/batch/move`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ paths: [currentPath], targetFolder: targetDir }),
+          body: JSON.stringify({ paths: [currentPath], targetFolder: targetDir, newName }),
         });
         const data = await res.json();
         if (data.results && data.results[0] && !data.results[0].success) {

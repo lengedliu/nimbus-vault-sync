@@ -76,15 +76,23 @@ router.put('/users/:userId', asyncHandler(async (req, res) => {
   }
 
   try {
+    const prevRole = user.role;
+    const prevMemberships = vaultMembers.listForUser(userId);
+    const hasPasswordChange = Boolean(password && password.trim());
+
     const updatedUser = await users.updateUser(userId, {
-      password: password && password.trim() ? password.trim() : undefined,
+      password: hasPasswordChange ? password.trim() : undefined,
       role: role === 'admin' ? 'admin' : (role === 'user' ? 'user' : undefined),
     });
 
+    const fnsHub = req.app.get('fnsHub');
+    if (hasPasswordChange && fnsHub && typeof fnsHub.disconnectWebSessions === 'function') {
+      fnsHub.disconnectWebSessions(userId, 'password_changed');
+    }
+
     // If vaultAssignments provided, update vault memberships as well
     if (Array.isArray(vaultAssignments)) {
-      const current = vaultMembers.listForUser(userId);
-      for (const c of current) {
+      for (const c of prevMemberships) {
         await vaultMembers.removeMember(c.vaultId, userId);
       }
       for (const item of vaultAssignments) {
@@ -95,6 +103,18 @@ router.put('/users/:userId', asyncHandler(async (req, res) => {
             await vaultMembers.addOrUpdateMember(item.vaultId, userId, perm);
           }
         }
+      }
+    }
+
+    // Reconcile active WebSocket permissions if vaultAssignments changed or role changed
+    if (fnsHub && typeof fnsHub.updateUserPermissions === 'function' && (Array.isArray(vaultAssignments) || (role && role !== prevRole))) {
+      const isNowAdmin = updatedUser && updatedUser.role === 'admin';
+      const affectedVaultIds = new Set(vaultsStore.getRawVaults().map((v) => v.id));
+      for (const c of prevMemberships) affectedVaultIds.add(c.vaultId);
+      for (const vId of affectedVaultIds) {
+        const effectivePerm = vaultsStore.getUserPermission(userId, vId, isNowAdmin);
+        const normalizedPerm = effectivePerm === 'owner' ? 'read-write' : effectivePerm;
+        fnsHub.updateUserPermissions(vId, userId, normalizedPerm);
       }
     }
 
@@ -113,6 +133,10 @@ router.put('/users/:userId/password', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: '密码长度至少需要 6 位' });
   }
   const updatedUser = await users.updateUser(userId, { password: password.trim() });
+  const fnsHub = req.app.get('fnsHub');
+  if (fnsHub && typeof fnsHub.disconnectWebSessions === 'function') {
+    fnsHub.disconnectWebSessions(userId, 'password_changed');
+  }
   res.json({ ok: true, user: updatedUser });
 }));
 
@@ -157,6 +181,22 @@ router.put('/users/:userId/vaults', asyncHandler(async (req, res) => {
           await vaultMembers.addOrUpdateMember(item.vaultId, userId, perm);
         }
       }
+    }
+  }
+
+  const fnsHub = req.app.get('fnsHub');
+  if (fnsHub && typeof fnsHub.updateUserPermissions === 'function') {
+    const isUserAdmin = user.role === 'admin';
+    const affectedVaultIds = new Set(current.map((c) => c.vaultId));
+    if (Array.isArray(vaultAssignments)) {
+      for (const item of vaultAssignments) {
+        if (item && item.vaultId) affectedVaultIds.add(item.vaultId);
+      }
+    }
+    for (const vId of affectedVaultIds) {
+      const effectivePerm = vaultsStore.getUserPermission(userId, vId, isUserAdmin);
+      const normalizedPerm = effectivePerm === 'owner' ? 'read-write' : effectivePerm;
+      fnsHub.updateUserPermissions(vId, userId, normalizedPerm);
     }
   }
 

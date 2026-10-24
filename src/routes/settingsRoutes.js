@@ -4,7 +4,10 @@ const users = require('../users');
 const settingsManager = require('../settings');
 const vaultsStore = require('../vaults');
 const sharesStore = require('../shares');
+const vaultMembers = require('../vaultMembers');
 const syncRulesStore = require('../syncRules');
+const syncLogger = require('../syncLogger');
+const deltaSync = require('../deltaSync');
 const dbManager = require('../db');
 const { asyncHandler } = require('../utils/asyncHandler');
 const { VERSION } = require('../config');
@@ -54,6 +57,10 @@ router.post('/change-password', asyncHandler(async (req, res) => {
 
   try {
     await users.updatePassword(req.user.id, newPassword);
+    const fnsHub = req.app.get('fnsHub');
+    if (fnsHub && typeof fnsHub.disconnectWebSessions === 'function') {
+      fnsHub.disconnectWebSessions(req.user.id, 'password_changed');
+    }
     res.json({ ok: true, message: '密码修改成功，请牢记新密码' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -144,14 +151,17 @@ router.post('/database/switch', asyncHandler(async (req, res) => {
   }
 
   try {
-    // 1. Gather all current in-memory dataset
+    // 1. Gather all current in-memory dataset (matching /api/admin/database/switch)
     const dataset = {
-      users: users.getRawUsers(),
-      vaults: vaultsStore.getRawVaults(),
-      shares: sharesStore.getRawShares(),
-      syncRules: syncRulesStore.getAllRules(),
-      systemSettings: settingsManager.getSystemSettings(),
-      apiTokens: settingsManager.getAllTokens(),
+      users: users.getRawUsers ? users.getRawUsers() : [],
+      vaults: vaultsStore.getRawVaults ? vaultsStore.getRawVaults() : [],
+      vaultMembers: vaultMembers.getRawMembers ? vaultMembers.getRawMembers() : [],
+      shares: sharesStore.getRawShares ? sharesStore.getRawShares() : [],
+      syncRules: syncRulesStore.getRawRules ? syncRulesStore.getRawRules() : (syncRulesStore.getAllRules ? syncRulesStore.getAllRules() : {}),
+      systemSettings: settingsManager.getSystemSettings ? settingsManager.getSystemSettings() : {},
+      apiTokens: settingsManager.getAllTokens ? settingsManager.getAllTokens() : [],
+      syncLogs: syncLogger.getRawLogs ? syncLogger.getRawLogs() : [],
+      vaultChanges: deltaSync.getAllChangesForMigration ? await deltaSync.getAllChangesForMigration() : [],
     };
 
     // 2. Perform switch and data migration
@@ -160,9 +170,18 @@ router.post('/database/switch', asyncHandler(async (req, res) => {
     // 3. Reload cache from newly active database
     await users.loadFromDb();
     await vaultsStore.loadFromDb();
+    await vaultMembers.loadFromDb();
     await sharesStore.loadFromDb();
     await syncRulesStore.loadFromDb();
     await settingsManager.loadFromDb();
+    await syncLogger.loadFromDb();
+    const devicesStore = require('../devices');
+    if (devicesStore.loadFromDb) {
+      await devicesStore.loadFromDb();
+    }
+    if (deltaSync.clearCache) {
+      await deltaSync.clearCache();
+    }
 
     res.json({
       ok: true,
@@ -175,6 +194,7 @@ router.post('/database/switch', asyncHandler(async (req, res) => {
     try {
       await users.loadFromDb();
       await vaultsStore.loadFromDb();
+      await vaultMembers.loadFromDb();
     } catch {}
     res.status(500).json({ error: `数据库引擎切换失败: ${err.message}` });
   }

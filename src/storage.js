@@ -1505,7 +1505,7 @@ async function writeFileFromPathAsync(vaultId, relPath, tempFilePath, incomingHa
 }
 
 /** Soft-delete: move the file into trash/ instead of unlinking it outright. */
-function deleteFile(vaultId, relPath) {
+function deleteFile(vaultId, relPath, options = {}) {
   const normRel = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
   const full = safeJoin(vaultFilesRoot(vaultId), normRel);
   if (!fs.existsSync(full)) return false;
@@ -1534,7 +1534,10 @@ function deleteFile(vaultId, relPath) {
   });
   updateManifestEntry(vaultId, normRel, null);
   invalidateContentCacheEntry(vaultId, normRel);
-  trackRecordChange(vaultId, normRel, deltaSync.recordChange(vaultId, { path: normRel, action: 'DELETE', size: 0, mtime: Date.now() }));
+  const changePromise = trackRecordChange(vaultId, normRel, deltaSync.recordChange(vaultId, { path: normRel, action: 'DELETE', size: 0, mtime: Date.now() }));
+  if (options && typeof options === 'object') {
+    options.changePromise = changePromise;
+  }
   try {
     ftsEngine.onFileDelete(vaultId, normRel);
   } catch {}
@@ -1816,26 +1819,109 @@ function exportFilesZip(vaultId, relPaths, outputStream) {
 /** Move or rename a file within a vault */
 function moveVaultFile(vaultId, oldRelPath, newRelPath, options = {}) {
   const overwrite = Boolean(options && options.overwrite);
+  const conflictSafe = Boolean(options && options.conflictSafe);
   const normOld = String(oldRelPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
   const normNew = String(newRelPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
   const root = vaultFilesRoot(vaultId);
   const oldFull = safeJoin(root, normOld);
   const newFull = safeJoin(root, normNew);
   if (!fs.existsSync(oldFull)) return { ok: false, error: '原文件不存在' };
-  if (fs.existsSync(newFull) && oldFull !== newFull) {
-    if (!overwrite) {
-      return { ok: false, error: '目标路径已存在同名文件' };
-    }
-    try {
-      const existingStat = fs.statSync(newFull);
-      snapshotBeforeOverwriteFromFile(vaultId, normNew, newFull, existingStat.size);
-    } catch {}
-  }
 
   // Reuse existing manifest hash & cached text content before rename to avoid redundant disk reads
   const oldMeta = getManifestEntry(vaultId, normOld);
   const vContentCache = contentCache.get(vaultId);
   const cachedTextObj = vContentCache ? vContentCache.get(normOld) : null;
+
+  if (fs.existsSync(newFull) && oldFull !== newFull) {
+    if (!overwrite) {
+      return { ok: false, error: '目标路径已存在同名文件' };
+    }
+    const existingStat = fs.statSync(newFull);
+    if (conflictSafe) {
+      const existingNewMeta = getManifestEntry(vaultId, normNew);
+      const existingNewHash = (existingNewMeta && existingNewMeta.size === existingStat.size && existingNewMeta.hash)
+        ? existingNewMeta.hash
+        : sha256(fs.readFileSync(newFull));
+      const oldStat = fs.statSync(oldFull);
+      const oldBuf = (oldMeta && oldMeta.size === oldStat.size && oldMeta.hash) ? null : fs.readFileSync(oldFull);
+      const oldHash = (oldMeta && oldMeta.size === oldStat.size && oldMeta.hash) ? oldMeta.hash : sha256(oldBuf);
+
+      if (existingNewHash !== oldHash) {
+        const strategy = getEffectiveConflictStrategy();
+        if (strategy === 'server_win') {
+          // 保留云端目标路径已有文件，将原路径移入回收站并记录单一 DELETE
+          const delOut = {};
+          deleteFile(vaultId, normOld, delOut);
+          return {
+            ok: true,
+            written: false,
+            conflict: null,
+            serverWin: true,
+            currentHash: existingNewHash,
+            mtime: existingStat.mtimeMs,
+            size: existingStat.size,
+            changePromise: delOut.changePromise || Promise.resolve(),
+          };
+        }
+        if (strategy !== 'overwrite_latest') {
+          // 默认 conflict_copy：保留目标路径已有文件不动，把重命名源文件移动为 .conflict-* 副本
+          const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+          const ext = path.extname(normNew);
+          const base = normNew.slice(0, normNew.length - ext.length);
+          const conflictRel = `${base}.conflict-${stamp}${ext}`;
+          const conflictFull = safeJoin(root, conflictRel);
+          fs.mkdirSync(path.dirname(conflictFull), { recursive: true });
+          moveFile(oldFull, conflictFull);
+
+          try {
+            mutateIndex(historyIndexPath(vaultId), (entries) => {
+              for (const entry of entries) {
+                if (entry.path === normOld) {
+                  entry.path = conflictRel;
+                }
+              }
+              return entries;
+            });
+          } catch {}
+
+          updateManifestEntry(vaultId, normOld, null);
+          invalidateContentCacheEntry(vaultId, normOld);
+          const pDel = trackRecordChange(vaultId, normOld, deltaSync.recordChange(vaultId, { path: normOld, action: 'DELETE', size: 0, mtime: Date.now() }));
+          try { ftsEngine.onFileDelete(vaultId, normOld); } catch {}
+
+          const conflictStat = fs.statSync(conflictFull);
+          const mtimeVal = conflictStat.mtimeMs || Date.now();
+          const ctimeVal = oldMeta?.ctime || conflictStat.birthtimeMs || conflictStat.ctimeMs || mtimeVal;
+          updateManifestEntry(vaultId, conflictRel, { size: conflictStat.size, mtime: mtimeVal, ctime: ctimeVal, hash: oldHash });
+          invalidateContentCacheEntry(vaultId, conflictRel);
+          const pUpsert = trackRecordChange(vaultId, conflictRel, deltaSync.recordChange(vaultId, { path: conflictRel, action: 'UPSERT', size: conflictStat.size, mtime: mtimeVal, hash: oldHash }));
+          try {
+            if (SEARCHABLE_EXT_RE.test(conflictRel) && conflictStat.size <= 2 * 1024 * 1024) {
+              const text = (oldBuf || fs.readFileSync(conflictFull)).toString('utf8');
+              ftsEngine.onFileWrite(vaultId, conflictRel, text, { size: conflictStat.size, mtime: mtimeVal, hash: oldHash });
+            }
+          } catch {}
+          try { gitSync.notifyChange(vaultId); } catch {}
+
+          return {
+            ok: true,
+            written: false,
+            conflict: conflictRel,
+            currentHash: existingNewHash,
+            conflictHash: oldHash,
+            conflictSize: conflictStat.size,
+            conflictMtime: mtimeVal,
+            mtime: existingStat.mtimeMs,
+            size: existingStat.size,
+            changePromise: Promise.all([pDel, pUpsert]),
+          };
+        }
+      }
+    }
+    try {
+      snapshotBeforeOverwriteFromFile(vaultId, normNew, newFull, existingStat.size);
+    } catch {}
+  }
 
   fs.mkdirSync(path.dirname(newFull), { recursive: true });
   moveFile(oldFull, newFull);

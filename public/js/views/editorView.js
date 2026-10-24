@@ -324,7 +324,7 @@ export async function openFile(vaultId, path, callbacks = {}) {
       ? (res.headers.get('X-File-Hash') || res.headers.get('x-file-hash'))
       : undefined;
     const text = await res.text();
-    let baseHash = (state.manifest && state.manifest[path]) ? state.manifest[path].hash : (headerHash || undefined);
+    let baseHash = headerHash || ((state.manifest && state.manifest[path]) ? state.manifest[path].hash : undefined);
 
     mainPanel.innerHTML = '';
     const layout = document.createElement('div');
@@ -442,8 +442,15 @@ export async function openFile(vaultId, path, callbacks = {}) {
             onBack();
             return;
           }
+          if (saveRes && saveRes.written === false) {
+            toast(saveRes.reason === 'ignored' ? '⚠️ 该文件路径命中同步黑名单规则，未写入' : '⚠️ 文件未能写入云端，可能存在版本冲突', 'error');
+            return;
+          }
           if (saveRes && (saveRes.currentHash || saveRes.hash)) {
             baseHash = saveRes.currentHash || saveRes.hash;
+            if (state.manifest && state.manifest[path]) {
+              state.manifest[path].hash = baseHash;
+            }
           }
           toast('HTML 笔记已保存并已广播同步');
           onBack();
@@ -553,8 +560,15 @@ export async function openFile(vaultId, path, callbacks = {}) {
           onBack();
           return;
         }
+        if (saveRes && saveRes.written === false) {
+          toast(saveRes.reason === 'ignored' ? '⚠️ 该文件路径命中同步黑名单规则，未写入' : '⚠️ 文件未能写入云端，可能存在版本冲突', 'error');
+          return;
+        }
         if (saveRes && (saveRes.currentHash || saveRes.hash)) {
           baseHash = saveRes.currentHash || saveRes.hash;
+          if (state.manifest && state.manifest[path]) {
+            state.manifest[path].hash = baseHash;
+          }
         }
         toast('保存成功并已广播同步');
         onBack();

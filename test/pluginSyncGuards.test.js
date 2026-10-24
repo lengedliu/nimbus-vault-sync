@@ -913,3 +913,406 @@ test('插件：HTTP 推送冲突协议三分类——serverWin/conflict 受保�
     assert.equal(buffers['big.md'].byteLength, 2 * 1024 * 1024 + 32, '本地内容原样保留');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Round 5 回归测试：7 项同步业务逻辑闭环
+// ---------------------------------------------------------------------------
+
+test('Round 5 #1：init 走游标吻合或增量追更快速通道后，扫描并同步 Obsidian 关闭期间的磁盘离线变更', async (t) => {
+  const crypto = require('node:crypto');
+  const sha = (s) => crypto.createHash('sha256').update(Buffer.from(s)).digest('hex');
+  const enc = new TextEncoder();
+
+  await t.test('serverCursor === localCursor 时，自动推送外部新增/修改并删除外部已删文件', async () => {
+    const plugin = makePlugin();
+    plugin.setVaultCursor('vault-test', 10);
+    const buffers = {
+      'kept.md': enc.encode('same').buffer.slice(0),
+      'edited.md': enc.encode('offline external edit').buffer.slice(0),
+      'new-external.md': enc.encode('created while closed').buffer.slice(0),
+    };
+    makeVaultStub(plugin, buffers);
+
+    plugin.updateBaselineEntry('vault-test', 'kept.md', { hash: sha('same'), mtime: 1, size: 4 });
+    plugin.updateBaselineEntry('vault-test', 'edited.md', { hash: sha('old content'), mtime: 1, size: 11 });
+    plugin.updateBaselineEntry('vault-test', 'deleted-external.md', { hash: sha('gone'), mtime: 1, size: 4 });
+    plugin.fileHashes.set('kept.md', sha('same'));
+
+    const pushed = [];
+    const deleted = [];
+    plugin.pushLocalFile = async (f) => {
+      pushed.push(f.path);
+      return true;
+    };
+    plugin.deleteRemoteFile = async (p) => {
+      deleted.push(p);
+      return true;
+    };
+
+    await plugin.handleServerMessage({ type: 'init', cursor: 10, ignorePatterns: [] });
+    assert.deepEqual(pushed.sort(), ['edited.md', 'new-external.md']);
+    assert.deepEqual(deleted, ['deleted-external.md']);
+  });
+
+  await t.test('本地空库（0 文件）时触发空库保护，绝不发起任何云端删除', async () => {
+    const plugin = makePlugin();
+    plugin.setVaultCursor('vault-test', 10);
+    makeVaultStub(plugin, {});
+    plugin.updateBaselineEntry('vault-test', 'a.md', { hash: sha('a'), mtime: 1, size: 1 });
+
+    let deletedCalled = false;
+    plugin.deleteRemoteFile = async () => {
+      deletedCalled = true;
+      return true;
+    };
+
+    await plugin.handleServerMessage({ type: 'init', cursor: 10, ignorePatterns: [] });
+    assert.equal(deletedCalled, false, '空库保护下不得删除云端文件');
+  });
+});
+
+test('Round 5 #2 & #3：链式重命名折叠、屏障期先 rename 后 push、目录重命名与 3-Way 前重命名对齐', async (t) => {
+  await t.test('链式重命名 A -> B -> C 折叠为 A -> C，且联动更新待推队列；A -> B -> A 抵消', async () => {
+    const plugin = makePlugin();
+    plugin.queuePendingLocalPush('a.md');
+    plugin.queuePendingLocalRename('a.md', 'b.md');
+    plugin.queuePendingLocalRename('b.md', 'c.md');
+
+    assert.deepEqual(Array.from(plugin.pendingLocalRenames.entries()), [['a.md', 'c.md']]);
+    assert.equal(plugin.pendingLocalQueueWhileBarrier.has('a.md'), false);
+    assert.equal(plugin.pendingLocalQueueWhileBarrier.has('b.md'), false);
+    assert.equal(plugin.pendingLocalQueueWhileBarrier.has('c.md'), true);
+
+    // 环路改回原名 A -> C -> A 应自动抵消
+    plugin.queuePendingLocalRename('c.md', 'a.md');
+    assert.equal(plugin.pendingLocalRenames.size, 0);
+  });
+
+  await t.test('屏障期重命名并修改：flush 时先执行 rename 再执行 push，防止旧文件覆盖新修改', async () => {
+    const plugin = makePlugin();
+    const enc = new TextEncoder();
+    const buffers = { 'b.md': enc.encode('edited after rename').buffer.slice(0) };
+    makeVaultStub(plugin, buffers);
+
+    plugin.syncBarrierActive = true;
+    plugin.queuePendingLocalRename('a.md', 'b.md');
+    plugin.queuePendingLocalPush('b.md');
+
+    const order = [];
+    plugin.renameRemoteFile = async (oldP, newF) => {
+      order.push(`rename:${oldP}->${newF.path}`);
+      return true;
+    };
+    plugin.pushLocalFile = async (f) => {
+      order.push(`push:${f.path}`);
+      return true;
+    };
+
+    await plugin.flushPendingLocalChangesAfterBarrier();
+    assert.deepEqual(order, ['rename:a.md->b.md', 'push:b.md']);
+  });
+
+  await t.test('屏障期重命名文件夹：自动为目录下所有子文件记录挂起重命名', async () => {
+    const plugin = makePlugin();
+    plugin.isVaultReady = true;
+    plugin.syncBarrierActive = true;
+    const enc = new TextEncoder();
+    makeVaultStub(plugin, {
+      'newDir/sub/1.md': enc.encode('1').buffer.slice(0),
+      'newDir/2.md': enc.encode('2').buffer.slice(0),
+    });
+
+    const folder = Object.assign(new obsidianStub.TFolder(), { path: 'newDir' });
+    await plugin.onLocalFileRename(folder, 'oldDir');
+
+    assert.deepEqual(Array.from(plugin.pendingLocalRenames.entries()).sort(), [
+      ['oldDir/2.md', 'newDir/2.md'],
+      ['oldDir/sub/1.md', 'newDir/sub/1.md'],
+    ]);
+  });
+});
+
+test('Round 5 #4：服务端 moveVaultFile conflictSafe 冲突保护与插件 rename 冲突收敛', async (t) => {
+  const storage = require('../src/storage');
+
+  await t.test('storage.moveVaultFileAsync 在 conflictSafe=true 且目标存在不同内容时生成 .conflict-* 副本并保留原目标', async () => {
+    const vaultId = `test-rename-conflict-${Date.now()}`;
+    try {
+      await storage.writeFileAsync(vaultId, 'src.md', Buffer.from('from source rename'), { mtime: 100 });
+      await storage.writeFileAsync(vaultId, 'dest.md', Buffer.from('existing target on server'), { mtime: 200 });
+
+      const res = await storage.moveVaultFileAsync(vaultId, 'src.md', 'dest.md', { overwrite: true, conflictSafe: true });
+      assert.equal(res.ok, true);
+      assert.equal(res.written, false);
+      assert.ok(res.conflict && res.conflict.startsWith('dest.conflict-'), '应生成 dest.conflict-* 分支副本');
+
+      // 原目标文件完好无损
+      const destBuf = storage.readFile(vaultId, 'dest.md');
+      assert.equal(destBuf.toString('utf8'), 'existing target on server');
+      // 源文件已移入冲突副本
+      assert.equal(storage.readFile(vaultId, 'src.md'), null);
+      const conflictBuf = storage.readFile(vaultId, res.conflict);
+      assert.equal(conflictBuf.toString('utf8'), 'from source rename');
+    } finally {
+      try { storage.deleteVaultDirectory(vaultId); } catch {}
+    }
+  });
+
+  await t.test('插件 renameRemoteFile 收到带 conflict 的 ack 时，清理旧基线且不把旧 hash 写进新路径基线', async () => {
+    const plugin = makePlugin();
+    plugin.fileHashes.set('old.md', 'old-hash');
+    plugin.updateBaselineEntry('vault-test', 'old.md', { hash: 'old-hash', mtime: 1, size: 3 });
+    plugin.sendWsMessageAndWait = async () => ({
+      type: 'ack',
+      action: 'rename',
+      oldPath: 'old.md',
+      path: 'new.md',
+      conflict: 'new.conflict-1.md',
+      cursor: 15,
+    });
+
+    const ok = await plugin.renameRemoteFile('old.md', { path: 'new.md', stat: { mtime: 2, size: 3 } });
+    assert.equal(ok, true);
+    assert.equal(plugin.getBaselineEntry('vault-test', 'old.md'), null);
+    assert.equal(plugin.getBaselineEntry('vault-test', 'new.md'), null, '冲突时不应把旧 hash 伪造成新路径基线');
+  });
+});
+
+test('Round 5 #5：在途 push 期间文件被删除或重命名，迟到的 push ack 不复活已删路径基线', async () => {
+  const plugin = makePlugin();
+  plugin.updateBaselineEntry('vault-test', 'victim.md', { hash: 'h0', mtime: 1, size: 2 });
+  plugin.fileHashes.set('victim.md', 'h0');
+
+  // 本地触发删除（例如用户在 push 飞出后立刻删了该文件）
+  plugin.queuePendingLocalDelete('victim.md');
+  plugin.updateBaselineEntry('vault-test', 'victim.md', null);
+  plugin.fileHashes.delete('victim.md');
+
+  // 随后网络上迟到的 push ack 抵达
+  await plugin.handleServerMessage({
+    type: 'ack',
+    action: 'push',
+    path: 'victim.md',
+    hash: 'h-late-push',
+    mtime: 99,
+    cursor: 20,
+  });
+
+  assert.equal(plugin.getBaselineEntry('vault-test', 'victim.md'), null, '迟到的 push ack 绝不能复活已删除文件的基线');
+  assert.equal(plugin.fileHashes.has('victim.md'), false);
+});
+
+test('Round 5 #6：syncDeltaChanges 与 syncManifest 游标严格单调不回退，且首拉半途失败不提前写游标', async (t) => {
+  await t.test('syncDeltaChanges 遇到并发已推进的更高本地游标时不回退', async () => {
+    const plugin = makePlugin();
+    plugin.setVaultCursor('vault-test', 50);
+
+    await withFetch(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ updates: [], deletes: [], cursor: 30, hasMore: false }),
+    }), () => plugin.syncDeltaChanges(25));
+
+    assert.equal(plugin.getVaultCursor('vault-test'), 50, '本地游标已高于增量页 cursor 时不得倒退');
+  });
+
+  await t.test('新设备首拉（localCount === 0）若有文件拉取失败，不提前把游标设为 remoteCursor', async () => {
+    const plugin = makePlugin();
+    makeVaultStub(plugin, {});
+    plugin.setVaultCursor('vault-test', 0);
+    plugin.pullRemoteFileViaHttp = async (p) => p !== 'fail.md';
+
+    await plugin.syncManifest({
+      'ok.md': { hash: 'h1', mtime: 1, size: 2 },
+      'fail.md': { hash: 'h2', mtime: 1, size: 2 },
+    }, 88);
+
+    assert.equal(plugin.getVaultCursor('vault-test'), 0, '首拉存在失败项时游标必须保持为 0 以便重连重试');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 6 回归测试：业务逻辑与会话权限闭环
+// ---------------------------------------------------------------------------
+
+test('Round 6：wsHub.disconnectWebSessions 仅踢出网页登录会话，保留独立设备 Token 连接', async () => {
+  const wsHub = require('../src/wsHub');
+  const vaultId = `test-ws-session-${Date.now()}`;
+  const closedWeb = [];
+  const closedDevice = [];
+
+  const webClient = {
+    userId: 'u-1',
+    username: 'alice',
+    deviceId: 'Web-Dashboard',
+    tokenPayload: { sub: 'u-1', passwordVersion: 'old-ver' },
+    ws: {
+      readyState: 1,
+      OPEN: 1,
+      send: () => {},
+      close: (code, reason) => closedWeb.push({ code, reason }),
+    },
+  };
+  const deviceClient = {
+    userId: 'u-1',
+    username: 'alice',
+    deviceId: 'dev-obsidian-1',
+    tokenPayload: { sub: 'u-1', deviceId: 'dev-obsidian-1', type: 'device' },
+    ws: {
+      readyState: 1,
+      OPEN: 1,
+      send: () => {},
+      close: (code, reason) => closedDevice.push({ code, reason }),
+    },
+  };
+
+  const room = wsHub._room(vaultId);
+  room.add(webClient);
+  room.add(deviceClient);
+
+  try {
+    const kicked = wsHub.disconnectWebSessions('u-1', 'password_changed');
+    assert.equal(kicked, 1, '应仅断开 1 个网页端 WebSocket 会话');
+    assert.equal(closedWeb.length, 1);
+    assert.equal(closedWeb[0].code, 4001);
+    assert.equal(closedDevice.length, 0, '专用设备 Token 的连接在改密后应保持不断开');
+    assert.equal(room.has(deviceClient), true);
+  } finally {
+    wsHub.rooms.delete(vaultId);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Round 7 回归测试：冲突备份防护、自死锁消除与文件夹原子重命名
+// ---------------------------------------------------------------------------
+
+test('Round 7：WS serverWin 冲突不污染 _conflictRestorePaths，确保本地修改被备份为 .conflict-offline-*', async () => {
+  const crypto = require('node:crypto');
+  const sha = (buf) => crypto.createHash('sha256').update(Buffer.from(buf)).digest('hex');
+  const enc = new TextEncoder();
+
+  const plugin = makePlugin();
+  const localContent = enc.encode('local unsaved rename/edit');
+  const serverContent = enc.encode('server winning content');
+  const buffers = { 'target.md': localContent.buffer.slice(0) };
+  makeVaultStub(plugin, buffers);
+  // 本地尚未与 serverContent 对齐（无基线或旧基线）
+  plugin.updateBaselineEntry('vault-test', 'target.md', { hash: 'old-base-hash', mtime: 1, size: 10 });
+
+  await plugin.handleServerMessage({
+    type: 'conflict',
+    path: 'target.md',
+    serverWin: true,
+    currentHash: sha(serverContent),
+  });
+
+  assert.equal(
+    plugin._conflictRestorePaths && plugin._conflictRestorePaths.has('target.md'),
+    false,
+    'serverWin 无云端分支副本，绝不能将主路径加入 _conflictRestorePaths'
+  );
+
+  // 随后服务端响应 pull 下发 file 消息时，应触发 R-1 本地备份
+  const ok = await plugin.applyRemoteBinaryChange(
+    'target.md',
+    serverContent.buffer.slice(0),
+    Date.now(),
+    sha(serverContent)
+  );
+  assert.equal(ok, true);
+  const backupKeys = Object.keys(buffers).filter((k) => k.startsWith('target.conflict-offline-'));
+  assert.equal(backupKeys.length, 1, 'serverWin 覆盖前必须为本地修改生成 .conflict-offline-* 备份副本');
+});
+
+test('Round 7：HTTP 大文件推送遇冲突时在 withLocalFileLock 内受保护拉取不发生自死锁', async () => {
+  const crypto = require('node:crypto');
+  const sha = (buf) => crypto.createHash('sha256').update(Buffer.from(buf)).digest('hex');
+
+  const plugin = makePlugin();
+  // 构造 >2MB 的本地文件以触发 HTTP PUT 分支
+  const bigLocal = new Uint8Array(2 * 1024 * 1024 + 64);
+  bigLocal.fill(65);
+  const serverWinning = new TextEncoder().encode('server winning version after conflict');
+  const serverHash = sha(serverWinning);
+
+  const buffers = { 'big.bin': bigLocal.buffer.slice(0) };
+  makeVaultStub(plugin, buffers);
+  plugin.updateBaselineEntry('vault-test', 'big.bin', { hash: 'old-hash', mtime: 1, size: 100 });
+
+  const origFetch = global.fetch;
+  global.fetch = async (url, opts = {}) => {
+    if (opts.method === 'PUT') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          written: false,
+          serverWin: true,
+          currentHash: serverHash,
+          mtime: 123456,
+        }),
+      };
+    }
+    // GET pullRemoteFileViaHttp
+    return {
+      ok: true,
+      status: 200,
+      headers: {
+        get: (h) => {
+          if (h.toLowerCase() === 'x-file-hash') return serverHash;
+          if (h.toLowerCase() === 'x-file-mtime') return '123456';
+          return null;
+        },
+      },
+      arrayBuffer: async () => serverWinning.buffer.slice(0),
+    };
+  };
+
+  try {
+    const fileObj = plugin.app.vault.getAbstractFileByPath('big.bin');
+    // 模拟 onLocalFileChange 持锁调用 pushLocalFile(file, { lockHeld: true })
+    const res = await Promise.race([
+      plugin.withLocalFileLock('big.bin', () => plugin.pushLocalFile(fileObj, { lockHeld: true })),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Deadlock detected!')), 1500)),
+    ]);
+    assert.equal(res, true, '持锁状态下完成 HTTP 冲突受保护拉取且不死锁');
+    assert.equal(buffers['big.bin'].byteLength, serverWinning.byteLength, '主文件已更新为云端胜出版本');
+  } finally {
+    global.fetch = origFetch;
+  }
+});
+
+test('Round 7：在线重命名文件夹走 renameRemoteFile 原子移动而非 delete+push', async () => {
+  const plugin = makePlugin();
+  const enc = new TextEncoder();
+  const buffers = {
+    'NewFolder/a.md': enc.encode('hello a').buffer.slice(0),
+    'NewFolder/sub/b.md': enc.encode('hello b').buffer.slice(0),
+  };
+  makeVaultStub(plugin, buffers);
+  plugin.isVaultReady = true;
+  plugin.syncBarrierActive = false;
+
+  const renamedPairs = [];
+  let deleteCalled = false;
+  plugin.renameRemoteFile = async (oldPath, newFile) => {
+    renamedPairs.push([oldPath, newFile.path]);
+    return true;
+  };
+  plugin.deleteRemoteFile = async () => {
+    deleteCalled = true;
+    return true;
+  };
+
+  const folder = Object.assign(new obsidianStub.TFolder(), { path: 'NewFolder' });
+  await plugin.onLocalFileRename(folder, 'OldFolder');
+
+  assert.equal(deleteCalled, false, '在线文件夹重命名不应直接调用 deleteRemoteFile 破坏历史链路');
+  assert.deepEqual(renamedPairs, [
+    ['OldFolder/a.md', 'NewFolder/a.md'],
+    ['OldFolder/sub/b.md', 'NewFolder/sub/b.md'],
+  ]);
+});
+
+
+

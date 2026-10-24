@@ -383,10 +383,10 @@ router.post('/:vaultId/batch/delete', express.json(), asyncHandler(async (req, r
   res.json({ success: true, count: successCount, results, cursor: deltaSync.getLatestCursor(vaultId) });
 }));
 
-// POST batch move files to target folder
+// POST batch move files to target folder (or rename single file via newName)
 router.post('/:vaultId/batch/move', express.json(), asyncHandler(async (req, res) => {
   if (!requireWriteAccess(req, res)) return;
-  const { paths, targetFolder } = req.body;
+  const { paths, targetFolder, newName } = req.body;
   if (!Array.isArray(paths) || paths.length === 0) {
     return res.status(400).json({ error: '请提供要移动的文件列表' });
   }
@@ -394,6 +394,13 @@ router.post('/:vaultId/batch/move', express.json(), asyncHandler(async (req, res
   const { vaultId } = req.params;
   const fnsHub = req.app.get('fnsHub');
   const targetDir = (targetFolder || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  const customFileName = (paths.length === 1 && typeof newName === 'string')
+    ? newName.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+    : '';
+  if (customFileName && (customFileName.includes('/') || customFileName === '.' || customFileName === '..')) {
+    return res.status(400).json({ error: '文件名不能包含路径分隔符或非法字符' });
+  }
+
   const results = [];
   const batchChanges = [];
   let successCount = 0;
@@ -401,7 +408,7 @@ router.post('/:vaultId/batch/move', express.json(), asyncHandler(async (req, res
   for (const rawPath of paths) {
     if (!rawPath || typeof rawPath !== 'string') continue;
     const relPath = rawPath.replace(/\\/g, '/');
-    const filename = relPath.split('/').pop();
+    const filename = customFileName || relPath.split('/').pop();
     const newRelPath = targetDir ? `${targetDir}/${filename}` : filename;
     if (newRelPath === relPath) {
       results.push({ path: relPath, newPath: newRelPath, success: true, unchanged: true });
@@ -420,10 +427,23 @@ router.post('/:vaultId/batch/move', express.json(), asyncHandler(async (req, res
     if (moveRes.ok) {
       successCount++;
       batchChanges.push({ action: 'delete', path: relPath });
-      const newMeta = await storage.getManifestEntryAsync(vaultId, newRelPath);
-      batchChanges.push({ action: 'update', path: newRelPath, ...newMeta });
+      if (moveRes.written === false && moveRes.conflict) {
+        const conflictMeta = await storage.getManifestEntryAsync(vaultId, moveRes.conflict);
+        batchChanges.push({ action: 'update', path: moveRes.conflict, ...conflictMeta });
+      } else if (moveRes.written !== false) {
+        const newMeta = await storage.getManifestEntryAsync(vaultId, newRelPath);
+        batchChanges.push({ action: 'update', path: newRelPath, ...newMeta });
+      }
     }
-    results.push({ path: relPath, newPath: newRelPath, success: moveRes.ok, error: moveRes.error });
+    results.push({
+      path: relPath,
+      newPath: newRelPath,
+      success: moveRes.ok,
+      written: moveRes.written,
+      conflict: moveRes.conflict,
+      serverWin: moveRes.serverWin,
+      error: moveRes.error,
+    });
   }
 
   if (fnsHub && batchChanges.length > 0) {

@@ -2,6 +2,7 @@ const express = require('express');
 const { requireAuth } = require('../auth');
 const vaultsStore = require('../vaults');
 const storage = require('../storage');
+const deltaSync = require('../deltaSync');
 const syncRules = require('../syncRules');
 const syncLogger = require('../syncLogger');
 const gitSync = require('../gitSync');
@@ -48,11 +49,11 @@ router.post('/:vaultId/history/:versionId/restore', asyncHandler(async (req, res
     return res.status(500).json({ error: '变更记录持久化失败，请重试' });
   }
   if (writeResult.written) {
-    req.app.get('fnsHub').broadcastFileChange(vaultId, result.entry.path, writeResult, req.user.id, true);
+    req.app.get('fnsHub').broadcastFileChange(vaultId, result.entry.path, writeResult, req.user.id, null);
   }
   // changePromise 是内部持久化句柄，不能序列化给客户端（会变成 {}）
   const { changePromise, ...cleanWriteResult } = writeResult;
-  res.json({ path: result.entry.path, ...cleanWriteResult });
+  res.json({ path: result.entry.path, ...cleanWriteResult, cursor: deltaSync.getLatestCursor(vaultId) });
 }));
 
 // ---------------------------------- trash ---------------------------------------
@@ -83,10 +84,10 @@ router.post(
       const manifest = await storage.getManifestAsync(vaultId);
       const meta = manifest ? manifest[restoredPath] : null;
       if (meta) {
-        hub.broadcastFileChange(vaultId, restoredPath, { currentHash: meta.hash }, req.user.id, true);
+        hub.broadcastFileChange(vaultId, restoredPath, { currentHash: meta.hash }, req.user.id, null);
       }
     }
-    res.json({ restored: restoredPath });
+    res.json({ restored: restoredPath, cursor: deltaSync.getLatestCursor(vaultId) });
   })
 );
 
@@ -98,9 +99,9 @@ router.post(
     const result = await storage.restoreAllTrash(vaultId);
     const hub = req.app.get('fnsHub');
     if (hub && result.restoredPaths.length > 0) {
-      hub.broadcastBatchFileChange(vaultId, result.restoredPaths, req.user.id, true);
+      hub.broadcastBatchFileChange(vaultId, result.restoredPaths, req.user.id, null);
     }
-    res.json(result);
+    res.json({ ...result, cursor: deltaSync.getLatestCursor(vaultId) });
   })
 );
 
@@ -116,9 +117,9 @@ router.post(
     const result = await storage.restoreBatchTrash(vaultId, ids);
     const hub = req.app.get('fnsHub');
     if (hub && result.restoredPaths.length > 0) {
-      hub.broadcastBatchFileChange(vaultId, result.restoredPaths, req.user.id, true);
+      hub.broadcastBatchFileChange(vaultId, result.restoredPaths, req.user.id, null);
     }
-    res.json(result);
+    res.json({ ...result, cursor: deltaSync.getLatestCursor(vaultId) });
   })
 );
 

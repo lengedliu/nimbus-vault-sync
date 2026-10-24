@@ -112,63 +112,57 @@ async function resolveConflict(vaultId, { conflictPath, resolution, customConten
   const fullConflict = storage.safeJoin(root, conflictPath);
   const fullBase = storage.safeJoin(root, basePath);
 
-  if (!fs.existsSync(fullConflict)) throw new Error('冲突文件已被移除或不存在');
+  if (resolution !== 'keep-current' && resolution !== 'keep-conflict' && resolution !== 'merge-both' && resolution !== 'custom') {
+    throw new Error('未知的冲突解决策略 (可选: keep-current, keep-conflict, merge-both, custom)');
+  }
+  if (resolution === 'custom' && typeof customContent !== 'string') {
+    throw new Error('缺少自定义合并内容');
+  }
 
   let resolvedBuffer = null;
 
-  if (resolution === 'keep-current') {
-    // 若原始文件已不存在（例如曾被误删），keep-current 应先将冲突副本恢复为原始文件，防止两份文件全丢
-    if (!fs.existsSync(fullBase)) {
-      const buf = fs.readFileSync(fullConflict);
-      resolvedBuffer = buf;
-      await storage.withFileLock(vaultId, basePath, async () => {
+  await storage.withDualFileLock(vaultId, basePath, conflictPath, async () => {
+    if (!fs.existsSync(fullConflict)) throw new Error('冲突文件已被移除或不存在');
+
+    if (resolution === 'keep-current') {
+      // 若原始文件已不存在（例如曾被误删），keep-current 应先将冲突副本恢复为原始文件，防止两份文件全丢
+      if (!fs.existsSync(fullBase)) {
+        const buf = await fs.promises.readFile(fullConflict);
+        resolvedBuffer = buf;
         await storage.writeFileAsync(vaultId, basePath, buf, { mtime: Date.now() });
-      });
-    }
-    await storage.withFileLock(vaultId, conflictPath, async () => {
+      }
       await storage.deleteFileAsync(vaultId, conflictPath);
-    });
-  } else if (resolution === 'keep-conflict') {
-    // Keep conflict version -> overwrite base with conflict file, delete conflict file
-    const buf = fs.readFileSync(fullConflict);
-    resolvedBuffer = buf;
-    await storage.withFileLock(vaultId, basePath, async () => {
+    } else if (resolution === 'keep-conflict') {
+      // Keep conflict version -> overwrite base with conflict file, delete conflict file
+      const buf = await fs.promises.readFile(fullConflict);
+      resolvedBuffer = buf;
       await storage.writeFileAsync(vaultId, basePath, buf, { mtime: Date.now() });
-    });
-    await storage.withFileLock(vaultId, conflictPath, async () => {
       await storage.deleteFileAsync(vaultId, conflictPath);
-    });
-  } else if (resolution === 'merge-both') {
-    // Merge both with conflict markers
-    const baseBuf = fs.existsSync(fullBase) ? fs.readFileSync(fullBase) : Buffer.from('');
-    const conflictBuf = fs.readFileSync(fullConflict);
-    const combined = `<<<<<<< [当前版本 (服务端)]\n${baseBuf.toString('utf8')}\n=======\n${conflictBuf.toString('utf8')}\n>>>>>>> [冲突版本 (客户端)]\n`;
-    resolvedBuffer = Buffer.from(combined, 'utf8');
-    await storage.withFileLock(vaultId, basePath, async () => {
+    } else if (resolution === 'merge-both') {
+      // Merge both with conflict markers
+      const baseBuf = fs.existsSync(fullBase) ? await fs.promises.readFile(fullBase) : Buffer.from('');
+      const conflictBuf = await fs.promises.readFile(fullConflict);
+      const combined = `<<<<<<< [当前版本 (服务端)]\n${baseBuf.toString('utf8')}\n=======\n${conflictBuf.toString('utf8')}\n>>>>>>> [冲突版本 (客户端)]\n`;
+      resolvedBuffer = Buffer.from(combined, 'utf8');
       await storage.writeFileAsync(vaultId, basePath, resolvedBuffer, { mtime: Date.now() });
-    });
-    await storage.withFileLock(vaultId, conflictPath, async () => {
       await storage.deleteFileAsync(vaultId, conflictPath);
-    });
-  } else if (resolution === 'custom') {
-    if (typeof customContent !== 'string') throw new Error('缺少自定义合并内容');
-    resolvedBuffer = Buffer.from(customContent, 'utf8');
-    await storage.withFileLock(vaultId, basePath, async () => {
+    } else if (resolution === 'custom') {
+      resolvedBuffer = Buffer.from(customContent, 'utf8');
       await storage.writeFileAsync(vaultId, basePath, resolvedBuffer, { mtime: Date.now() });
-    });
-    await storage.withFileLock(vaultId, conflictPath, async () => {
       await storage.deleteFileAsync(vaultId, conflictPath);
-    });
-  } else {
-    throw new Error('未知的冲突解决策略 (可选: keep-current, keep-conflict, merge-both, custom)');
-  }
+    }
+  });
 
   // Broadcast resolved changes to all connected clients using O(1) manifest entry lookup
   if (fnsHub) {
     if (resolution !== 'keep-current' || resolvedBuffer) {
       const meta = storage.getManifestEntry(vaultId, basePath);
       if (meta) {
-        fnsHub.broadcastFileChange(vaultId, basePath, { currentHash: meta.hash }, userId);
+        fnsHub.broadcastFileChange(vaultId, basePath, {
+          currentHash: meta.hash,
+          size: meta.size,
+          mtime: meta.mtime,
+        }, userId);
       }
     }
     // Also broadcast deletion of the conflict file to clean up clients
