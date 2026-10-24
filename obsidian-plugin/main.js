@@ -439,6 +439,10 @@ module.exports = class NimbusSyncPlugin extends Plugin {
     }
     // 先用占位符保护 globstar，再展开 * 与 ?：
     // 否则展开出的 (?:.*/)? 里的 ? 会被后续 replace 再改写成通配符，导致 a/**/b 类规则永远无法匹配。
+    // 🛡️ 项 4：移除 (?<!\.) lookbehind——占位符已保证裸 * 才走到这一步，转义点号后面的
+    // 裸 *（notes.* 这种写法）同样要按 [^/]* 展开；旧 lookbehind 把它留成量词，
+    // 规则被退化成 ^notes\.*$（只匹配 "notes" 加任意个点，匹配不到 notes.md）。
+    // ? → [^/] 保持不跨路径分隔符的语义（与服务端新管线一致）。
     const STAR_SLASH = '\u0000GLOBSTAR_SLASH\u0000';
     const STAR = '\u0000GLOBSTAR\u0000';
     const regexStr =
@@ -447,7 +451,7 @@ module.exports = class NimbusSyncPlugin extends Plugin {
         .replace(/[.+^${}()|[\]\\]/g, '\\$&')
         .replace(/\*\*\//g, STAR_SLASH)
         .replace(/\*\*/g, STAR)
-        .replace(/(?<!\.)\*/g, '[^/]*')
+        .replace(/\*/g, '[^/]*')
         .replace(/\?/g, '[^/]')
         .replace(new RegExp(STAR_SLASH, 'g'), '(?:.*/)?')
         .replace(new RegExp(STAR, 'g'), '.*') +
