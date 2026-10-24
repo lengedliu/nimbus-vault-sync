@@ -122,14 +122,26 @@ function matchPattern(relPath, pattern) {
     p = p.slice(3);
   }
 
+  // 🛡️ 项 4（glob 转换修复，与插件端 matchIgnorePattern 同一管线）：
+  // 1) 先用占位符保护 globstar 再展开单星与问号——否则展开出的 (?:.*/)? 里的
+  //    问号会被后续 ? 替换改写掉，中段 **/ 规则（a/**/b.md、Archive/**/drafts/*）
+  //    永远无法匹配（占位符方案：插件端注释已写明原因，服务端此前漏改）。
+  // 2) 移除 (?<!\.) lookbehind：占位符已保证裸 * 才会走到这一步，转义点号
+  //    后面的裸 *（notes.*）同样该按 [^/]* 展开——旧 lookbehind 把它留成了
+  //    量词，规则被退化成 ^notes\.*$（只匹配 "notes" 加任意个点）。
+  // 3) ? → [^/] 与插件端一致，不跨路径分隔符。
+  const STAR_SLASH = '\u0000GLOBSTAR_SLASH\u0000';
+  const STAR = '\u0000GLOBSTAR\u0000';
   const regexStr =
     prefix +
     p
       .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-      .replace(/\*\*\//g, '(?:.*/)?')
-      .replace(/\*\*/g, '.*')
-      .replace(/(?<!\.)\*/g, '[^/]*')
-      .replace(/\?/g, '.') +
+      .replace(/\*\*\//g, STAR_SLASH)
+      .replace(/\*\*/g, STAR)
+      .replace(/\*/g, '[^/]*')
+      .replace(/\?/g, '[^/]')
+      .replace(new RegExp(STAR_SLASH, 'g'), '(?:.*/)?')
+      .replace(new RegExp(STAR, 'g'), '.*') +
     '$';
 
   try {
