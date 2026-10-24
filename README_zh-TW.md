@@ -319,10 +319,6 @@ Nimbus 原生內建 **StreamableHTTP** 協定的 MCP 介面，AI 用戶端無需
 | :---: | :---: |
 | [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/lengedliu) | <img src="./public/wechat-reward.jpg" width="180" alt="微信贊賞碼" /> |
 
-- 已支持名單：
-  - [Support.zh-CN.md](Support.zh-CN.md)
-  - [Support.zh-CN.md (cnb.cool 鏡像庫)](https://cnb.cool/lengedliu/nimbus-vault-sync/-/blob/main/Support.zh-CN.md)
-
 ---
 
 ## 📄 開源授權

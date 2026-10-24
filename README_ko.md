@@ -315,10 +315,6 @@ Web 콘솔 왼쪽 사이드바의 **「🤖 AI / MCP」**를 클릭하여 대상
 | :---: | :---: |
 | [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/lengedliu) | <img src="./public/wechat-reward.jpg" width="180" alt="WeChat Pay QR 코드" /> |
 
-- 후원자 명단：
-  - [Support.zh-CN.md](Support.zh-CN.md)
-  - [Support.zh-CN.md (cnb.cool 미러)](https://cnb.cool/lengedliu/nimbus-vault-sync/-/blob/main/Support.zh-CN.md)
-
 ---
 
 ## 📄 라이선스

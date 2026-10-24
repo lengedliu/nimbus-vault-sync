@@ -319,10 +319,6 @@ In the Web Console, click **"🤖 AI / MCP"** on the sidebar to select your vaul
 | :---: | :---: |
 | [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/lengedliu) | <img src="./public/wechat-reward.jpg" width="180" alt="WeChat Pay QR Code" /> |
 
-- Supporters List:
-  - [Support.zh-CN.md](Support.zh-CN.md)
-  - [Support.zh-CN.md (cnb.cool Mirror)](https://cnb.cool/lengedliu/nimbus-vault-sync/-/blob/main/Support.zh-CN.md)
-
 ---
 
 ## 📄 License
