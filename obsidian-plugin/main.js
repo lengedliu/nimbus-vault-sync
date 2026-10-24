@@ -2318,7 +2318,18 @@ module.exports = class NimbusSyncPlugin extends Plugin {
           // 本地版本（R-1 防护被基线假象完全绕过）。
           // 正确做法：对主路径触发受保护拉取（applyRemoteBinaryChange 的
           // R-1 覆盖防护会先把本地未同步内容备份为 .conflict-offline-* 副本再覆盖）。
+          // 🛡️ 防无界递归（e97d966 全量测试暴露的护栏缺口）：serverWin/conflict
+          // 收敛分支会对本地未同步内容生成 .conflict-offline-* 备份副本并推送副本；
+          // 若副本路径的推送也命中 serverWin/conflict（服务端异常对账态/路径碰撞），
+          // 会逐层生成新备份副本无限递归，实测刷爆进程（verify OOM）。备份副本
+          // 不参与再收敛：按临时失败挂起重试，等内容可对账时由 3-Way 兜底。
           if (body && (body.serverWin || body.conflict)) {
+            const leaf = file.path.split('/').pop() || '';
+            if (/\.conflict-offline-\d{4}-\d{2}-\d{2}T[0-9-]+Z(\.[A-Za-z0-9]+)?$/.test(leaf)) {
+              console.warn(`[Nimbus] 备份副本推送遇并发冲突，挂起重试（不再触发受保护拉取）:`, file.path);
+              this.queuePendingLocalPush(file.path);
+              return false;
+            }
             console.warn(`[Nimbus] HTTP 推送遇并发冲突，按受保护拉取收敛:`, file.path);
             new Notice('⚠️ 检测到并发冲突：云端版本已拉取，本地修改已自动备份', 6000);
             const pulled = await this.pullRemoteFileViaHttp(file.path, body.mtime, body.currentHash, {

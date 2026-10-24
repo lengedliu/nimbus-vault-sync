@@ -1206,9 +1206,11 @@ test('Round 7：WS serverWin 冲突不污染 _conflictRestorePaths，确保本�
     currentHash: sha(serverContent),
   });
 
-  assert.equal(
-    plugin._conflictRestorePaths && plugin._conflictRestorePaths.has('target.md'),
-    false,
+  // 🛡️ 注：_conflictRestorePaths 惰性初始化（仅在收到带 conflictPath 的冲突时创建），
+  // serverWin 时不初始化 → 旧断言 `undefined && has()` 结果为 undefined ≠ false 必挂。
+  // 语义等价改为组合断言：未初始化或已初始化但不含主路径，都算「未污染」。
+  assert.ok(
+    !(plugin._conflictRestorePaths instanceof Set) || !plugin._conflictRestorePaths.has('target.md'),
     'serverWin 无云端分支副本，绝不能将主路径加入 _conflictRestorePaths'
   );
 
@@ -1242,16 +1244,32 @@ test('Round 7：HTTP 大文件推送遇冲突时在 withLocalFileLock 内受保�
   const origFetch = global.fetch;
   global.fetch = async (url, opts = {}) => {
     if (opts.method === 'PUT') {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          written: false,
-          serverWin: true,
-          currentHash: serverHash,
-          mtime: 123456,
-        }),
-      };
+      // 🛡️ e97d966 缺陷修复（配套插件递归护栏）_mock 收窄为真实服务端语义：
+      // 仅主路径（有大文件 PUT 通道且改动在线）返回 serverWin；受保护拉取产生的
+      // .conflict-offline-* 备份副本是新路径、baseHash 为空、服务端必然接受——
+      // 旧实现连副本 PUT 也回 serverWin，会与「副本推送」组合成无界递归备份
+      //（插件端护栏为双保险，仍保留）。
+      const putPath = (() => {
+        try {
+          const m = String(url).match(/\/files\/([^?]+)/);
+          return m && m[1] ? decodeURIComponent(m[1]) : '';
+        } catch {
+          return '';
+        }
+      })();
+      if (!putPath.includes('.conflict-offline-')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            written: false,
+            serverWin: true,
+            currentHash: serverHash,
+            mtime: 123456,
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({ written: true, currentHash: 'pushed-backup' }) };
     }
     // GET pullRemoteFileViaHttp
     return {
