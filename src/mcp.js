@@ -491,9 +491,10 @@ function buildMcpServer(user, defaultVaultId) {
       vaultId: z.string().optional().describe('Vault ID.'),
       path: z.string().describe('Vault-relative path, e.g. "Ideas/NewConcept.md".'),
       content: z.string().describe('Full UTF-8 text content to write.'),
-      baseHash: z.string().optional().describe('Optional hash of the file when last read, for optimistic locking & conflict prevention.'),
+      baseHash: z.string().optional().describe('Hash of the file when last read (required for overwriting existing files). For new files, omit or pass empty string. Provides optimistic locking & conflict prevention.'),
+      force: z.boolean().optional().describe('If true, bypass optimistic locking and overwrite even if file has changed since last read. Use with caution.'),
     },
-    async ({ vaultId, path: notePath, content, baseHash }) => {
+    async ({ vaultId, path: notePath, content, baseHash, force }) => {
       const id = resolveWritableVaultId(vaultId);
       const cleanPath = normalizeVaultPath(notePath);
       if (syncRules.isPathIgnored(id, cleanPath)) {
@@ -501,11 +502,29 @@ function buildMcpServer(user, defaultVaultId) {
       }
       const buffer = Buffer.from(content, 'utf8');
       // 🛡️ 与 REST/WS 写路径共用同一把文件锁，跨端点并发一致
+      // 🛡️ 项 6：使用 O(1) getManifestEntryAsync 避免锁内全清单扫描
       const result = await storage.withFileLock(id, cleanPath, async () => {
-        const manifest = storage.getManifest(id) || {};
-        const actualBaseHash = baseHash || manifest[cleanPath]?.hash;
+        // 🛡️ 项 6：要求已存在文件的写入必须提供 baseHash（或 force:true），防止兜底读取当前哈希架空乐观锁
+        const existingMeta = await storage.getManifestEntryAsync(id, cleanPath);
+        if (existingMeta && !force) {
+          if (!baseHash) {
+            return { written: false, baseHashRequired: true, currentHash: existingMeta.hash,
+              error: `File "${cleanPath}" already exists. Provide baseHash (from last read) for optimistic locking, or use force=true to overwrite.` };
+          }
+          if (baseHash !== existingMeta.hash) {
+            // baseHash provided but stale — let writeFileAsync handle conflict with its own logic
+          }
+        }
+        const actualBaseHash = baseHash || (existingMeta?.hash || '');
         return storage.writeFileAsync(id, cleanPath, buffer, { mtime: Date.now(), baseHash: actualBaseHash });
       });
+
+      if (!result.written && result.baseHashRequired) {
+        return textResult(
+          `Optimistic lock required: File "${cleanPath}" already exists (hash: ${result.currentHash}). ` +
+          `Please provide baseHash from your last read, or set force=true to force overwrite.`
+        );
+      }
 
       if (!result.written && result.serverWin) {
         return textResult(
