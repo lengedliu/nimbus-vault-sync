@@ -350,6 +350,18 @@ async function commitAndPush(vaultId, { customMessage, author } = {}) {
     await updateRemoteUrl(vaultId, config);
   }
 
+  // 🛡️ 项 5：commitAndPush 前守卫——若仓库处于合并/变基冲突态（UU/AA/UD/DU
+  // 或 MERGE_HEAD/rebase-merge/rebase-apply 存在），禁止提交并返回明确错误，
+  // 避免把冲突标记 `<<<<<<<` 随 add -A 入库污染远端。
+  const conflictAborted = await abortIfInConflict(vaultId);
+  if (conflictAborted) {
+    return {
+      ok: false,
+      stage: 'pre-commit',
+      error: '检测到未解决的 Git 合并/变基冲突，已自动 abort 清场。请先在本地解决冲突或执行全量对账后再提交。'
+    };
+  }
+
   // 1. Stage all changes
   await execGit(vaultId, ['add', '-A']);
 
@@ -462,6 +474,64 @@ async function commitAndPush(vaultId, { customMessage, author } = {}) {
     filesChanged: changedLines,
     message: hasChanges ? `已成功生成本地 Git 提交 (${changedLines} 个文件)` : '工作区无变更，无需提交',
   };
+}
+
+/**
+ * Identify merge/rebase conflict state and abort to clean working tree.
+ * Returns true if a conflict was detected and aborted.
+ */
+async function abortIfInConflict(vaultId) {
+  const repoDir = vaultFilesRoot(vaultId);
+  const gitDir = path.join(repoDir, '.git');
+  // Check for merge/rebase conflict markers
+  try {
+    const mergeHeadPath = path.join(gitDir, 'MERGE_HEAD');
+    const rebaseMergeDir = path.join(gitDir, 'rebase-merge');
+    const rebaseApplyDir = path.join(gitDir, 'rebase-apply');
+    let inConflict = false;
+    if (fs.existsSync(mergeHeadPath) || fs.existsSync(rebaseMergeDir) || fs.existsSync(rebaseApplyDir)) {
+      inConflict = true;
+    }
+    // Also check porcelain for UU/AA/UD/DU
+    if (!inConflict) {
+      const statusRes = await execGit(vaultId, ['status', '--porcelain']);
+      if (statusRes.success && statusRes.stdout) {
+        for (const line of statusRes.stdout.split('\n')) {
+          const code = line.slice(0, 2).trim();
+          if (code === 'UU' || code === 'AA' || code === 'UD' || code === 'DU') {
+            inConflict = true;
+            break;
+          }
+        }
+      }
+    }
+    if (inConflict) {
+      // Try merge --abort, then rebase --abort
+      await execGit(vaultId, ['merge', '--abort']);
+      await execGit(vaultId, ['rebase', '--abort']);
+      console.warn(`[GitSync] 检测到合并/变基冲突态，已执行 abort 清场: ${vaultId}`);
+      return true;
+    }
+  } catch (err) {
+    // Abort may fail if not in conflict; ignore
+  }
+  return false;
+}
+
+/**
+ * Ensure git config pull.rebase=true is set for this vault (for old repos
+ * that were initialized before this config was added).
+ */
+async function ensureGitConfig(vaultId) {
+  try {
+    const res = await execGit(vaultId, ['config', '--get', 'pull.rebase']);
+    if (!res.success || (res.stdout || '').trim() !== 'true') {
+      await execGit(vaultId, ['config', 'pull.rebase', 'true']);
+      console.log(`[GitSync] 已补写 pull.rebase=true: ${vaultId}`);
+    }
+  } catch (err) {
+    console.warn(`[GitSync] 补写 pull.rebase 失败（非致命）: ${vaultId}`, err.message);
+  }
 }
 
 /**
@@ -651,6 +721,12 @@ async function pull(vaultId) {
     return { ok: false, error: '未配置远端 Git 仓库地址' };
   }
 
+  // 🛡️ 项 5：确保旧仓库也有 pull.rebase=true（防止 merge 与 rebase 混用）
+  await ensureGitConfig(vaultId);
+
+  // 🛡️ 项 5：pull 前先清理可能残留的合并/变基冲突态（避免后续操作在脏工作树上跑）
+  await abortIfInConflict(vaultId);
+
   // 🛡️ H-2：先把此前 durable 失败留下的区间重放补上（与本次 pull 的区间不重叠）
   try {
     await replayPendingPulledChanges(vaultId);
@@ -667,6 +743,8 @@ async function pull(vaultId) {
 
   const pullRes = await execGit(vaultId, ['pull', 'origin', branch]);
   if (!pullRes.success) {
+    // 🛡️ 项 5：pull 失败（如冲突）时尝试 abort 清场，返回明确错误供上层决策
+    await abortIfInConflict(vaultId);
     return { ok: false, error: maskSecrets(pullRes.stderr || pullRes.stdout) };
   }
 
