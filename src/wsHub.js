@@ -382,6 +382,10 @@ class FnsHub {
       permission,
       connectedAt: Date.now(),
       isAlive: true,
+      // 🛡️ 项 3（握手窗口防伪对齐）：init 握手包发出前 client 不接收广播——
+      // 否则窗口内的广播先于 init 到达，客户端把游标推进到最新，
+      // 离线期间漏掉的变更在 init 判定「已对齐」后被永久跳过。
+      ready: false,
     };
     this._room(vaultId).add(client);
 
@@ -392,9 +396,19 @@ class FnsHub {
       });
     } catch {}
 
+    // 🛡️ L5：message/close/error 监听必须在任何 await 之前注册——旧实现放在
+    // init 之后（两个 await 之间落下的客户端消息无人读取直接丢失，
+    // close/error 清理也被推迟）。客户端消息在 init 就绪前到达是合法的：
+    // push/pull/delete 处理器不依赖握手状态（deltaSync 方法内部自带 init）。
     ws.on('pong', () => {
       client.isAlive = true;
     });
+    ws.on('message', (raw) => {
+      client.isAlive = true;
+      this._onMessage(client, vaultId, raw);
+    });
+    ws.on('close', () => this._room(vaultId).delete(client));
+    ws.on('error', () => this._room(vaultId).delete(client));
 
     // 确保该 Vault 的增量状态已完成从持久化层加载，取得权威真实游标
     try {
@@ -432,13 +446,9 @@ class FnsHub {
       permission,
       ignorePatterns: rules && Array.isArray(rules.ignorePatterns) ? rules.ignorePatterns : [],
     });
-
-    ws.on('message', (raw) => {
-      client.isAlive = true;
-      this._onMessage(client, vaultId, raw);
-    });
-    ws.on('close', () => this._room(vaultId).delete(client));
-    ws.on('error', () => this._room(vaultId).delete(client));
+    // 🛡️ 项 3：init 已发出，从现在起该客户端才接收广播（此时客户端已能按
+    // 正确顺序处理增量事件，游标推进建立在已收到的全部变更之上）
+    client.ready = true;
   }
 
   _send(ws, obj) {
@@ -469,6 +479,7 @@ class FnsHub {
         return this._send(client.ws, {
           type: 'manifest',
           manifest,
+          // 🛡️ 项 3：全量快照响应（覆盖全部状态），推进到最新是安全的
           cursor: deltaSync.getLatestCursor(vaultId),
           ignorePatterns: rules && Array.isArray(rules.ignorePatterns) ? rules.ignorePatterns : [],
         });
@@ -495,8 +506,8 @@ class FnsHub {
             size: meta.size,
             mtime: meta.mtime,
             hash: meta.hash,
-            // 🛡️ 附带当前游标：客户端应用成功后可小步推进，免得每次重连重放
-            cursor: deltaSync.getLatestCursor(vaultId),
+            // 🛡️ 项 3：携带本条变更自己的游标（而非全局最新）——客户端推进不会越过未接收的变更
+            cursor: deltaSync.getLatestCursorForPath(vaultId, msg.path),
           });
         }
 
@@ -534,7 +545,8 @@ class FnsHub {
             // 🛡️ mtime 用服务端清单权威值；客户端自报的 msg.mtime 不可信，仅作元数据缺失时的兜底
             mtime: (meta && meta.mtime) || msg.mtime || Date.now(),
             hash: storage.sha256(buf),
-            cursor: deltaSync.getLatestCursor(vaultId),
+            // 🛡️ 项 3：本条文件自己的游标（ring 中该路径最近一条 durable 记录）
+            cursor: deltaSync.getLatestCursorForPath(vaultId, msg.path),
           });
         }
 
@@ -557,7 +569,8 @@ class FnsHub {
           // 🛡️ 同上：服务端清单权威 mtime 优先
           mtime: (meta && meta.mtime) || msg.mtime || Date.now(),
           hash: storage.sha256(buf),
-          cursor: deltaSync.getLatestCursor(vaultId),
+          // 🛡️ 项 3：本条文件自己的游标
+          cursor: deltaSync.getLatestCursorForPath(vaultId, msg.path),
         });
       }
 
@@ -637,6 +650,8 @@ class FnsHub {
             action: 'push',
             path: msg.path,
             conflict: true,
+            // 🛡️ 项 3：serverWin 未产生本端变更记录（拒绝旧基线覆盖），全局游标可作为
+            // 3-Way 收尾基线（manifest 已覆盖该时点全部状态）；客户端按约定不据此推进
             cursor: deltaSync.getLatestCursor(vaultId),
           });
           return;
@@ -674,7 +689,8 @@ class FnsHub {
             action: 'push',
             path: msg.path,
             conflict: result.conflict,
-            cursor: deltaSync.getLatestCursor(vaultId),
+            // 🛡️ 项 3：冲突副本自身的游标——推进不会越过其他设备未收到的变更
+            cursor: deltaSync.getLatestCursorForPath(vaultId, result.conflict),
           });
           // Let other clients know a conflict copy was created.
           this.broadcastFileChange(vaultId, result.conflict, { currentHash: result.conflictHash }, client.userId, client.ws);
@@ -713,7 +729,9 @@ class FnsHub {
           hash: result.currentHash,
           mtime: msg.mtime || Date.now(),
           size: buffer.length,
-          cursor: deltaSync.getLatestCursor(vaultId),
+          // 🛡️ 项 3：本条推送自己的游标——3-Way 收尾的 ackSeen 基线不再把
+          // 其他设备尚未送达本端的变更一并「消费」掉
+          cursor: deltaSync.getLatestCursorForPath(vaultId, msg.path),
         });
         this.broadcastFileChange(vaultId, msg.path, result, client.userId, client.ws);
         return;
@@ -768,7 +786,8 @@ class FnsHub {
           action: 'delete',
           path: msg.path,
           deleted: completed,
-          cursor: deltaSync.getLatestCursor(vaultId),
+          // 🛡️ 项 3：本条删除自己的游标
+          cursor: deltaSync.getLatestCursorForPath(vaultId, msg.path),
         });
         this.broadcastFileDelete(vaultId, msg.path, client.userId, client.ws);
       }
@@ -794,7 +813,8 @@ class FnsHub {
             oldPath,
             path: newPath,
             ignored: true,
-            cursor: deltaSync.getLatestCursor(vaultId),
+            // 🛡️ 项 3：oldPath 删除记录自身的游标
+            cursor: deltaSync.getLatestCursorForPath(vaultId, oldPath),
           });
         }
 
@@ -847,7 +867,11 @@ class FnsHub {
             oldPath,
             path: newPath,
             conflict: moveRes.conflict || true,
-            cursor: deltaSync.getLatestCursor(vaultId),
+            // 🛡️ 项 3：冲突副本有自身记录时携带其游标；纯 serverWin（未写入）无记录，
+            // 回退全局游标（与 push serverWin ack 同一约定：客户端不据此推进重叠域）
+            cursor: moveRes.conflict
+              ? deltaSync.getLatestCursorForPath(vaultId, moveRes.conflict)
+              : deltaSync.getLatestCursor(vaultId),
           });
           this.broadcastFileDelete(vaultId, oldPath, client.userId, client.ws);
           if (moveRes.conflict) {
@@ -878,7 +902,8 @@ class FnsHub {
           hash: moveRes.hash,
           mtime: moveRes.mtime,
           size: moveRes.size,
-          cursor: deltaSync.getLatestCursor(vaultId),
+          // 🛡️ 项 3：newPath 记录自身的游标
+          cursor: deltaSync.getLatestCursorForPath(vaultId, newPath),
         });
         this.broadcastFileDelete(vaultId, oldPath, client.userId, client.ws);
         this.broadcastFileChange(vaultId, newPath, { currentHash: moveRes.hash }, client.userId, client.ws);
@@ -959,12 +984,16 @@ class FnsHub {
     const payload = {
       type: 'batch_file_change',
       vaultId,
+      // 🛡️ 项 3：top-level 为兼容旧客户端保留全局游标；每条 changes 自带自身游标，
+      // 新客户端按 per-item 最大值推进
       cursor: deltaSync.getLatestCursor(vaultId),
       count: changes.length,
       timestamp: Date.now(),
       changes: changes.map((c) => ({
         action: c.action || 'update', // 'update' | 'delete' | 'create'
         path: c.path,
+        // 🛡️ 项 3：批量事件每条携带自身游标，客户端按 per-item 最大值推进
+        cursor: deltaSync.getLatestCursorForPath(vaultId, c.path),
         size: c.size,
         mtime: c.mtime,
         hash: c.hash || c.currentHash,
@@ -973,6 +1002,7 @@ class FnsHub {
 
     const json = JSON.stringify(payload);
     for (const client of room) {
+      if (client.ready === false) continue; // 🛡️ 项 3：init 握手未发出前不广播
       if (this._isClientExcluded(client, excludeWs)) continue;
       this._sendRaw(client.ws, json);
     }
@@ -987,7 +1017,8 @@ class FnsHub {
     const payload = {
       type: 'change',
       path: relPath,
-      cursor: deltaSync.getLatestCursor(vaultId),
+      // 🛡️ 项 3：本条变更自己的游标，客户端推进不会越过未接收的变更
+      cursor: deltaSync.getLatestCursorForPath(vaultId, relPath),
       size: meta?.size,
       mtime: meta?.mtime,
       hash: meta?.hash,
@@ -995,6 +1026,7 @@ class FnsHub {
     };
     const json = JSON.stringify(payload);
     for (const client of room) {
+      if (client.ready === false) continue; // 🛡️ 项 3：init 握手未发出前不广播
       if (this._isClientExcluded(client, excludeWs)) continue;
       this._sendRaw(client.ws, json);
     }
@@ -1041,7 +1073,8 @@ class FnsHub {
       const payload = {
         type: 'change',
         path: relPath,
-        cursor: deltaSync.getLatestCursor(vaultId),
+        // 🛡️ 项 3：本条变更自己的游标（ring 只含已 durable 记录；窗口外/未记录返回 undefined→字段省略）
+        cursor: deltaSync.getLatestCursorForPath(vaultId, relPath),
         size: fileSize,
         mtime: meta?.mtime,
         hash: result?.currentHash || meta.hash,
@@ -1049,7 +1082,8 @@ class FnsHub {
       };
       const json = JSON.stringify(payload);
       for (const client of room) {
-        if (this._isClientExcluded(client, excludeWs)) continue;
+        if (client.ready === false) continue; // 🛡️ 项 3：init 握手未发出前不广播
+      if (this._isClientExcluded(client, excludeWs)) continue;
         this._sendRaw(client.ws, json);
       }
       return;
@@ -1062,7 +1096,7 @@ class FnsHub {
       const payload = {
         type: 'change',
         path: relPath,
-        cursor: deltaSync.getLatestCursor(vaultId),
+        cursor: deltaSync.getLatestCursorForPath(vaultId, relPath),
         size: buf.length,
         mtime: meta?.mtime || Date.now(),
         hash: result?.currentHash,
@@ -1071,7 +1105,8 @@ class FnsHub {
       const json = JSON.stringify(payload);
       const isExcluded = (c) => this._isClientExcluded(c, excludeWs);
       for (const client of room) {
-        if (isExcluded(client)) continue;
+        if (client.ready === false) continue; // 🛡️ 项 3：init 握手未发出前不广播
+      if (isExcluded(client)) continue;
         this._sendRaw(client.ws, json);
       }
       return;
@@ -1080,7 +1115,7 @@ class FnsHub {
     const payload = {
       type: 'change',
       path: relPath,
-      cursor: deltaSync.getLatestCursor(vaultId),
+      cursor: deltaSync.getLatestCursorForPath(vaultId, relPath),
       content: buf.toString('base64'),
       size: buf.length,
       mtime: meta?.mtime || Date.now(),
@@ -1090,6 +1125,7 @@ class FnsHub {
     const json = JSON.stringify(payload);
     const isExcluded = (c) => this._isClientExcluded(c, excludeWs);
     for (const client of room) {
+      if (client.ready === false) continue; // 🛡️ 项 3：init 握手未发出前不广播
       if (isExcluded(client)) continue; // don't echo back to the pushing socket or device
       this._sendRaw(client.ws, json);
     }
@@ -1115,11 +1151,13 @@ class FnsHub {
       altType: 'batch_change',
       vaultId,
       count: relPaths.length,
+      // 🛡️ 项 3：汇总通知无单一变更游标——客户端按 pullRequired 走全量同步流程收尾
       cursor: deltaSync.getLatestCursor(vaultId),
       pullRequired: true,
     };
     const json = JSON.stringify(payload);
     for (const client of room) {
+      if (client.ready === false) continue; // 🛡️ 项 3：init 握手未发出前不广播
       if (this._isClientExcluded(client, excludeWs)) continue;
       this._sendRaw(client.ws, json);
     }
@@ -1134,10 +1172,12 @@ class FnsHub {
     const json = JSON.stringify({
       type: 'deleted',
       path: relPath,
-      cursor: deltaSync.getLatestCursor(vaultId),
+      // 🛡️ 项 3：本条删除自己的游标（durable 后广播），不一致/未记录时字段省略
+      cursor: deltaSync.getLatestCursorForPath(vaultId, relPath),
     });
     const isExcluded = (c) => this._isClientExcluded(c, excludeWs);
     for (const client of room) {
+      if (client.ready === false) continue; // 🛡️ 项 3：init 握手未发出前不广播
       if (isExcluded(client)) continue; // don't echo back to the deleting socket or device
       this._sendRaw(client.ws, json);
     }
@@ -1185,13 +1225,14 @@ class FnsHub {
         const payload = {
           type: 'batch_file_change',
           vaultId,
-          cursor: deltaSync.getLatestCursor(vaultId),
+          cursor: deltaSync.getLatestCursorForPath(vaultId, changesList[changesList.length - 1] && changesList[changesList.length - 1].path),
           count: changesList.length,
           timestamp: Date.now(),
           changes: changesList,
         };
         const json = JSON.stringify(payload);
         for (const client of room) {
+          if (client.ready === false) continue; // 🛡️ 项 3：init 握手未发出前不广播
           if (this._isClientExcluded(client, batch.excludeWs)) continue;
           this._sendRaw(client.ws, json);
         }

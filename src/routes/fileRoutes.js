@@ -232,7 +232,8 @@ router.put('/:vaultId/files/*', (req, res) => {
       res.json({
         ...cleanResult,
         hash: result.currentHash,
-        cursor: deltaSync.getLatestCursor(vaultId),
+        // 🛡️ 项 3：本条写入自己的游标（而非全局最新——防把其他设备未送达本端的变更一并「对齐」掉）
+        cursor: deltaSync.getLatestCursorForPath(vaultId, relPath),
       });
       activeUploads--;
     } catch (e) {
@@ -286,6 +287,7 @@ router.delete('/:vaultId/files/*', asyncHandler(async (req, res) => {
       status: 'ignored',
       detail: '命中同步黑名单/忽略规则 (delete)',
     });
+    // 🛡️ 项 3：ignored 路径无变更记录，cursor 仅为兼容字段（客户端只会标记基线，不推进重叠域）
     return res.json({ deleted: true, ignored: true, cursor: deltaSync.getLatestCursor(vaultId) });
   }
 
@@ -316,7 +318,11 @@ router.delete('/:vaultId/files/*', asyncHandler(async (req, res) => {
     detail: ok ? '移入回收站 (软删除)' : '文件不存在或删除失败',
   });
 
-  res.json({ deleted: ok, cursor: deltaSync.getLatestCursor(vaultId) });
+  res.json({
+    deleted: ok,
+    // 🛡️ 项 3：本条删除自己的游标（而非全局最新）
+    cursor: deltaSync.getLatestCursorForPath(vaultId, relPath),
+  });
 }));
 
 // POST batch delete files into trash
@@ -380,6 +386,7 @@ router.post('/:vaultId/batch/delete', express.json(), asyncHandler(async (req, r
     detail: `批量移入回收站: ${successCount} 个文件成功`,
   });
 
+  // 🛡️ 项 3：top-level 为兼容位；逐条游标由各 delete/move 记录自身携带（batch/move 内部已处理）
   res.json({ success: true, count: successCount, results, cursor: deltaSync.getLatestCursor(vaultId) });
 }));
 
